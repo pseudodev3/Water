@@ -11,6 +11,8 @@ use std::{
 const MAX_SIGNATURE_PAGES_PER_ADDRESS: usize = 5;
 const SIGNATURE_PAGE_SIZE: usize = 1000;
 const MAX_CANDIDATE_TRANSACTIONS: usize = 250;
+const MAX_DISCOVERY_ROUNDS: usize = 4;
+const MAX_DISCOVERED_TOKEN_ACCOUNTS: usize = 32;
 const CONCURRENT_TX_FETCHES: usize = 8;
 const LAMPORTS_PER_SOL: i64 = 1_000_000_000;
 
@@ -117,28 +119,101 @@ impl SolanaHistoryClient {
             .await
             .unwrap_or_default();
 
-        let mut observed_addresses = vec![wallet.to_string()];
-        observed_addresses.extend(token_accounts.addresses.iter().cloned());
+        let mut discovered_accounts: HashSet<String> =
+            token_accounts.addresses.iter().cloned().collect();
+        let mut pending_addresses = vec![wallet.to_string()];
+        pending_addresses.extend(token_accounts.addresses.iter().cloned());
 
+        let mut scanned_addresses = HashSet::new();
         let mut signatures: HashMap<String, u64> = HashMap::new();
         let mut pages_read = 0usize;
         let mut signature_scan_complete = true;
-        let mut notes = vec![
-            "Solana standard RPC can only discover the wallet plus currently discoverable target-token accounts. Previously closed ATAs may be absent; basis coverage is authoritative, not a claim of perfect wallet history."
-                .to_string(),
-        ];
+        let mut notes = Vec::new();
+        let mut discovery_rounds = 0usize;
+        let mut discovery_stable = false;
 
-        for address in &observed_addresses {
-            let scan = self.signatures_for_address(address).await;
-            pages_read += scan.pages_read;
-            signature_scan_complete &= scan.complete;
+        while !pending_addresses.is_empty() && discovery_rounds < MAX_DISCOVERY_ROUNDS {
+            discovery_rounds += 1;
+            let addresses = std::mem::take(&mut pending_addresses);
 
-            for record in scan.signatures {
-                signatures
-                    .entry(record.signature)
-                    .and_modify(|timestamp| *timestamp = (*timestamp).min(record.block_time))
-                    .or_insert(record.block_time);
+            for address in addresses {
+                if !scanned_addresses.insert(address.clone()) {
+                    continue;
+                }
+
+                let scan = self.signatures_for_address(&address).await;
+                pages_read += scan.pages_read;
+                signature_scan_complete &= scan.complete;
+
+                for record in scan.signatures {
+                    signatures
+                        .entry(record.signature)
+                        .and_modify(|timestamp| *timestamp = (*timestamp).min(record.block_time))
+                        .or_insert(record.block_time);
+                }
             }
+
+            let mut ordered: Vec<(String, u64)> = signatures
+                .iter()
+                .map(|(signature, block_time)| (signature.clone(), *block_time))
+                .collect();
+            ordered.sort_by_key(|(_, block_time)| *block_time);
+            ordered.truncate(MAX_CANDIDATE_TRANSACTIONS);
+
+            let this = self.clone();
+            let discovery_results: Vec<Result<Value, String>> =
+                stream::iter(ordered.into_iter().map(move |(signature, _)| {
+                    let client = this.clone();
+                    async move { client.fetch_transaction(&signature).await }
+                }))
+                .buffer_unordered(CONCURRENT_TX_FETCHES)
+                .collect()
+                .await;
+
+            let before = discovered_accounts.len();
+
+            for tx in discovery_results.into_iter().flatten() {
+                for account in discover_target_token_accounts(wallet, target_mint, &tx) {
+                    if discovered_accounts.len() >= MAX_DISCOVERED_TOKEN_ACCOUNTS {
+                        break;
+                    }
+
+                    if discovered_accounts.insert(account.clone())
+                        && !scanned_addresses.contains(&account)
+                    {
+                        pending_addresses.push(account);
+                    }
+                }
+            }
+
+            if discovered_accounts.len() == before {
+                discovery_stable = true;
+                break;
+            }
+
+            if discovered_accounts.len() >= MAX_DISCOVERED_TOKEN_ACCOUNTS {
+                notes.push(format!(
+                    "Solana token-account discovery hit the {MAX_DISCOVERED_TOKEN_ACCOUNTS}-account safety cap."
+                ));
+                break;
+            }
+        }
+
+        notes.push(format!(
+            "Solana history scanned the wallet plus {} discovered/current target-token account(s) across {discovery_rounds} discovery round(s).",
+            discovered_accounts.len()
+        ));
+
+        if discovery_stable {
+            notes.push(
+                "Closed target-token accounts referenced by wallet history were recursively discovered and included."
+                    .to_string(),
+            );
+        } else {
+            notes.push(
+                "Token-account discovery did not reach a stable fixed point before a safety cap; history remains explicitly partial."
+                    .to_string(),
+            );
         }
 
         let candidate_transactions = signatures.len();
@@ -183,15 +258,20 @@ impl SolanaHistoryClient {
 
         transactions.sort_by_key(|tx| tx.timestamp);
 
-        let truncated = truncated_by_tx_cap || !signature_scan_complete;
-        let complete = false; // See closed-ATA limitation above.
+        let truncated = truncated_by_tx_cap
+            || !signature_scan_complete
+            || !discovery_stable
+            || discovered_accounts.len() >= MAX_DISCOVERED_TOKEN_ACCOUNTS;
         let reconstructed_transactions = transactions.len();
 
         RawHistory {
             transactions,
             coverage: HistoryCoverage {
-                source: "Solana JSON-RPC wallet + current target-token account history".to_string(),
-                complete,
+                source: "Solana JSON-RPC recursive wallet + historical target-token-account discovery"
+                    .to_string(),
+                // Standard RPC is much tighter now, but we reserve 'complete' for an
+                // indexed history source that can guarantee all historical token accounts.
+                complete: false,
                 pages_read,
                 candidate_transactions,
                 reconstructed_transactions,
@@ -323,25 +403,28 @@ impl SolanaHistoryClient {
         }
     }
 
+    async fn fetch_transaction(&self, signature: &str) -> Result<Value, String> {
+        self.rpc(
+            "getTransaction",
+            json!([
+                signature,
+                {
+                    "encoding": "jsonParsed",
+                    "commitment": "confirmed",
+                    "maxSupportedTransactionVersion": 0
+                }
+            ]),
+        )
+        .await
+        .map_err(|error| format!("Could not fetch Solana tx {signature}: {error}"))
+    }
+
     async fn reconstruct_transaction(
         &self,
         wallet: &str,
         signature: &str,
     ) -> Result<(RawWalletTransaction, Vec<String>), String> {
-        let tx = self
-            .rpc(
-                "getTransaction",
-                json!([
-                    signature,
-                    {
-                        "encoding": "jsonParsed",
-                        "commitment": "confirmed",
-                        "maxSupportedTransactionVersion": 0
-                    }
-                ]),
-            )
-            .await
-            .map_err(|error| format!("Could not fetch Solana tx {signature}: {error}"))?;
+        let tx = self.fetch_transaction(signature).await?;
 
         if tx.is_null() {
             return Err(format!(
@@ -457,6 +540,49 @@ struct SignatureScan {
     signatures: Vec<SignatureRecord>,
     pages_read: usize,
     complete: bool,
+}
+
+
+fn discover_target_token_accounts(
+    wallet: &str,
+    target_mint: &str,
+    tx: &Value,
+) -> HashSet<String> {
+    let mut discovered = HashSet::new();
+    let keys = tx
+        .pointer("/transaction/message/accountKeys")
+        .and_then(Value::as_array);
+
+    for path in ["/meta/preTokenBalances", "/meta/postTokenBalances"] {
+        let Some(rows) = tx.pointer(path).and_then(Value::as_array) else {
+            continue;
+        };
+
+        for row in rows {
+            if row.get("owner").and_then(Value::as_str) != Some(wallet)
+                || row.get("mint").and_then(Value::as_str) != Some(target_mint)
+            {
+                continue;
+            }
+
+            let Some(index) = row.get("accountIndex").and_then(Value::as_u64) else {
+                continue;
+            };
+            let Some(key) = keys
+                .and_then(|keys| keys.get(index as usize))
+                .and_then(|key| {
+                    key.as_str()
+                        .or_else(|| key.get("pubkey").and_then(Value::as_str))
+                })
+            else {
+                continue;
+            };
+
+            discovered.insert(key.to_string());
+        }
+    }
+
+    discovered
 }
 
 fn owner_token_deltas(wallet: &str, meta: &Value) -> HashMap<String, Decimal> {
@@ -616,6 +742,36 @@ mod tests {
 
         assert_eq!(deltas.get("TOKEN"), Some(&Decimal::from(-1)));
         assert_eq!(deltas.get("USDC"), Some(&Decimal::from(2)));
+    }
+
+
+    #[test]
+    fn discovers_closed_target_token_account_from_balance_metadata() {
+        let wallet = "WALLET";
+        let tx = json!({
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": wallet},
+                        {"pubkey": "OLD_CLOSED_ATA"}
+                    ]
+                }
+            },
+            "meta": {
+                "preTokenBalances": [
+                    {
+                        "accountIndex": 1,
+                        "mint": "TOKEN",
+                        "owner": wallet,
+                        "uiTokenAmount": {"amount": "100", "decimals": 0}
+                    }
+                ],
+                "postTokenBalances": []
+            }
+        });
+
+        let accounts = discover_target_token_accounts(wallet, "TOKEN", &tx);
+        assert!(accounts.contains("OLD_CLOSED_ATA"));
     }
 
     #[test]
