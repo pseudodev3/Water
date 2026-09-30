@@ -912,6 +912,96 @@ a:focus-visible {
   align-items: center;
 }
 
+
+.origin-panel {
+  margin-top: 1px;
+  padding: 28px;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.3fr);
+  gap: 42px;
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.origin-state,
+.origin-empty {
+  min-height: 86px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.origin-body {
+  min-width: 0;
+}
+
+.origin-addresses {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+}
+
+.origin-addresses > div {
+  min-width: 0;
+  padding: 13px 14px;
+  background: var(--surface-1);
+}
+
+.origin-addresses span {
+  display: block;
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.origin-addresses strong {
+  display: block;
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 590;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.origin-addresses small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.origin-controls {
+  margin-top: 14px;
+}
+
+.origin-controls > div {
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+}
+
+.origin-controls p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.origin-note {
+  margin-top: 14px;
+  padding-top: 14px;
+}
 .footer {
   margin-top: 42px;
   padding-top: 18px;
@@ -1032,7 +1122,8 @@ a:focus-visible {
     justify-self: start;
   }
 
-  .demand-panel {
+  .demand-panel,
+  .origin-panel {
     grid-template-columns: 1fr;
     gap: 24px;
   }
@@ -1103,7 +1194,8 @@ a:focus-visible {
   .opponent-panel,
   .evidence-panel,
   .early-panel,
-  .demand-panel {
+  .demand-panel,
+  .origin-panel {
     padding: 20px;
   }
 
@@ -1139,6 +1231,10 @@ a:focus-visible {
 
   .demand-facts > div {
     padding: 10px 8px;
+  }
+
+  .origin-addresses {
+    grid-template-columns: 1fr;
   }
 
   .demand-facts span {
