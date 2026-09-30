@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     str::FromStr,
     sync::{Arc, Mutex},
+    time::{Duration as StdDuration, Instant},
 };
 use thiserror::Error;
 use tokio::time::{sleep, Duration};
@@ -19,6 +20,7 @@ pub struct GeckoClient {
     host: String,
     pool_cache: Arc<Mutex<HashMap<String, String>>>,
     candle_cache: Arc<Mutex<HashMap<String, HashMap<u64, Decimal>>>>,
+    market_cache: Arc<Mutex<HashMap<String, (Instant, MarketSnapshot)>>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -53,6 +55,7 @@ impl GeckoClient {
             host: host.trim_end_matches('/').to_string(),
             pool_cache: Arc::new(Mutex::new(HashMap::new())),
             candle_cache: Arc::new(Mutex::new(HashMap::new())),
+            market_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -62,43 +65,40 @@ impl GeckoClient {
         address: &str,
     ) -> Result<MarketSnapshot, GeckoError> {
         let network = chain.market_network();
+        let cache_key = format!("{network}:{}", address.to_ascii_lowercase());
+
+        if let Some(snapshot) = self
+            .market_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&cache_key).cloned())
+            .and_then(|(fetched_at, snapshot)| {
+                (fetched_at.elapsed() < StdDuration::from_secs(45)).then_some(snapshot)
+            })
+        {
+            return Ok(snapshot);
+        }
+
+        // One public GeckoTerminal request is enough: token attributes provide
+        // price/liquidity/volume and include=top_pools supplies the top-pool
+        // transaction counts. This keeps scans well inside the public rate budget.
         let token_url = format!("{}/networks/{network}/tokens/{address}", self.host);
-        let pools_url = format!("{}/networks/{network}/tokens/{address}/pools", self.host);
+        let payload = send_json_with_retry(
+            self.http
+                .get(token_url)
+                .header("Accept", "application/json;version=20230203")
+                .header("User-Agent", "water/0.1")
+                .query(&[("include", "top_pools")]),
+        )
+        .await?;
 
-        let token_request = self.get_json(&token_url);
-        let pools_request = self.get_json(&pools_url);
-        let (token, pools) = tokio::join!(token_request, pools_request);
+        let snapshot = market_snapshot_from_payload(&payload)?;
 
-        let token = token?;
-        let pools = pools?;
+        if let Ok(mut cache) = self.market_cache.lock() {
+            cache.insert(cache_key, (Instant::now(), snapshot.clone()));
+        }
 
-        let attributes = token
-            .pointer("/data/attributes")
-            .and_then(Value::as_object)
-            .ok_or(GeckoError::NoData)?;
-
-        let first_pool = pools
-            .get("data")
-            .and_then(Value::as_array)
-            .and_then(|rows| rows.first())
-            .and_then(|row| row.get("attributes"));
-
-        Ok(MarketSnapshot {
-            name: string_field(attributes.get("name")),
-            symbol: string_field(attributes.get("symbol")),
-            price_usd: number_field(attributes.get("price_usd")),
-            liquidity_usd: number_field(attributes.get("total_reserve_in_usd"))
-                .or_else(|| first_pool.and_then(|pool| number_path(pool, &["reserve_in_usd"]))),
-            market_cap_usd: number_field(attributes.get("market_cap_usd")),
-            fdv_usd: number_field(attributes.get("fdv_usd")),
-            volume_h24_usd: attributes
-                .get("volume_usd")
-                .and_then(|value| number_path(value, &["h24"])),
-            buys_h1: first_pool
-                .and_then(|pool| integer_path(pool, &["transactions", "h1", "buys"])),
-            sells_h1: first_pool
-                .and_then(|pool| integer_path(pool, &["transactions", "h1", "sells"])),
-        })
+        Ok(snapshot)
     }
 
     /// Resolve many transaction timestamps with at most three public API calls:
@@ -317,6 +317,42 @@ async fn send_json_with_retry(
     Err(last_error.unwrap_or(GeckoError::NoData))
 }
 
+
+fn market_snapshot_from_payload(payload: &Value) -> Result<MarketSnapshot, GeckoError> {
+    let attributes = payload
+        .pointer("/data/attributes")
+        .and_then(Value::as_object)
+        .ok_or(GeckoError::NoData)?;
+
+    let first_pool = payload
+        .get("included")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.iter().find(|row| {
+            row.get("type").and_then(Value::as_str) == Some("pool")
+        }))
+        .and_then(|row| row.get("attributes"));
+
+    Ok(MarketSnapshot {
+        name: string_field(attributes.get("name")),
+        symbol: string_field(attributes.get("symbol")),
+        price_usd: number_field(attributes.get("price_usd")),
+        liquidity_usd: number_field(attributes.get("total_reserve_in_usd"))
+            .or_else(|| first_pool.and_then(|pool| number_path(pool, &["reserve_in_usd"]))),
+        market_cap_usd: number_field(attributes.get("market_cap_usd"))
+            .or_else(|| first_pool.and_then(|pool| number_path(pool, &["market_cap_usd"]))),
+        fdv_usd: number_field(attributes.get("fdv_usd"))
+            .or_else(|| first_pool.and_then(|pool| number_path(pool, &["fdv_usd"]))),
+        volume_h24_usd: attributes
+            .get("volume_usd")
+            .and_then(|value| number_path(value, &["h24"]))
+            .or_else(|| first_pool.and_then(|pool| number_path(pool, &["volume_usd", "h24"]))),
+        buys_h1: first_pool
+            .and_then(|pool| integer_path(pool, &["transactions", "h1", "buys"])),
+        sells_h1: first_pool
+            .and_then(|pool| integer_path(pool, &["transactions", "h1", "sells"])),
+    })
+}
+
 fn market_asset_id(chain: Chain, asset_id: &str) -> &str {
     match chain {
         Chain::Solana if asset_id == "SOL" => SOL_WRAPPED_NATIVE,
@@ -402,6 +438,45 @@ fn value_as_f64(value: &Value) -> Option<f64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+
+    #[test]
+    fn token_payload_with_included_top_pool_builds_complete_market_snapshot() {
+        let payload = json!({
+            "data": {
+                "type": "token",
+                "attributes": {
+                    "name": "Example",
+                    "symbol": "EX",
+                    "price_usd": "0.002",
+                    "total_reserve_in_usd": "50000",
+                    "market_cap_usd": null,
+                    "fdv_usd": "2000000",
+                    "volume_usd": {"h24": "125000"}
+                }
+            },
+            "included": [{
+                "type": "pool",
+                "attributes": {
+                    "reserve_in_usd": "49000",
+                    "transactions": {
+                        "h1": {"buys": 14, "sells": 9}
+                    },
+                    "volume_usd": {"h24": "124000"}
+                }
+            }]
+        });
+
+        let snapshot = market_snapshot_from_payload(&payload).unwrap();
+
+        assert_eq!(snapshot.name.as_deref(), Some("Example"));
+        assert_eq!(snapshot.symbol.as_deref(), Some("EX"));
+        assert_eq!(snapshot.price_usd, Some(0.002));
+        assert_eq!(snapshot.liquidity_usd, Some(50_000.0));
+        assert_eq!(snapshot.fdv_usd, Some(2_000_000.0));
+        assert_eq!(snapshot.buys_h1, Some(14));
+        assert_eq!(snapshot.sells_h1, Some(9));
+    }
 
     #[test]
     fn candle_parser_uses_close_price() {
