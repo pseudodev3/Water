@@ -19,6 +19,7 @@ const CONCURRENT_TX_FETCHES: usize = 8;
 const LAMPORTS_PER_SOL: i64 = 1_000_000_000;
 const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
 const GET_TOKEN_LARGEST_ACCOUNTS_LIMIT: usize = 20;
+const DEFAULT_FALLBACK_SOLANA_RPC: &str = "https://solana-rpc.publicnode.com";
 
 #[derive(Clone)]
 pub struct SolanaHistoryClient {
@@ -38,10 +39,13 @@ pub struct SolanaWalletHolderSet {
 
 impl SolanaHistoryClient {
     pub fn new(http: Client, rpc_url: String) -> Self {
+        let fallback_rpc_url = (rpc_url.trim_end_matches('/') != DEFAULT_FALLBACK_SOLANA_RPC)
+            .then(|| DEFAULT_FALLBACK_SOLANA_RPC.to_string());
+
         Self {
             http,
             rpc_url,
-            fallback_rpc_url: None,
+            fallback_rpc_url,
         }
     }
 
