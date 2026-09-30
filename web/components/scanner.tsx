@@ -136,7 +136,7 @@ export function Scanner() {
           <button
             className="scan-button"
             type="submit"
-            disabled={loading || health?.gmgn_configured === false}
+            disabled={loading || healthError}
           >
             {loading ? (
               <>
@@ -173,7 +173,7 @@ function SystemState({
   healthError: boolean;
 }) {
   const apiOnline = Boolean(health) && !healthError;
-  const gmgnReady = health?.gmgn_configured === true;
+  const marketReady = apiOnline && health?.requires_market_api_key === false;
 
   return (
     <div className="system-state" aria-label="Water system status">
@@ -183,10 +183,10 @@ function SystemState({
         pending={!health && !healthError}
       />
       <StatusRow
-        label="GMGN"
-        ok={gmgnReady}
+        label="Market data"
+        ok={marketReady}
         pending={!health && !healthError}
-        detail={health && !gmgnReady ? "key needed" : undefined}
+        detail={healthError ? "offline" : "public"}
       />
       <div className="status-row">
         <span className="status-icon neutral">
@@ -309,8 +309,8 @@ function ResultView({ result }: { result: ScanResult }) {
               ))
             ) : (
               <p className="muted-copy">
-                Holder/trader fields were not complete enough to derive this
-                index.
+                Public holder and market-structure evidence was not complete
+                enough to derive this index.
               </p>
             )}
           </div>
