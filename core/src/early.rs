@@ -15,6 +15,10 @@ pub struct HolderBehaviorMetrics {
     pub distributed_fraction_of_gross_acquired: Decimal,
     pub basis_coverage: Decimal,
     pub average_entry_usd: Option<Decimal>,
+    pub lifetime_average_buy_usd: Option<Decimal>,
+    pub net_execution_capital_usd: Option<Decimal>,
+    pub break_even_price_usd: Option<Decimal>,
+    pub capital_recovered_ratio: Option<Decimal>,
     pub realized_pnl_usd: Option<Decimal>,
 }
 
@@ -47,6 +51,10 @@ impl HolderBehaviorMetrics {
             ),
             basis_coverage: position.basis_coverage,
             average_entry_usd: position.average_entry_usd,
+            lifetime_average_buy_usd: position.lifetime_average_buy_usd,
+            net_execution_capital_usd: position.net_execution_capital_usd,
+            break_even_price_usd: position.break_even_price_usd,
+            capital_recovered_ratio: position.capital_recovered_ratio,
             realized_pnl_usd: position.realized_pnl_usd,
         }
     }
