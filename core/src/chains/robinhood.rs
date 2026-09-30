@@ -102,7 +102,7 @@ pub async fn observe(
 
             match concentration {
                 Some(value) => format!(
-                    "Top externally-owned wallet addresses hold about {value:.1}% of total supply. Water excluded {} contract-controlled address{} ({excluded} tokens) while walking the highest balances, so DEX pools, vaults, and other contracts are not counted as top wallets.",
+                    "Top indexed wallet addresses hold about {value:.1}% of total supply. Water excluded {} Blockscout-classified contract address{} ({excluded} tokens), so indexed DEX pools, vaults, and protocol contracts are not counted as top wallets.",
                     set.excluded_contracts,
                     if set.excluded_contracts == 1 { "" } else { "es" },
                 ),
