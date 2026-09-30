@@ -56,13 +56,17 @@ pub async fn analyze_holder_cohort(
 
     let (candidates, candidate_source, mut notes) = match request.chain {
         Chain::Solana => {
-            let client = SolanaHistoryClient::new(http.clone(), config.solana_rpc_url.clone());
+            let client = SolanaHistoryClient::with_fallback(
+                http.clone(),
+                config.solana_rpc_url.clone(),
+                config.solana_fallback_rpc_url.clone(),
+            );
             let candidates = client.top_current_holders(&token, limit).await?;
             (
                 candidates,
-                "Solana getTokenLargestAccounts, grouped by parsed token-account owner".to_string(),
+                "Solana largest token accounts grouped by controlling authority; off-curve/program-controlled authorities excluded".to_string(),
                 vec![
-                    "Solana holder candidates can include PDA/protocol-owned accounts; Water does not silently label them as people."
+                    "The Solana candidate set is wallet-only within the largest-account window; protocol/PDA-controlled balances are excluded from candidate ranking."
                         .to_string(),
                 ],
             )
@@ -73,7 +77,7 @@ pub async fn analyze_holder_cohort(
             let candidates = client.top_current_holders(&token, limit).await?;
             (
                 candidates,
-                "Robinhood Blockscout current token holders, contract addresses excluded".to_string(),
+                "Robinhood ERC-20 Transfer replay; contract-controlled balances excluded with eth_getCode".to_string(),
                 Vec::new(),
             )
         }
@@ -123,7 +127,7 @@ pub async fn analyze_holder_cohort(
     Ok(HolderCohortResponse {
         chain: request.chain,
         token,
-        definition: "Current top holders, ordered by each wallet's earliest acquisition Water can observe. This is not the first-N historical buyers and does not include wallets that already exited completely.".to_string(),
+        definition: "Current top wallet-controlled holders, with program/PDA/contract-controlled balances excluded, ordered by each wallet's earliest acquisition Water can observe. This is not the first-N historical buyers and does not include wallets that already exited completely.".to_string(),
         candidate_source,
         members_requested,
         members_analyzed: members.len(),

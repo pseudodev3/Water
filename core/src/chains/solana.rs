@@ -1,25 +1,41 @@
-use crate::model::{ChainEvidence, HolderEvidence};
+use crate::{
+    history::solana::SolanaHistoryClient,
+    model::{ChainEvidence, HolderEvidence},
+};
+use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 
 pub async fn observe(
     http: &reqwest::Client,
     rpc_url: &str,
+    fallback_rpc_url: &str,
     address: &str,
 ) -> (ChainEvidence, HolderEvidence) {
-    // Public Solana RPCs throttle bursts aggressively. Keep these calls sequential
-    // and let rpc() back off on 429s instead of firing three requests at once.
-    let account = rpc(
+    let account = rpc_with_fallback(
         http,
         rpc_url,
+        fallback_rpc_url,
         "getAccountInfo",
         json!([address, {"encoding": "base64"}]),
     )
     .await;
 
-    let supply = rpc(http, rpc_url, "getTokenSupply", json!([address])).await;
-    sleep(Duration::from_millis(120)).await;
-    let largest = rpc(http, rpc_url, "getTokenLargestAccounts", json!([address])).await;
+    let supply = rpc_with_fallback(
+        http,
+        rpc_url,
+        fallback_rpc_url,
+        "getTokenSupply",
+        json!([address]),
+    )
+    .await;
+
+    let holder_client = SolanaHistoryClient::with_fallback(
+        http.clone(),
+        rpc_url.to_string(),
+        fallback_rpc_url.to_string(),
+    );
+    let holder_set = holder_client.top_wallet_holders(address, 10).await;
 
     let verified = account
         .as_ref()
@@ -40,27 +56,16 @@ pub async fn observe(
 
     let total_supply = supply.as_ref().ok().and_then(normalized_supply);
 
-    let concentration = match (total_supply, largest.as_ref()) {
-        (Some(total), Ok(largest)) if total > 0.0 => {
-            let top_ten = largest
-                .get("value")
-                .and_then(Value::as_array)
-                .map(|rows| {
-                    rows.iter()
-                        .take(10)
-                        .filter_map(|row| {
-                            row.get("uiAmountString")
-                                .and_then(Value::as_str)
-                                .and_then(|value| value.parse::<f64>().ok())
-                                .or_else(|| {
-                                    row.get("uiAmount")
-                                        .and_then(Value::as_f64)
-                                })
-                        })
-                        .sum::<f64>()
-                });
-
-            top_ten.map(|top_ten| (top_ten / total * 100.0).clamp(0.0, 100.0))
+    let concentration = match (total_supply, holder_set.as_ref()) {
+        (Some(total), Ok(set)) if total > 0.0 && set.complete_for_requested => {
+            let top = set
+                .holders
+                .iter()
+                .fold(Decimal::ZERO, |sum, holder| sum + holder.current_quantity);
+            top.to_string()
+                .parse::<f64>()
+                .ok()
+                .map(|top| (top / total * 100.0).clamp(0.0, 100.0))
         }
         _ => None,
     };
@@ -78,14 +83,36 @@ pub async fn observe(
         }),
     }
 
-    match concentration {
-        Some(value) => details.push(format!(
-            "Top ten token accounts hold about {value:.1}% of current supply."
+    match &holder_set {
+        Ok(set) if set.complete_for_requested => {
+            let excluded = decimal_to_f64(set.excluded_program_quantity)
+                .map(format_compact)
+                .unwrap_or_else(|| "an unrepresentable amount".to_string());
+
+            match concentration {
+                Some(value) => details.push(format!(
+                    "Top wallet authorities hold about {value:.1}% of total supply. Water grouped token accounts by authority and excluded {} program/PDA-controlled authorit{} ({excluded} tokens) from the {} largest token accounts.",
+                    set.excluded_program_authorities,
+                    if set.excluded_program_authorities == 1 { "y" } else { "ies" },
+                    set.scanned_token_accounts
+                )),
+                None => details.push(format!(
+                    "Wallet-authority filtering completed, but concentration could not be normalized. {} program/PDA-controlled authorities were excluded.",
+                    set.excluded_program_authorities
+                )),
+            }
+        }
+        Ok(set) => details.push(format!(
+            "Water excluded {} program/PDA-controlled authorit{} from the {} largest token accounts, but only {} wallet authorit{} remained. Standard getTokenLargestAccounts only exposes 20 token accounts, so a true top-ten wallet ranking cannot be proven without an indexer.",
+            set.excluded_program_authorities,
+            if set.excluded_program_authorities == 1 { "y" } else { "ies" },
+            set.scanned_token_accounts,
+            set.holders.len(),
+            if set.holders.len() == 1 { "y" } else { "ies" },
         )),
-        None => details.push(match &largest {
-            Err(error) => format!("getTokenLargestAccounts failed: {error}"),
-            Ok(_) => "Largest-account data was not sufficient to calculate concentration.".to_string(),
-        }),
+        Err(error) => details.push(format!(
+            "Wallet-holder reconstruction failed: {error}"
+        )),
     }
 
     (
@@ -93,7 +120,7 @@ pub async fn observe(
         HolderEvidence {
             top_ten_percentage: concentration,
             total_supply,
-            source: "Solana getTokenSupply + getTokenLargestAccounts".to_string(),
+            source: "Solana wallet-authority holder reconstruction".to_string(),
             detail: details.join(" "),
         },
     )
@@ -116,6 +143,10 @@ fn normalized_supply(value: &Value) -> Option<f64> {
         })
 }
 
+fn decimal_to_f64(value: Decimal) -> Option<f64> {
+    value.to_string().parse::<f64>().ok()
+}
+
 fn format_compact(value: f64) -> String {
     if value >= 1_000_000_000.0 {
         format!("{:.2}B", value / 1_000_000_000.0)
@@ -125,6 +156,28 @@ fn format_compact(value: f64) -> String {
         format!("{:.2}K", value / 1_000.0)
     } else {
         format!("{value:.4}")
+    }
+}
+
+async fn rpc_with_fallback(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    fallback_rpc_url: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match rpc(http, rpc_url, method, params.clone()).await {
+        Ok(value) => Ok(value),
+        Err(primary_error) if fallback_rpc_url != rpc_url => {
+            rpc(http, fallback_rpc_url, method, params)
+                .await
+                .map_err(|fallback_error| {
+                    format!(
+                        "primary RPC failed ({primary_error}); fallback RPC failed ({fallback_error})"
+                    )
+                })
+        }
+        Err(error) => Err(error),
     }
 }
 

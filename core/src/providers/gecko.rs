@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use thiserror::Error;
+use tokio::time::{sleep, Duration};
 
 const SOL_WRAPPED_NATIVE: &str = "So11111111111111111111111111111111111111112";
 const ROBINHOOD_WRAPPED_NATIVE: &str = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
@@ -241,51 +242,79 @@ impl GeckoClient {
             self.host
         );
 
-        let response = self
-            .http
-            .get(url)
-            .header("Accept", "application/json;version=20230203")
-            .header("User-Agent", "water/0.1")
-            .query(&[
-                ("aggregate", "1".to_string()),
-                ("before_timestamp", before_timestamp.to_string()),
-                ("limit", "1000".to_string()),
-                ("currency", "usd".to_string()),
-                ("token", token.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|error| GeckoError::Transport(error.to_string()))?;
-
-        parse_response(response).await
+        send_json_with_retry(
+            self.http
+                .get(url)
+                .header("Accept", "application/json;version=20230203")
+                .header("User-Agent", "water/0.1")
+                .query(&[
+                    ("aggregate", "1".to_string()),
+                    ("before_timestamp", before_timestamp.to_string()),
+                    ("limit", "1000".to_string()),
+                    ("currency", "usd".to_string()),
+                    ("token", token.to_string()),
+                ]),
+        )
+        .await
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, GeckoError> {
-        let response = self
-            .http
-            .get(url)
-            .header("Accept", "application/json;version=20230203")
-            .header("User-Agent", "water/0.1")
-            .send()
-            .await
-            .map_err(|error| GeckoError::Transport(error.to_string()))?;
-
-        parse_response(response).await
+        send_json_with_retry(
+            self.http
+                .get(url)
+                .header("Accept", "application/json;version=20230203")
+                .header("User-Agent", "water/0.1"),
+        )
+        .await
     }
 }
 
-async fn parse_response(response: reqwest::Response) -> Result<Value, GeckoError> {
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| GeckoError::Transport(error.to_string()))?;
+async fn send_json_with_retry(
+    request: reqwest::RequestBuilder,
+) -> Result<Value, GeckoError> {
+    let mut last_error = None;
 
-    if !status.is_success() {
-        return Err(GeckoError::Http(status.as_u16(), body));
+    for attempt in 0..4u64 {
+        let Some(request) = request.try_clone() else {
+            return Err(GeckoError::InvalidResponse);
+        };
+
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(1 + attempt);
+
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|error| GeckoError::Transport(error.to_string()))?;
+
+                if status.as_u16() == 429 || status.is_server_error() {
+                    last_error = Some(GeckoError::Http(status.as_u16(), body));
+                    sleep(Duration::from_secs(retry_after.min(5))).await;
+                    continue;
+                }
+
+                if !status.is_success() {
+                    return Err(GeckoError::Http(status.as_u16(), body));
+                }
+
+                return serde_json::from_str(&body)
+                    .map_err(|_| GeckoError::InvalidResponse);
+            }
+            Err(error) => {
+                last_error = Some(GeckoError::Transport(error.to_string()));
+                sleep(Duration::from_millis(350 * (attempt + 1))).await;
+            }
+        }
     }
 
-    serde_json::from_str(&body).map_err(|_| GeckoError::InvalidResponse)
+    Err(last_error.unwrap_or(GeckoError::NoData))
 }
 
 fn market_asset_id(chain: Chain, asset_id: &str) -> &str {

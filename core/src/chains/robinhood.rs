@@ -14,11 +14,11 @@ pub async fn observe(
     let chain_id_request = rpc(http, rpc_url, "eth_chainId", json!([]));
     let code_request = rpc(http, rpc_url, "eth_getCode", json!([address, "latest"]));
     let holder_client = RobinhoodHistoryClient::new(http.clone(), rpc_url.to_string());
-    let concentration_request = holder_client.top_holder_concentration(address, 10);
+    let holder_request = holder_client.top_wallet_holders(address, 10);
     let supply_request = erc20_total_supply(http, rpc_url, address);
 
-    let (chain_id_result, code_result, concentration_result, supply_result) =
-        tokio::join!(chain_id_request, code_request, concentration_request, supply_request);
+    let (chain_id_result, code_result, holder_result, supply_result) =
+        tokio::join!(chain_id_request, code_request, holder_request, supply_request);
 
     let chain_id = chain_id_result
         .ok()
@@ -48,39 +48,74 @@ pub async fn observe(
         },
     };
 
-    let concentration_detail = match concentration_result {
-        Ok(value) => (
-            Some(value),
-            format!(
-                "Top ten positive holder balances reconstructed from ERC-20 Transfer logs own about {value:.1}% of replayed circulating balances."
-            ),
+    let total_supply = supply_result.as_ref().ok().copied();
+
+    let concentration = match (total_supply, holder_result.as_ref()) {
+        (Some(total), Ok(set)) if total > 0.0 && set.complete_for_requested => {
+            let top = set
+                .holders
+                .iter()
+                .fold(rust_decimal::Decimal::ZERO, |sum, holder| {
+                    sum + holder.current_quantity
+                });
+
+            top.to_string()
+                .parse::<f64>()
+                .ok()
+                .map(|top| (top / total * 100.0).clamp(0.0, 100.0))
+        }
+        _ => None,
+    };
+
+    let holder_detail = match &holder_result {
+        Ok(set) if set.complete_for_requested => {
+            let excluded = set
+                .excluded_contract_quantity
+                .to_string()
+                .parse::<f64>()
+                .ok()
+                .map(format_compact)
+                .unwrap_or_else(|| "an unrepresentable amount".to_string());
+
+            match concentration {
+                Some(value) => format!(
+                    "Top externally-owned wallet addresses hold about {value:.1}% of total supply. Water excluded {} contract-controlled address{} ({excluded} tokens) while walking the highest balances, so DEX pools, vaults, and other contracts are not counted as top wallets.",
+                    set.excluded_contracts,
+                    if set.excluded_contracts == 1 { "" } else { "es" },
+                ),
+                None => format!(
+                    "Wallet/contract filtering completed, but concentration could not be normalized. {} contract-controlled addresses were excluded.",
+                    set.excluded_contracts
+                ),
+            }
+        }
+        Ok(set) => format!(
+            "Water found {} wallet holder{} after excluding {} contract-controlled address{}, but the classification safety cap was reached before a full top-ten wallet ranking could be proven.",
+            set.holders.len(),
+            if set.holders.len() == 1 { "" } else { "s" },
+            set.excluded_contracts,
+            if set.excluded_contracts == 1 { "" } else { "es" },
         ),
-        Err(error) => (
-            None,
-            format!(
-                "Robinhood holder concentration could not be reconstructed from public RPC logs: {error}"
-            ),
+        Err(error) => format!(
+            "Robinhood wallet-holder reconstruction failed: {error}"
         ),
     };
 
-    let (total_supply, supply_detail) = match supply_result {
-        Ok(value) => (
-            Some(value),
-            format!("Current ERC-20 total supply is {}.", format_compact(value)),
+    let supply_detail = match supply_result {
+        Ok(value) => format!(
+            "Current ERC-20 total supply is {}.",
+            format_compact(value)
         ),
-        Err(error) => (
-            None,
-            format!("ERC-20 totalSupply could not be read: {error}"),
-        ),
+        Err(error) => format!("ERC-20 totalSupply could not be read: {error}"),
     };
 
     (
         chain_evidence,
         HolderEvidence {
-            top_ten_percentage: concentration_detail.0,
+            top_ten_percentage: concentration,
             total_supply,
-            source: "Robinhood JSON-RPC ERC-20 evidence".to_string(),
-            detail: format!("{} {}", supply_detail, concentration_detail.1),
+            source: "Robinhood wallet-holder reconstruction".to_string(),
+            detail: format!("{} {}", supply_detail, holder_detail),
         },
     )
 }

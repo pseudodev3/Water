@@ -1,4 +1,6 @@
 use super::{HolderCandidate, HistoryCoverage, RawAssetFlow, RawHistory, RawWalletTransaction};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use curve25519_dalek::edwards::CompressedEdwardsY;
 use futures::{stream, StreamExt};
 use reqwest::Client;
 use rust_decimal::Decimal;
@@ -16,24 +18,186 @@ const MAX_DISCOVERY_ROUNDS: usize = 4;
 const MAX_DISCOVERED_TOKEN_ACCOUNTS: usize = 32;
 const CONCURRENT_TX_FETCHES: usize = 8;
 const LAMPORTS_PER_SOL: i64 = 1_000_000_000;
+const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+const GET_TOKEN_LARGEST_ACCOUNTS_LIMIT: usize = 20;
+const DEFAULT_FALLBACK_SOLANA_RPC: &str = "https://solana-rpc.publicnode.com";
 
 #[derive(Clone)]
 pub struct SolanaHistoryClient {
     http: Client,
     rpc_url: String,
+    fallback_rpc_url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SolanaWalletHolderSet {
+    pub holders: Vec<HolderCandidate>,
+    pub scanned_token_accounts: usize,
+    pub excluded_program_authorities: usize,
+    pub excluded_program_quantity: Decimal,
+    pub complete_for_requested: bool,
+    pub full_mint_enumeration: bool,
+    pub fallback_reason: Option<String>,
 }
 
 impl SolanaHistoryClient {
     pub fn new(http: Client, rpc_url: String) -> Self {
-        Self { http, rpc_url }
+        let fallback_rpc_url = (rpc_url.trim_end_matches('/') != DEFAULT_FALLBACK_SOLANA_RPC)
+            .then(|| DEFAULT_FALLBACK_SOLANA_RPC.to_string());
+
+        Self {
+            http,
+            rpc_url,
+            fallback_rpc_url,
+        }
     }
 
+    pub fn with_fallback(
+        http: Client,
+        rpc_url: String,
+        fallback_rpc_url: String,
+    ) -> Self {
+        Self {
+            http,
+            rpc_url,
+            fallback_rpc_url: Some(fallback_rpc_url),
+        }
+    }
 
     pub async fn top_current_holders(
         &self,
         target_mint: &str,
         limit: usize,
     ) -> Result<Vec<HolderCandidate>, String> {
+        Ok(self
+            .top_wallet_holders(target_mint, limit)
+            .await?
+            .holders)
+    }
+
+    pub async fn top_wallet_holders(
+        &self,
+        target_mint: &str,
+        limit: usize,
+    ) -> Result<SolanaWalletHolderSet, String> {
+        match self.all_mint_authority_balances(target_mint).await {
+            Ok((authorities, token_accounts)) => {
+                self.classify_wallet_authorities(
+                    authorities,
+                    token_accounts,
+                    limit,
+                    true,
+                    None,
+                )
+                .await
+            }
+            Err(full_error) => {
+                let (authorities, token_accounts) =
+                    self.largest_token_authority_balances(target_mint).await?;
+                self.classify_wallet_authorities(
+                    authorities,
+                    token_accounts,
+                    limit,
+                    false,
+                    Some(full_error),
+                )
+                .await
+            }
+        }
+    }
+
+    async fn all_mint_authority_balances(
+        &self,
+        target_mint: &str,
+    ) -> Result<(Vec<(String, Decimal)>, usize), String> {
+        let mint_info = self
+            .rpc(
+                "getAccountInfo",
+                json!([target_mint, {"encoding": "base64", "commitment": "confirmed"}]),
+            )
+            .await?;
+        let token_program = mint_info
+            .pointer("/value/owner")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Mint account did not expose its token-program owner.".to_string())?
+            .to_string();
+
+        let supply = self
+            .rpc("getTokenSupply", json!([target_mint, {"commitment": "confirmed"}]))
+            .await?;
+        let decimals = supply
+            .pointer("/value/decimals")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "getTokenSupply did not expose token decimals.".to_string())?
+            as u32;
+
+        let accounts = self
+            .rpc(
+                "getProgramAccounts",
+                json!([
+                    token_program,
+                    {
+                        "encoding": "base64",
+                        "commitment": "confirmed",
+                        "filters": [
+                            {"memcmp": {"offset": 0, "bytes": target_mint}}
+                        ],
+                        "dataSlice": {"offset": 32, "length": 40}
+                    }
+                ]),
+            )
+            .await?;
+
+        let rows = accounts
+            .as_array()
+            .ok_or_else(|| "getProgramAccounts returned an unreadable account list.".to_string())?;
+
+        let mut by_authority: HashMap<String, Decimal> = HashMap::new();
+        let mut parsed_accounts = 0usize;
+
+        for row in rows {
+            let Some(encoded) = row
+                .pointer("/account/data/0")
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+
+            let Ok(data) = BASE64.decode(encoded) else {
+                continue;
+            };
+            if data.len() < 40 {
+                continue;
+            }
+
+            let authority = bs58::encode(&data[..32]).into_string();
+            let Ok(amount_bytes) = <[u8; 8]>::try_from(&data[32..40]) else {
+                continue;
+            };
+            let raw_amount = u64::from_le_bytes(amount_bytes);
+            if raw_amount == 0 {
+                parsed_accounts += 1;
+                continue;
+            }
+
+            let Some(quantity) = scaled_decimal(&raw_amount.to_string(), decimals) else {
+                continue;
+            };
+
+            *by_authority.entry(authority).or_insert(Decimal::ZERO) += quantity;
+            parsed_accounts += 1;
+        }
+
+        let mut authorities: Vec<(String, Decimal)> = by_authority.into_iter().collect();
+        authorities.sort_by(|left, right| right.1.cmp(&left.1));
+
+        Ok((authorities, parsed_accounts))
+    }
+
+    async fn largest_token_authority_balances(
+        &self,
+        target_mint: &str,
+    ) -> Result<(Vec<(String, Decimal)>, usize), String> {
         let largest = self
             .rpc("getTokenLargestAccounts", json!([target_mint]))
             .await?;
@@ -44,6 +208,7 @@ impl SolanaHistoryClient {
             .cloned()
             .unwrap_or_default();
 
+        let scanned_token_accounts = rows.len();
         let account_addresses: Vec<String> = rows
             .iter()
             .filter_map(|row| row.get("address").and_then(Value::as_str))
@@ -51,7 +216,7 @@ impl SolanaHistoryClient {
             .collect();
 
         if account_addresses.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
 
         let infos = self
@@ -70,10 +235,10 @@ impl SolanaHistoryClient {
             .cloned()
             .unwrap_or_default();
 
-        let mut by_owner: HashMap<String, Decimal> = HashMap::new();
+        let mut by_authority: HashMap<String, Decimal> = HashMap::new();
 
         for (row, info) in rows.iter().zip(account_infos.iter()) {
-            let Some(owner) = info
+            let Some(authority) = info
                 .pointer("/data/parsed/info/owner")
                 .and_then(Value::as_str)
             else {
@@ -91,23 +256,117 @@ impl SolanaHistoryClient {
                 });
 
             if let Some(quantity) = quantity {
-                *by_owner.entry(owner.to_string()).or_insert(Decimal::ZERO) += quantity;
+                *by_authority
+                    .entry(authority.to_string())
+                    .or_insert(Decimal::ZERO) += quantity;
             }
         }
 
-        let mut owners: Vec<(String, Decimal)> = by_owner.into_iter().collect();
-        owners.sort_by(|left, right| right.1.cmp(&left.1));
+        let mut authorities: Vec<(String, Decimal)> = by_authority.into_iter().collect();
+        authorities.sort_by(|left, right| right.1.cmp(&left.1));
 
-        Ok(owners
-            .into_iter()
-            .take(limit)
-            .enumerate()
-            .map(|(index, (wallet, current_quantity))| HolderCandidate {
-                wallet,
-                current_quantity,
-                source_rank: index + 1,
-            })
-            .collect())
+        Ok((authorities, scanned_token_accounts))
+    }
+
+    async fn classify_wallet_authorities(
+        &self,
+        authorities: Vec<(String, Decimal)>,
+        scanned_token_accounts: usize,
+        limit: usize,
+        full_mint_enumeration: bool,
+        fallback_reason: Option<String>,
+    ) -> Result<SolanaWalletHolderSet, String> {
+        let authority_count = authorities.len();
+        let mut holders = Vec::new();
+        let mut excluded_program_authorities = 0usize;
+        let mut excluded_program_quantity = Decimal::ZERO;
+
+        let mut cursor = 0usize;
+        while cursor < authorities.len() && holders.len() < limit {
+            let end = (cursor + 32).min(authorities.len());
+            let chunk = &authorities[cursor..end];
+
+            let mut on_curve_addresses = Vec::new();
+            let mut on_curve_positions = Vec::new();
+
+            for (offset, (authority, quantity)) in chunk.iter().enumerate() {
+                if is_on_curve_pubkey(authority) {
+                    on_curve_addresses.push(authority.clone());
+                    on_curve_positions.push(offset);
+                } else {
+                    excluded_program_authorities += 1;
+                    excluded_program_quantity += *quantity;
+                }
+            }
+
+            let authority_infos = if on_curve_addresses.is_empty() {
+                Vec::new()
+            } else {
+                self.rpc(
+                    "getMultipleAccounts",
+                    json!([
+                        on_curve_addresses,
+                        {"encoding": "base64", "commitment": "confirmed"}
+                    ]),
+                )
+                .await?
+                .get("value")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+            };
+
+            let mut info_by_offset: HashMap<usize, Value> = HashMap::new();
+            for (position, info) in on_curve_positions
+                .into_iter()
+                .zip(authority_infos.into_iter())
+            {
+                info_by_offset.insert(position, info);
+            }
+
+            for (offset, (authority, quantity)) in chunk.iter().enumerate() {
+                if !is_on_curve_pubkey(authority) {
+                    continue;
+                }
+
+                let info = info_by_offset.get(&offset).unwrap_or(&Value::Null);
+                if !authority_account_is_wallet_like(info) {
+                    excluded_program_authorities += 1;
+                    excluded_program_quantity += *quantity;
+                    continue;
+                }
+
+                holders.push(HolderCandidate {
+                    wallet: authority.clone(),
+                    current_quantity: *quantity,
+                    source_rank: holders.len() + 1,
+                });
+
+                if holders.len() >= limit {
+                    break;
+                }
+            }
+
+            cursor = end;
+        }
+
+        let exhausted_all_authorities = cursor >= authority_count;
+        let complete_for_requested = if full_mint_enumeration {
+            holders.len() >= limit || exhausted_all_authorities
+        } else {
+            scanned_token_accounts < GET_TOKEN_LARGEST_ACCOUNTS_LIMIT
+                && exhausted_all_authorities
+        };
+
+        Ok(SolanaWalletHolderSet {
+            holders,
+            scanned_token_accounts,
+            excluded_program_authorities,
+            excluded_program_quantity,
+            complete_for_requested,
+            full_mint_enumeration,
+            fallback_reason,
+        })
     }
 
     pub async fn wallet_token_history(
@@ -489,6 +748,34 @@ impl SolanaHistoryClient {
     }
 
     async fn rpc(&self, method: &str, params: Value) -> Result<Value, String> {
+        match self.rpc_on(&self.rpc_url, method, params.clone()).await {
+            Ok(value) => Ok(value),
+            Err(primary_error) => {
+                let Some(fallback) = self
+                    .fallback_rpc_url
+                    .as_ref()
+                    .filter(|url| *url != &self.rpc_url)
+                else {
+                    return Err(primary_error);
+                };
+
+                self.rpc_on(fallback, method, params)
+                    .await
+                    .map_err(|fallback_error| {
+                        format!(
+                            "primary RPC failed ({primary_error}); fallback RPC failed ({fallback_error})"
+                        )
+                    })
+            }
+        }
+    }
+
+    async fn rpc_on(
+        &self,
+        rpc_url: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -498,8 +785,8 @@ impl SolanaHistoryClient {
 
         let mut last_error = None;
 
-        for attempt in 0..3 {
-            match self.http.post(&self.rpc_url).json(&payload).send().await {
+        for attempt in 0..4 {
+            match self.http.post(rpc_url).json(&payload).send().await {
                 Ok(response) => {
                     let status = response.status();
                     let retry_after = response
@@ -522,6 +809,12 @@ impl SolanaHistoryClient {
                         return Err(format!("HTTP {}: {body}", status.as_u16()));
                     }
                     if let Some(error) = body.get("error") {
+                        let code = error.get("code").and_then(Value::as_i64);
+                        if code == Some(429) {
+                            last_error = Some(error.to_string());
+                            sleep(Duration::from_secs((1 + attempt as u64).min(5))).await;
+                            continue;
+                        }
                         return Err(error.to_string());
                     }
 
@@ -560,6 +853,37 @@ struct SignatureScan {
     complete: bool,
 }
 
+
+
+fn is_on_curve_pubkey(address: &str) -> bool {
+    let Ok(bytes) = bs58::decode(address).into_vec() else {
+        return false;
+    };
+    let Ok(bytes) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+        return false;
+    };
+
+    CompressedEdwardsY(bytes).decompress().is_some()
+}
+
+fn authority_account_is_wallet_like(info: &Value) -> bool {
+    if info.is_null() {
+        return true;
+    }
+
+    if info
+        .get("executable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    info.get("owner")
+        .and_then(Value::as_str)
+        .map(|owner| owner == SYSTEM_PROGRAM)
+        .unwrap_or(true)
+}
 
 fn discover_target_token_accounts(
     wallet: &str,

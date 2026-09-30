@@ -76,7 +76,11 @@ pub async fn analyze_wallet_position(
 
     let raw = match request.chain {
         Chain::Solana => {
-            SolanaHistoryClient::new(http, config.solana_rpc_url.clone())
+            SolanaHistoryClient::with_fallback(
+                http,
+                config.solana_rpc_url.clone(),
+                config.solana_fallback_rpc_url.clone(),
+            )
                 .wallet_token_history(&wallet, &token)
                 .await
         }
