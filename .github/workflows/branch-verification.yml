@@ -1,0 +1,100 @@
+name: Branch verification
+
+on:
+  push:
+    branches: [feature/early-holder-map]
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Rust core
+        run: cargo test --workspace
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build web
+        run: npm run build
+
+  live-shapes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify new public data shapes
+        shell: python
+        run: |
+          import json
+          import time
+          import urllib.request
+
+          UA = {"User-Agent": "water-branch-verify/0.1", "Accept": "application/json"}
+          WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+          WSOL = "So11111111111111111111111111111111111111112"
+
+          def req(url, data=None, headers=None, attempts=3):
+              merged = dict(UA)
+              if headers:
+                  merged.update(headers)
+              last = None
+              for attempt in range(attempts):
+                  try:
+                      request = urllib.request.Request(
+                          url,
+                          data=json.dumps(data).encode() if data is not None else None,
+                          headers={**merged, **({"Content-Type":"application/json"} if data is not None else {})},
+                          method="POST" if data is not None else "GET",
+                      )
+                      with urllib.request.urlopen(request, timeout=20) as response:
+                          return json.loads(response.read().decode())
+                  except Exception as exc:
+                      last = exc
+                      time.sleep(1 + attempt)
+              raise RuntimeError(last)
+
+          gecko = f"https://api.geckoterminal.com/api/v2/networks/robinhood/tokens/{WETH}?include=top_pools"
+          body = req(gecko, headers={"Accept":"application/json;version=20230203"})
+          included = body.get("included", [])
+          pool = next((row for row in included if row.get("type") == "pool"), None)
+          assert pool, body
+          h1 = pool.get("attributes", {}).get("transactions", {}).get("h1", {})
+          assert isinstance(h1.get("buys"), int), h1
+          assert isinstance(h1.get("sells"), int), h1
+          # Gecko's current pool schema exposes unique buyers/sellers. If a
+          # specific quiet pool omits them, Water leaves those fields unknown.
+          if "buyers" in h1:
+              assert isinstance(h1["buyers"], int), h1
+          if "sellers" in h1:
+              assert isinstance(h1["sellers"], int), h1
+
+          rh = "https://rpc.mainnet.chain.robinhood.com"
+          chain = req(rh, {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]})
+          assert int(chain["result"], 16) == 4663
+          code = req(rh, {"jsonrpc":"2.0","id":2,"method":"eth_getCode","params":[WETH,"latest"]})
+          assert code.get("result") not in (None, "0x", "0x0")
+
+          sol = "https://api.mainnet-beta.solana.com"
+          try:
+              mint = req(sol, {
+                  "jsonrpc":"2.0","id":3,"method":"getAccountInfo",
+                  "params":[WSOL, {"encoding":"jsonParsed","commitment":"confirmed"}]
+              })
+              assert mint.get("result", {}).get("value") is not None
+          except RuntimeError as exc:
+              if "429" not in str(exc):
+                  raise
+
+          print("Branch provider shapes verified.")
