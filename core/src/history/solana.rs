@@ -30,13 +30,13 @@ impl SolanaHistoryClient {
         wallet: &str,
         target_mint: &str,
     ) -> RawHistory {
-        let current_token_accounts = self
+        let token_accounts = self
             .target_token_accounts(wallet, target_mint)
             .await
             .unwrap_or_default();
 
         let mut observed_addresses = vec![wallet.to_string()];
-        observed_addresses.extend(current_token_accounts.iter().cloned());
+        observed_addresses.extend(token_accounts.addresses.iter().cloned());
 
         let mut signatures = HashSet::new();
         let mut pages_read = 0usize;
@@ -105,6 +105,7 @@ impl SolanaHistoryClient {
                 pages_read,
                 candidate_transactions,
                 reconstructed_transactions,
+                observed_current_quantity: token_accounts.current_quantity,
                 truncated,
                 notes,
             },
@@ -115,7 +116,7 @@ impl SolanaHistoryClient {
         &self,
         wallet: &str,
         target_mint: &str,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<TokenAccountsSnapshot, String> {
         let result = self
             .rpc(
                 "getTokenAccountsByOwner",
@@ -127,16 +128,30 @@ impl SolanaHistoryClient {
             )
             .await?;
 
-        Ok(result
+        let rows = result
             .get("value")
             .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("pubkey").and_then(Value::as_str))
-                    .map(ToOwned::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default())
+            .cloned()
+            .unwrap_or_default();
+
+        let addresses = rows
+            .iter()
+            .filter_map(|row| row.get("pubkey").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect();
+
+        let current_quantity = rows.iter().try_fold(Decimal::ZERO, |total, row| {
+            let token_amount = row.pointer("/account/data/parsed/info/tokenAmount")?;
+            let raw = token_amount.get("amount")?.as_str()?;
+            let decimals = token_amount.get("decimals")?.as_u64()? as u32;
+            let quantity = scaled_decimal(raw, decimals)?;
+            Some(total + quantity)
+        });
+
+        Ok(TokenAccountsSnapshot {
+            addresses,
+            current_quantity,
+        })
     }
 
     async fn signatures_for_address(&self, address: &str) -> SignatureScan {
@@ -326,6 +341,12 @@ impl SolanaHistoryClient {
             .cloned()
             .ok_or_else(|| "RPC response did not contain a result.".to_string())
     }
+}
+
+#[derive(Debug, Default)]
+struct TokenAccountsSnapshot {
+    addresses: Vec<String>,
+    current_quantity: Option<Decimal>,
 }
 
 #[derive(Debug)]
