@@ -1,4 +1,4 @@
-use super::{HistoryCoverage, RawAssetFlow, RawHistory, RawWalletTransaction};
+use super::{HolderCandidate, HistoryCoverage, RawAssetFlow, RawHistory, RawWalletTransaction};
 use chrono::DateTime;
 use futures::{stream, StreamExt};
 use reqwest::Url;
@@ -26,6 +26,78 @@ impl RobinhoodHistoryClient {
             http,
             blockscout_url: blockscout_url.trim_end_matches('/').to_string(),
         }
+    }
+
+
+    pub async fn top_current_holders(
+        &self,
+        target_token: &str,
+        limit: usize,
+    ) -> Result<Vec<HolderCandidate>, String> {
+        let token_url = format!("{}/api/v2/tokens/{target_token}", self.blockscout_url);
+        let holders_url = format!(
+            "{}/api/v2/tokens/{target_token}/holders",
+            self.blockscout_url
+        );
+
+        let (token, holders) = tokio::join!(
+            self.get_json(&token_url),
+            self.get_json(&holders_url)
+        );
+        let token = token?;
+        let holders = holders?;
+
+        let decimals = token
+            .get("decimals")
+            .and_then(Value::as_str)
+            .and_then(|value| value.parse::<u32>().ok())
+            .ok_or_else(|| "Blockscout token metadata did not include decimals.".to_string())?;
+
+        let rows = holders
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut candidates = Vec::new();
+
+        for (index, row) in rows.into_iter().enumerate() {
+            if candidates.len() >= limit {
+                break;
+            }
+
+            let address = row
+                .get("address")
+                .or_else(|| row.get("address_hash"));
+
+            let Some(wallet) = address_hash(address) else {
+                continue;
+            };
+
+            if is_zero_address(wallet)
+                || address
+                    .and_then(|value| value.get("is_contract"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let Some(raw) = row.get("value").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(quantity) = scaled_decimal(raw, decimals) else {
+                continue;
+            };
+
+            candidates.push(HolderCandidate {
+                wallet: wallet.to_string(),
+                current_quantity: quantity,
+                source_rank: index + 1,
+            });
+        }
+
+        Ok(candidates)
     }
 
     pub async fn wallet_token_history(
@@ -503,6 +575,11 @@ fn transaction_fee_quantity(wallet: &str, tx: &Value) -> Option<Decimal> {
 
 fn wei_to_eth(value: &str) -> Option<Decimal> {
     scaled_decimal(value, 18)
+}
+
+fn is_zero_address(address: &str) -> bool {
+    address.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000")
+        || address.eq_ignore_ascii_case("0x000000000000000000000000000000000000dead")
 }
 
 fn query_value(value: &Value) -> Option<String> {
