@@ -66,6 +66,7 @@ Installs:
 - `POST /v1/scan`
 - `POST /v1/early-holders`
 - `POST /v1/origin`
+- `POST /v1/token-info`
 - `POST /v1/wallet-position`
 - `POST /v1/holder-cohort`
 
@@ -138,12 +139,12 @@ The holder candidate source establishes the current wallet and current quantity.
 
 ### Launchpad recognition
 
-Origin evidence can recognize launchpad families only when Water has direct support:
+Origin evidence names a launchpad only when Water has direct support:
 
-- Solana: a bounded mint-history transaction is inspected for known launch-program IDs. Shared programs are labeled as families rather than falsely naming a specific frontend.
+- Solana: Water currently recognizes **Pump.fun** and **StonkFun**. Pump.fun requires an invoked Pump launch program. StonkFun requires one of its platform configs, or the legacy StonkFun launcher together with Raydium CLMM. Generic Raydium LaunchLab activity is **not** labeled StonkFun.
 - Robinhood Chain: the indexed contract creator/factory is matched against Blockscout's own contract labels/tags.
 
-No match is reported as `Not identified`, not guessed from token names or symbols.
+No match is reported as `Not identified`, not guessed from token names or symbols. Pump.fun and StonkFun use local vendored marks in the web UI so launchpad display does not depend on image hotlinks.
 
 ### Token links
 
