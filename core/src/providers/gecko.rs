@@ -350,6 +350,14 @@ fn market_snapshot_from_payload(payload: &Value) -> Result<MarketSnapshot, Gecko
             .and_then(|pool| integer_path(pool, &["transactions", "h1", "buys"])),
         sells_h1: first_pool
             .and_then(|pool| integer_path(pool, &["transactions", "h1", "sells"])),
+        buyers_h1: first_pool
+            .and_then(|pool| integer_path(pool, &["transactions", "h1", "buyers"])),
+        sellers_h1: first_pool
+            .and_then(|pool| integer_path(pool, &["transactions", "h1", "sellers"])),
+        buyers_h24: first_pool
+            .and_then(|pool| integer_path(pool, &["transactions", "h24", "buyers"])),
+        sellers_h24: first_pool
+            .and_then(|pool| integer_path(pool, &["transactions", "h24", "sellers"])),
     })
 }
 
@@ -460,7 +468,8 @@ mod tests {
                 "attributes": {
                     "reserve_in_usd": "49000",
                     "transactions": {
-                        "h1": {"buys": 14, "sells": 9}
+                        "h1": {"buys": 14, "sells": 9, "buyers": 10, "sellers": 7},
+                        "h24": {"buys": 200, "sells": 180, "buyers": 120, "sellers": 105}
                     },
                     "volume_usd": {"h24": "124000"}
                 }
@@ -476,6 +485,10 @@ mod tests {
         assert_eq!(snapshot.fdv_usd, Some(2_000_000.0));
         assert_eq!(snapshot.buys_h1, Some(14));
         assert_eq!(snapshot.sells_h1, Some(9));
+        assert_eq!(snapshot.buyers_h1, Some(10));
+        assert_eq!(snapshot.sellers_h1, Some(7));
+        assert_eq!(snapshot.buyers_h24, Some(120));
+        assert_eq!(snapshot.sellers_h24, Some(105));
     }
 
     #[test]
