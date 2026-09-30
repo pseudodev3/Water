@@ -85,7 +85,7 @@ pub struct PositionSummary {
     pub realized_acquisition_fees_usd: Decimal,
     pub realized_disposal_fees_usd: Decimal,
     pub realized_pnl_usd: Option<Decimal>,
-    pub realized_pnl_usd_known_portion: Decimal,
+    pub realized_pnl_usd_known_portion: Option<Decimal>,
     pub realized_basis_coverage: Decimal,
     pub realized_proceeds_coverage: Decimal,
 
@@ -355,11 +355,11 @@ impl WalletLedger {
         let mut open_acquisition_fees_usd = Decimal::ZERO;
 
         for lot in &self.lots {
+            open_acquisition_fees_usd += lot.acquisition_fee_usd;
             match lot.cost_usd {
                 Some(cost) => {
                     known_basis_quantity += lot.quantity;
                     open_cost_usd_known += cost;
-                    open_acquisition_fees_usd += lot.acquisition_fee_usd;
                 }
                 None => {
                     unknown_basis_quantity += lot.quantity;
@@ -428,7 +428,7 @@ impl WalletLedger {
             realized_acquisition_fees_usd: self.realized_acquisition_fees_usd,
             realized_disposal_fees_usd: self.realized_disposal_fees_usd,
             realized_pnl_usd,
-            realized_pnl_usd_known_portion: self.realized_pnl_usd_known_portion,
+            realized_pnl_usd_known_portion: Some(self.realized_pnl_usd_known_portion),
             realized_basis_coverage,
             realized_proceeds_coverage,
 
