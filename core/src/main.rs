@@ -246,15 +246,22 @@ async fn origin(
     State(state): State<Arc<AppState>>,
     Json(request): Json<origin::OriginRequest>,
 ) -> Result<Json<origin::OriginResponse>, (StatusCode, Json<Value>)> {
-    origin::inspect_origin(state.http.clone(), &state.config, request)
-        .await
-        .map(Json)
-        .map_err(|message| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": message })),
-            )
-        })
+    match timeout(
+        Duration::from_secs(10),
+        origin::inspect_origin(state.http.clone(), &state.config, request),
+    )
+    .await
+    {
+        Ok(Ok(response)) => Ok(Json(response)),
+        Ok(Err(message)) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": message })),
+        )),
+        Err(_) => Err((
+            StatusCode::REQUEST_TIMEOUT,
+            Json(json!({ "error": "Origin evidence exceeded Water's verification budget." })),
+        )),
+    }
 }
 
 async fn shutdown_signal() {
