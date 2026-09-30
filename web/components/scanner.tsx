@@ -167,7 +167,7 @@ export function Scanner() {
         ) : null}
       </section>
 
-      {result ? <ResultView result={result} /> : <EmptyState />}
+      {loading ? null : result ? <ResultView result={result} /> : <EmptyState />}
     </>
   );
 }
