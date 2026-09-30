@@ -13,7 +13,7 @@ mod reconstruct;
 
 use axum::{
     extract::State,
-    http::{header::CONTENT_TYPE, HeaderValue, Method, StatusCode},
+    http::{header::CONTENT_TYPE, Method, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -22,7 +22,7 @@ use model::{ScanRequest, SourceStatus};
 use providers::gecko::GeckoClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
 use tracing::info;
 
 #[derive(Clone)]
@@ -54,13 +54,8 @@ async fn main() {
         gecko,
     });
 
-    let origin = config
-        .allowed_origin
-        .parse::<HeaderValue>()
-        .expect("WATER_ALLOWED_ORIGIN must be a valid origin");
-
     let cors = CorsLayer::new()
-        .allow_origin(origin)
+        .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([CONTENT_TYPE]);
 
