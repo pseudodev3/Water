@@ -54,44 +54,8 @@ pub async fn analyze_holder_cohort(
         .clamp(1, MAX_COHORT_SIZE);
     let token = request.token.trim().to_string();
 
-    let (candidates, candidate_source, mut notes) = match request.chain {
-        Chain::Solana => {
-            let client = SolanaHistoryClient::with_fallback(
-                http.clone(),
-                config.solana_rpc_url.clone(),
-                config.solana_fallback_rpc_url.clone(),
-            );
-            let candidates = client.top_current_holders(&token, limit).await?;
-            (
-                candidates,
-                "Solana largest token accounts grouped by controlling authority; off-curve/program-controlled authorities excluded".to_string(),
-                vec![
-                    "The Solana candidate set is wallet-only within the largest-account window; protocol/PDA-controlled balances are excluded from candidate ranking."
-                        .to_string(),
-                ],
-            )
-        }
-        Chain::Robinhood => {
-            let client = match config.blockscout_api_key.as_ref() {
-                Some(key) => RobinhoodHistoryClient::with_holder_index(
-                    http.clone(),
-                    config.robinhood_rpc_url.clone(),
-                    config.blockscout_api_url.clone(),
-                    key.clone(),
-                ),
-                None => RobinhoodHistoryClient::new(
-                    http.clone(),
-                    config.robinhood_rpc_url.clone(),
-                ),
-            };
-            let candidates = client.top_current_holders(&token, limit).await?;
-            (
-                candidates,
-                "Robinhood indexed ERC-20 holders; contract-controlled balances excluded with eth_getCode".to_string(),
-                Vec::new(),
-            )
-        }
-    };
+    let (candidates, candidate_source, mut notes) =
+        holder_candidates(http.clone(), config, request.chain, &token, limit).await?;
 
     let members_requested = candidates.len();
     let mut members = Vec::new();
@@ -145,6 +109,55 @@ pub async fn analyze_holder_cohort(
         cohort,
         notes,
     })
+}
+
+pub async fn holder_candidates(
+    http: Client,
+    config: &Config,
+    chain: Chain,
+    token: &str,
+    limit: usize,
+) -> Result<(Vec<HolderCandidate>, String, Vec<String>), String> {
+    validate_token(chain, token)?;
+
+    match chain {
+        Chain::Solana => {
+            let client = SolanaHistoryClient::with_fallback(
+                http,
+                config.solana_rpc_url.clone(),
+                config.solana_fallback_rpc_url.clone(),
+            );
+            let candidates = client.top_current_holders(token, limit).await?;
+            Ok((
+                candidates,
+                "Solana token accounts grouped by controlling authority; off-curve/program-controlled authorities excluded".to_string(),
+                vec![
+                    "The candidate set is wallet-only within the holder reconstruction Water could prove; protocol/PDA-controlled balances are excluded."
+                        .to_string(),
+                ],
+            ))
+        }
+        Chain::Robinhood => {
+            let client = match config.blockscout_api_key.as_ref() {
+                Some(key) => RobinhoodHistoryClient::with_holder_index(
+                    http,
+                    config.robinhood_rpc_url.clone(),
+                    config.blockscout_api_url.clone(),
+                    key.clone(),
+                ),
+                None => RobinhoodHistoryClient::new(
+                    http,
+                    config.robinhood_rpc_url.clone(),
+                ),
+            };
+            let candidates = client.top_current_holders(token, limit).await?;
+            Ok((
+                candidates,
+                "Robinhood indexed ERC-20 holders; contract-controlled balances excluded".to_string(),
+                Vec::new(),
+            ))
+        }
+    }
 }
 
 async fn analyze_candidate(
