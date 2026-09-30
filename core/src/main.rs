@@ -8,6 +8,7 @@ mod history;
 mod engine;
 mod ledger;
 mod model;
+mod origin;
 mod providers;
 mod position;
 mod reconstruct;
@@ -66,6 +67,7 @@ async fn main() {
         .route("/v1/wallet-position", post(wallet_position))
         .route("/v1/holder-cohort", post(holder_cohort))
         .route("/v1/early-holders", post(early_holders))
+        .route("/v1/origin", post(origin))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -228,6 +230,21 @@ async fn early_holders(
             Json(json!({ "error": message })),
         )
     })
+}
+
+async fn origin(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<origin::OriginRequest>,
+) -> Result<Json<origin::OriginResponse>, (StatusCode, Json<Value>)> {
+    origin::inspect_origin(state.http.clone(), &state.config, request)
+        .await
+        .map(Json)
+        .map_err(|message| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": message })),
+            )
+        })
 }
 
 async fn shutdown_signal() {
