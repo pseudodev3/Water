@@ -3,6 +3,7 @@ use futures::{stream, StreamExt};
 use num_bigint::BigUint;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
+use tokio::time::{sleep, Duration};
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -492,35 +493,55 @@ impl RobinhoodHistoryClient {
     }
 
     async fn rpc(&self, method: &str, params: Value) -> Result<Value, String> {
-        let response = self
-            .http
-            .post(&self.rpc_url)
-            .json(&json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": method,
-                "params": params
-            }))
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params
+        });
 
-        let status = response.status();
-        let body = response
-            .json::<Value>()
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut last_error = None;
 
-        if !status.is_success() {
-            return Err(format!("HTTP {}: {body}", status.as_u16()));
+        for attempt in 0..3 {
+            match self.http.post(&self.rpc_url).json(&payload).send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    let retry_after = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(1 + attempt as u64);
+                    let body = response
+                        .json::<Value>()
+                        .await
+                        .map_err(|error| error.to_string())?;
+
+                    if status.as_u16() == 429 {
+                        last_error = Some(format!("HTTP 429: {body}"));
+                        sleep(Duration::from_secs(retry_after.min(5))).await;
+                        continue;
+                    }
+                    if !status.is_success() {
+                        return Err(format!("HTTP {}: {body}", status.as_u16()));
+                    }
+                    if let Some(error) = body.get("error") {
+                        return Err(error.to_string());
+                    }
+
+                    return body
+                        .get("result")
+                        .cloned()
+                        .ok_or_else(|| "RPC response did not contain a result.".to_string());
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    sleep(Duration::from_millis(400 * (attempt + 1) as u64)).await;
+                }
+            }
         }
-        if let Some(error) = body.get("error") {
-            return Err(error.to_string());
-        }
 
-        body.get("result")
-            .cloned()
-            .ok_or_else(|| "RPC response did not contain a result.".to_string())
+        Err(last_error.unwrap_or_else(|| "Robinhood RPC request failed.".to_string()))
     }
 }
 
