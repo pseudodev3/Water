@@ -87,6 +87,7 @@ pub struct PositionSummary {
     pub realized_pnl_usd: Option<Decimal>,
     pub realized_pnl_usd_known_portion: Decimal,
     pub realized_basis_coverage: Decimal,
+    pub realized_proceeds_coverage: Decimal,
 
     pub first_acquired_at: Option<u64>,
     pub last_activity_at: Option<u64>,
@@ -126,6 +127,8 @@ pub struct WalletLedger {
     realized_disposal_fees_usd: Decimal,
     realized_known_basis_quantity: Decimal,
     realized_unknown_basis_quantity: Decimal,
+    realized_known_proceeds_quantity: Decimal,
+    realized_unknown_proceeds_quantity: Decimal,
     realized_pnl_usd_known_portion: Decimal,
 
     first_acquired_at: Option<u64>,
@@ -148,6 +151,30 @@ impl WalletLedger {
         self.push_lot(Lot {
             quantity,
             cost_usd: Some(trade_cost_usd),
+            acquisition_fee_usd: network_fee_usd,
+            acquired_at: timestamp,
+            origin_tx_id: tx_id.into(),
+        });
+
+        self.bought_quantity += quantity;
+        self.record_acquisition(quantity, timestamp);
+        Ok(())
+    }
+
+
+    pub fn buy_unknown_cost(
+        &mut self,
+        quantity: Decimal,
+        network_fee_usd: Decimal,
+        timestamp: u64,
+        tx_id: impl Into<String>,
+    ) -> Result<(), LedgerError> {
+        validate_quantity(quantity)?;
+        validate_value(network_fee_usd)?;
+
+        self.push_lot(Lot {
+            quantity,
+            cost_usd: None,
             acquisition_fee_usd: network_fee_usd,
             acquired_at: timestamp,
             origin_tx_id: tx_id.into(),
@@ -256,7 +283,33 @@ impl WalletLedger {
         self.realized_disposal_fees_usd += network_fee_usd;
         self.realized_known_basis_quantity += disposal.known_basis_quantity;
         self.realized_unknown_basis_quantity += disposal.unknown_basis_quantity;
+        self.realized_known_proceeds_quantity += quantity;
         self.realized_pnl_usd_known_portion += known_pnl;
+        self.last_activity_at = Some(timestamp);
+
+        Ok(disposal)
+    }
+
+
+    pub fn sell_unknown_proceeds(
+        &mut self,
+        quantity: Decimal,
+        network_fee_usd: Decimal,
+        timestamp: u64,
+    ) -> Result<Disposal, LedgerError> {
+        validate_quantity(quantity)?;
+        validate_value(network_fee_usd)?;
+
+        let disposal = self.consume_fifo(quantity)?;
+
+        self.current_quantity -= quantity;
+        self.sold_quantity += quantity;
+        self.realized_cost_usd_known += disposal.known_cost_usd;
+        self.realized_acquisition_fees_usd += disposal.acquisition_fee_usd;
+        self.realized_disposal_fees_usd += network_fee_usd;
+        self.realized_known_basis_quantity += disposal.known_basis_quantity;
+        self.realized_unknown_basis_quantity += disposal.unknown_basis_quantity;
+        self.realized_unknown_proceeds_quantity += quantity;
         self.last_activity_at = Some(timestamp);
 
         Ok(disposal)
@@ -332,7 +385,11 @@ impl WalletLedger {
         let realized_quantity =
             self.realized_known_basis_quantity + self.realized_unknown_basis_quantity;
         let realized_basis_coverage = ratio(self.realized_known_basis_quantity, realized_quantity);
-        let realized_pnl_usd = if self.realized_unknown_basis_quantity == Decimal::ZERO {
+        let realized_proceeds_coverage =
+            ratio(self.realized_known_proceeds_quantity, realized_quantity);
+        let realized_pnl_usd = if self.realized_unknown_basis_quantity == Decimal::ZERO
+            && self.realized_unknown_proceeds_quantity == Decimal::ZERO
+        {
             Some(
                 self.realized_proceeds_usd
                     - self.realized_cost_usd_known
@@ -370,6 +427,7 @@ impl WalletLedger {
             realized_pnl_usd,
             realized_pnl_usd_known_portion: self.realized_pnl_usd_known_portion,
             realized_basis_coverage,
+            realized_proceeds_coverage,
 
             first_acquired_at: self.first_acquired_at,
             last_activity_at: self.last_activity_at,
@@ -604,4 +662,35 @@ mod tests {
             }
         );
     }
+
+
+    #[test]
+    fn unknown_cost_buy_is_a_trade_but_does_not_fake_entry() {
+        let mut ledger = WalletLedger::default();
+        ledger
+            .buy_unknown_cost(d(25), Decimal::ZERO, 10, "priced-later")
+            .unwrap();
+
+        let summary = ledger.summary();
+
+        assert_eq!(summary.bought_quantity, d(25));
+        assert_eq!(summary.basis_coverage, Decimal::ZERO);
+        assert_eq!(summary.average_entry_usd, None);
+    }
+
+    #[test]
+    fn unknown_sale_proceeds_keep_distribution_but_hide_realized_pnl() {
+        let mut ledger = WalletLedger::default();
+        ledger.buy(d(100), d(100), Decimal::ZERO, 10, "buy").unwrap();
+        ledger
+            .sell_unknown_proceeds(d(50), Decimal::ZERO, 20)
+            .unwrap();
+
+        let summary = ledger.summary();
+
+        assert_eq!(summary.sold_quantity, d(50));
+        assert_eq!(summary.realized_proceeds_coverage, Decimal::ZERO);
+        assert_eq!(summary.realized_pnl_usd, None);
+    }
+
 }
