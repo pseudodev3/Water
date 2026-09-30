@@ -17,7 +17,8 @@ core/ Rust + Axum
   +-- GeckoTerminal public API   price / liquidity / volume / pool flow
   +-- Solana JSON-RPC            mint + supply + largest token accounts
   +-- Robinhood JSON-RPC         contract verification
-  +-- Robinhood JSON-RPC         ERC-20 logs / receipts / balances
+  +-- Robinhood JSON-RPC         contracts / ERC-20 execution history
+  +-- Blockscout Pro             indexed RH current holders / contract origin
   +-- engine.rs                  deterministic diagnostics
 ```
 
@@ -33,7 +34,7 @@ The index is a diagnostic, not a prediction or calibrated probability.
 
 ## Run locally
 
-No GMGN key, LLM key, wallet private key, or paid API key is required for V1.
+No GMGN key, LLM key, wallet private key, or paid market-data key is required. Robinhood current-holder/origin intelligence uses a free Blockscout Pro API key.
 
 ```bash
 cp .env.example .env
@@ -63,6 +64,10 @@ Installs:
 
 - `GET /health`
 - `POST /v1/scan`
+- `POST /v1/early-holders`
+- `POST /v1/origin`
+- `POST /v1/wallet-position`
+- `POST /v1/holder-cohort`
 
 Solana:
 
@@ -79,6 +84,47 @@ Robinhood Chain:
 ## Limits
 
 GeckoTerminal's public API is rate-limited and cached, so Water V1 is a research terminal rather than a low-latency execution engine. Paid/indexed providers can be added later behind adapters without changing the evidence model.
+
+
+## Position-intelligence layers
+
+The main scan remains one action. Deeper layers render independently so an expensive wallet-history reconstruction cannot block basic token/market evidence.
+
+### Early-holder map
+
+`POST /v1/early-holders` reconstructs up to three current large wallet holders and exposes only evidence Water can support: earliest observed acquisition, current vs peak inventory, distribution, basis coverage, known average entry and current-price/entry multiple.
+
+The sample is explicitly **current large wallets ordered by earliest observed entry**, not a claim to have discovered the first buyers ever.
+
+### Who buys after me?
+
+The scan response includes buyer-side evidence from the same GeckoTerminal top-pool payload already used for market structure:
+
+- unique buyers and sellers in the last hour when supplied by GeckoTerminal
+- buy transaction share
+- last-hour unique-buyer pace versus the 24-hour hourly average
+- 24-hour volume relative to observed liquidity
+
+No additional score is invented from these values.
+
+### Origin & control
+
+`POST /v1/origin` exposes direct origin/control facts only.
+
+- Solana: standard SPL mint authority, freeze authority and the mint authority's current token share when readable.
+- Robinhood Chain: indexed contract creator/creation transaction from Blockscout plus creator token share and direct RPC classification.
+
+Water does not infer unrelated wallets to be insiders.
+
+### WATER baseline
+
+The web UI can save a token's current structure as a local baseline and compare later scans against it: wallet concentration, buy share, liquidity and market cap. The baseline stays in browser storage; it is not uploaded to Water.
+
+### Memory & calibration
+
+Successful scans are retained locally on the device (bounded to 180 observations). Water shows changes since the previous read and derives local ~1h, ~6h and ~24h outcome samples only when a later scan of the same token falls inside the defined time window.
+
+This is personal calibration evidence, not a forecast and not a server-side backtest dataset.
 
 ## Security
 
@@ -120,7 +166,7 @@ Vanilla RPC still does not provide the same completeness guarantee as a dedicate
 
 ### Robinhood Chain
 
-Water no longer requires Blockscout. Historical ERC-20 activity is discovered from the token contract's `Transfer` logs over Robinhood JSON-RPC. Water automatically splits `eth_getLogs` ranges when a node rejects a wide/high-result query, then reconstructs wallet ERC-20 deltas from transaction receipts and reconciles the ending position with `balanceOf`.
+Wallet cost-basis history itself does not depend on Blockscout. Historical ERC-20 activity is discovered from the token contract's `Transfer` logs over Robinhood JSON-RPC. Water automatically splits `eth_getLogs` ranges when a node rejects a wide/high-result query, then reconstructs wallet ERC-20 deltas from transaction receipts and reconciles the ending position with `balanceOf`.
 
 Standard EVM RPC does not expose internal ETH transfers. When a swap's quote leg is native ETH delivered through an internal call, Water leaves that proceeds/cost leg unknown rather than inventing it. `ROBINHOOD_RPC_URL` stays configurable so an archive/trace-capable provider can be dropped in later without changing the ledger.
 
