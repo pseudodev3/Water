@@ -72,12 +72,22 @@ pub async fn analyze_holder_cohort(
             )
         }
         Chain::Robinhood => {
-            let client =
-                RobinhoodHistoryClient::new(http.clone(), config.robinhood_rpc_url.clone());
+            let client = match config.blockscout_api_key.as_ref() {
+                Some(key) => RobinhoodHistoryClient::with_holder_index(
+                    http.clone(),
+                    config.robinhood_rpc_url.clone(),
+                    config.blockscout_api_url.clone(),
+                    key.clone(),
+                ),
+                None => RobinhoodHistoryClient::new(
+                    http.clone(),
+                    config.robinhood_rpc_url.clone(),
+                ),
+            };
             let candidates = client.top_current_holders(&token, limit).await?;
             (
                 candidates,
-                "Robinhood ERC-20 Transfer replay; contract-controlled balances excluded with eth_getCode".to_string(),
+                "Robinhood indexed ERC-20 holders; contract-controlled balances excluded with eth_getCode".to_string(),
                 Vec::new(),
             )
         }
