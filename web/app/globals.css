@@ -968,6 +968,53 @@ a:focus-visible {
   align-items: center;
 }
 
+.countercase-panel {
+  margin-top: 1px;
+  padding: 28px;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.3fr);
+  gap: 42px;
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.countercase-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line);
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+}
+
+.evidence-case {
+  min-width: 0;
+  padding: 14px;
+  background: var(--surface-1);
+}
+
+.evidence-case > span {
+  display: block;
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.evidence-case p {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.evidence-case p.case-empty {
+  color: var(--faint);
+}
+
 
 .origin-panel {
   margin-top: 1px;
@@ -1261,7 +1308,7 @@ a:focus-visible {
 
 .memory-current > div {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 1px;
   margin-top: 10px;
   background: var(--line);
@@ -1298,6 +1345,50 @@ a:focus-visible {
   align-items: center;
   color: var(--muted);
   font-size: 12px;
+}
+
+.holder-path {
+  margin-top: 15px;
+  padding: 12px 13px;
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+}
+
+.holder-path > span {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.holder-path > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.holder-path > div > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--faint);
+}
+
+.holder-path strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 590;
+  font-variant-numeric: tabular-nums;
+}
+
+.holder-path small {
+  display: block;
+  margin-top: 7px;
+  color: var(--faint);
+  font-size: 9px;
 }
 
 .calibration-strip {
@@ -1472,6 +1563,7 @@ a:focus-visible {
   }
 
   .demand-panel,
+  .countercase-panel,
   .origin-panel,
   .water-panel,
   .memory-panel {
@@ -1546,6 +1638,7 @@ a:focus-visible {
   .evidence-panel,
   .early-panel,
   .demand-panel,
+  .countercase-panel,
   .origin-panel,
   .water-panel,
   .memory-panel {
@@ -1600,7 +1693,11 @@ a:focus-visible {
   }
 
   .memory-current > div {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .countercase-body {
+    grid-template-columns: 1fr;
   }
 
   .demand-facts span {
