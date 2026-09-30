@@ -30,6 +30,14 @@ export type ScanResult = {
     }>;
   };
   opponent_notes: string[];
+  demand: {
+    buys_h1: number | null;
+    sells_h1: number | null;
+    buy_share_h1: number | null;
+    transactions_h1: number | null;
+    volume_h24_usd: number | null;
+    volume_to_liquidity: number | null;
+  };
   chain_evidence: {
     source: string;
     verified: boolean;
