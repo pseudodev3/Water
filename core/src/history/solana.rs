@@ -120,7 +120,7 @@ impl SolanaHistoryClient {
         let mut observed_addresses = vec![wallet.to_string()];
         observed_addresses.extend(token_accounts.addresses.iter().cloned());
 
-        let mut signatures = HashSet::new();
+        let mut signatures: HashMap<String, u64> = HashMap::new();
         let mut pages_read = 0usize;
         let mut signature_scan_complete = true;
         let mut notes = vec![
@@ -133,19 +133,27 @@ impl SolanaHistoryClient {
             pages_read += scan.pages_read;
             signature_scan_complete &= scan.complete;
 
-            for signature in scan.signatures {
-                signatures.insert(signature);
+            for record in scan.signatures {
+                signatures
+                    .entry(record.signature)
+                    .and_modify(|timestamp| *timestamp = (*timestamp).min(record.block_time))
+                    .or_insert(record.block_time);
             }
         }
 
         let candidate_transactions = signatures.len();
-        let mut signatures: Vec<String> = signatures.into_iter().collect();
+        let mut signatures: Vec<(String, u64)> = signatures.into_iter().collect();
+        signatures.sort_by_key(|(_, block_time)| *block_time);
         let truncated_by_tx_cap = signatures.len() > MAX_CANDIDATE_TRANSACTIONS;
         signatures.truncate(MAX_CANDIDATE_TRANSACTIONS);
+        let signatures: Vec<String> = signatures
+            .into_iter()
+            .map(|(signature, _)| signature)
+            .collect();
 
         if truncated_by_tx_cap {
             notes.push(format!(
-                "More than {MAX_CANDIDATE_TRANSACTIONS} candidate transactions were discovered; this request capped the backfill."
+                "More than {MAX_CANDIDATE_TRANSACTIONS} candidate transactions were discovered; Water retained the earliest observed candidates and marks the reconstruction truncated."
             ));
         }
 
@@ -281,7 +289,14 @@ impl SolanaHistoryClient {
                 }
 
                 if let Some(signature) = row.get("signature").and_then(Value::as_str) {
-                    signatures.push(signature.to_string());
+                    let block_time = row
+                        .get("blockTime")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(u64::MAX);
+                    signatures.push(SignatureRecord {
+                        signature: signature.to_string(),
+                        block_time,
+                    });
                 }
             }
 
@@ -432,8 +447,14 @@ struct TokenAccountsSnapshot {
 }
 
 #[derive(Debug)]
+struct SignatureRecord {
+    signature: String,
+    block_time: u64,
+}
+
+#[derive(Debug)]
 struct SignatureScan {
-    signatures: Vec<String>,
+    signatures: Vec<SignatureRecord>,
     pages_read: usize,
     complete: bool,
 }
