@@ -22,6 +22,15 @@ pub async fn observe_asset(
             )
             .await
         },
-        Chain::Robinhood => robinhood::observe(http, &config.robinhood_rpc_url, address).await
+        Chain::Robinhood => {
+            robinhood::observe(
+                http,
+                &config.robinhood_rpc_url,
+                &config.blockscout_api_url,
+                config.blockscout_api_key.as_deref(),
+                address,
+            )
+            .await
+        }
     }
 }
