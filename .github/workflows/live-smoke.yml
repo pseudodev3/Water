@@ -79,11 +79,19 @@ jobs:
           attrs = pools["data"][0].get("attributes", {})
           assert attrs.get("address"), attrs
 
-          # Solana standard RPC response shapes used by the zero-key adapter.
+          # Solana's public RPC can throttle datacenter runners. A 429 is an
+          # infrastructure limitation, not a schema failure, so report it as
+          # inconclusive while keeping parser/unit CI authoritative.
           sol_rpc = "https://api.mainnet-beta.solana.com"
-          supply = request_json(sol_rpc, {"jsonrpc":"2.0","id":1,"method":"getTokenSupply","params":[WSOL]})
-          assert supply.get("result", {}).get("value", {}).get("amount") is not None, supply
-          largest = request_json(sol_rpc, {"jsonrpc":"2.0","id":2,"method":"getTokenLargestAccounts","params":[WSOL]})
-          assert isinstance(largest.get("result", {}).get("value"), list), largest
+          try:
+              supply = request_json(sol_rpc, {"jsonrpc":"2.0","id":1,"method":"getTokenSupply","params":[WSOL]})
+              assert supply.get("result", {}).get("value", {}).get("amount") is not None, supply
+              time.sleep(1)
+              largest = request_json(sol_rpc, {"jsonrpc":"2.0","id":2,"method":"getTokenLargestAccounts","params":[WSOL]})
+              assert isinstance(largest.get("result", {}).get("value"), list), largest
+          except RuntimeError as exc:
+              if "429" not in str(exc):
+                  raise
+              print(f"Solana public RPC throttled live smoke: {exc}")
 
-          print("Live provider shapes verified.")
+          print("Live provider shapes verified or provider-throttle inconclusive.")
