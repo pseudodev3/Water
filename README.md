@@ -17,7 +17,7 @@ core/ Rust + Axum
   +-- GeckoTerminal public API   price / liquidity / volume / pool flow
   +-- Solana JSON-RPC            mint + supply + largest token accounts
   +-- Robinhood JSON-RPC         contract verification
-  +-- Robinhood Blockscout       indexed token holders
+  +-- Robinhood JSON-RPC         ERC-20 logs / receipts / balances
   +-- engine.rs                  deterministic diagnostics
 ```
 
@@ -112,13 +112,17 @@ Water reconstructs wallet positions from transaction evidence rather than trusti
 `incomplete`
 : Available public evidence cannot support a complete economic basis for the wallet/token pair.
 
-### Solana limitation
+### Solana historical token accounts
 
-Standard Solana RPC can reconstruct exact token deltas from transaction metadata, but discovering historical transactions from a wallet is imperfect because SPL tokens live in token accounts. Water scans the wallet plus currently discoverable target-token accounts and explicitly marks that history as incomplete; previously closed token accounts can be absent.
+SPL tokens live in token accounts rather than directly on the wallet. Water starts from the wallet and current target-token accounts, then inspects historical transaction balance metadata for additional target-token accounts owned by that wallet. Newly discovered accounts are scanned recursively. This recovers many accounts that were later closed.
+
+Vanilla RPC still does not provide the same completeness guarantee as a dedicated archival wallet index, so Water keeps this history marked as partial and relies on ending-balance reconciliation plus basis coverage rather than claiming perfect discovery.
 
 ### Robinhood Chain
 
-Water uses Robinhood Chain JSON-RPC for chain truth and Blockscout V2 for indexed ERC-20 transfer/history discovery. Token flows and native ETH flows are normalized into the same chain-independent ledger used for Solana.
+Water no longer requires Blockscout. Historical ERC-20 activity is discovered from the token contract's `Transfer` logs over Robinhood JSON-RPC. Water automatically splits `eth_getLogs` ranges when a node rejects a wide/high-result query, then reconstructs wallet ERC-20 deltas from transaction receipts and reconciles the ending position with `balanceOf`.
+
+Standard EVM RPC does not expose internal ETH transfers. When a swap's quote leg is native ETH delivered through an internal call, Water leaves that proceeds/cost leg unknown rather than inventing it. `ROBINHOOD_RPC_URL` stays configurable so an archive/trace-capable provider can be dropped in later without changing the ledger.
 
 ### Historical USD pricing
 
