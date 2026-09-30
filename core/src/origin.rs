@@ -472,20 +472,9 @@ fn solana_transaction_account_keys(transaction: &Value) -> Vec<String> {
 fn solana_transaction_program_ids(transaction: &Value) -> Vec<String> {
     let mut programs = Vec::new();
 
-    if let Some(keys) = transaction
-        .pointer("/transaction/message/accountKeys")
-        .and_then(Value::as_array)
-    {
-        for key in keys {
-            let pubkey = key
-                .as_str()
-                .or_else(|| key.get("pubkey").and_then(Value::as_str));
-            if let Some(pubkey) = pubkey {
-                programs.push(pubkey.to_string());
-            }
-        }
-    }
-
+    // jsonParsed resolves programId for top-level and inner instructions.
+    // Do not treat every account key as an invoked program: launchpad IDs are
+    // evidence only when the transaction actually executes them.
     if let Some(instructions) = transaction
         .pointer("/transaction/message/instructions")
         .and_then(Value::as_array)
