@@ -2,6 +2,7 @@ use crate::{
     history::robinhood::RobinhoodHistoryClient,
     model::{ChainEvidence, HolderEvidence},
 };
+use num_bigint::BigUint;
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 
@@ -14,9 +15,10 @@ pub async fn observe(
     let code_request = rpc(http, rpc_url, "eth_getCode", json!([address, "latest"]));
     let holder_client = RobinhoodHistoryClient::new(http.clone(), rpc_url.to_string());
     let concentration_request = holder_client.top_holder_concentration(address, 10);
+    let supply_request = erc20_total_supply(http, rpc_url, address);
 
-    let (chain_id_result, code_result, concentration_result) =
-        tokio::join!(chain_id_request, code_request, concentration_request);
+    let (chain_id_result, code_result, concentration_result, supply_result) =
+        tokio::join!(chain_id_request, code_request, concentration_request, supply_request);
 
     let chain_id = chain_id_result
         .ok()
@@ -46,7 +48,7 @@ pub async fn observe(
         },
     };
 
-    let (concentration, detail) = match concentration_result {
+    let concentration_detail = match concentration_result {
         Ok(value) => (
             Some(value),
             format!(
@@ -61,15 +63,91 @@ pub async fn observe(
         ),
     };
 
+    let (total_supply, supply_detail) = match supply_result {
+        Ok(value) => (
+            Some(value),
+            format!("Current ERC-20 total supply is {}.", format_compact(value)),
+        ),
+        Err(error) => (
+            None,
+            format!("ERC-20 totalSupply could not be read: {error}"),
+        ),
+    };
+
     (
         chain_evidence,
         HolderEvidence {
-            top_ten_percentage: concentration,
-            total_supply: None,
-            source: "Robinhood JSON-RPC ERC-20 Transfer replay".to_string(),
-            detail,
+            top_ten_percentage: concentration_detail.0,
+            total_supply,
+            source: "Robinhood JSON-RPC ERC-20 evidence".to_string(),
+            detail: format!("{} {}", supply_detail, concentration_detail.1),
         },
     )
+}
+
+
+async fn erc20_total_supply(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    address: &str,
+) -> Result<f64, String> {
+    let total_supply_call = rpc(
+        http,
+        rpc_url,
+        "eth_call",
+        json!([{"to": address, "data": "0x18160ddd"}, "latest"]),
+    );
+    let decimals_call = rpc(
+        http,
+        rpc_url,
+        "eth_call",
+        json!([{"to": address, "data": "0x313ce567"}, "latest"]),
+    );
+
+    let (raw_supply, raw_decimals) = tokio::join!(total_supply_call, decimals_call);
+    let raw_supply = raw_supply?
+        .as_str()
+        .and_then(hex_biguint)
+        .ok_or_else(|| "totalSupply returned an invalid uint256.".to_string())?;
+    let decimals = raw_decimals?
+        .as_str()
+        .and_then(hex_biguint)
+        .and_then(|value| value.to_string().parse::<u32>().ok())
+        .ok_or_else(|| "decimals returned an invalid uint256.".to_string())?;
+
+    scaled_biguint_to_f64(&raw_supply, decimals)
+        .ok_or_else(|| "totalSupply could not be normalized to a finite number.".to_string())
+}
+
+fn hex_biguint(value: &str) -> Option<BigUint> {
+    BigUint::parse_bytes(value.trim_start_matches("0x").as_bytes(), 16)
+}
+
+fn scaled_biguint_to_f64(value: &BigUint, decimals: u32) -> Option<f64> {
+    let raw = value.to_string();
+    let decimals = decimals as usize;
+    let normalized = if decimals == 0 {
+        raw
+    } else if raw.len() <= decimals {
+        format!("0.{}{}", "0".repeat(decimals - raw.len()), raw)
+    } else {
+        let split = raw.len() - decimals;
+        format!("{}.{}", &raw[..split], &raw[split..])
+    };
+
+    normalized.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
+fn format_compact(value: f64) -> String {
+    if value >= 1_000_000_000.0 {
+        format!("{:.2}B", value / 1_000_000_000.0)
+    } else if value >= 1_000_000.0 {
+        format!("{:.2}M", value / 1_000_000.0)
+    } else if value >= 1_000.0 {
+        format!("{:.2}K", value / 1_000.0)
+    } else {
+        format!("{value:.4}")
+    }
 }
 
 async fn rpc(
@@ -127,4 +205,16 @@ async fn rpc(
     }
 
     Err(last_error.unwrap_or_else(|| "Robinhood RPC request failed.".to_string()))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_large_erc20_supply() {
+        let raw = BigUint::parse_bytes(b"1000000000000000000000000000", 10).unwrap();
+        assert_eq!(scaled_biguint_to_f64(&raw, 18), Some(1_000_000_000.0));
+    }
 }

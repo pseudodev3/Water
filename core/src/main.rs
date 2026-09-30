@@ -18,7 +18,7 @@ use axum::{
     Json, Router,
 };
 use config::Config;
-use model::{ScanRequest, SourceStatus};
+use model::{Chain, ScanRequest, SourceStatus};
 use providers::gecko::GeckoClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -105,18 +105,38 @@ async fn scan(
     let (market_result, (chain_evidence, holder_evidence)) =
         tokio::join!(market_request, chain_request);
 
-    let mut sources = vec![
-        SourceStatus {
-            source: "Direct chain verification".to_string(),
-            ok: chain_evidence.verified,
-            detail: chain_evidence.detail.clone(),
-        },
-        SourceStatus {
-            source: holder_evidence.source.clone(),
-            ok: holder_evidence.top_ten_percentage.is_some(),
-            detail: holder_evidence.detail.clone(),
-        },
-    ];
+    let mut sources = vec![SourceStatus {
+        source: "Direct chain verification".to_string(),
+        ok: chain_evidence.verified,
+        detail: chain_evidence.detail.clone(),
+    }];
+
+    match chain {
+        Chain::Solana => {
+            sources.push(SourceStatus {
+                source: "Solana getTokenSupply".to_string(),
+                ok: holder_evidence.total_supply.is_some(),
+                detail: holder_evidence.detail.clone(),
+            });
+            sources.push(SourceStatus {
+                source: "Solana getTokenLargestAccounts".to_string(),
+                ok: holder_evidence.top_ten_percentage.is_some(),
+                detail: holder_evidence.detail.clone(),
+            });
+        }
+        Chain::Robinhood => {
+            sources.push(SourceStatus {
+                source: "Robinhood ERC-20 totalSupply".to_string(),
+                ok: holder_evidence.total_supply.is_some(),
+                detail: holder_evidence.detail.clone(),
+            });
+            sources.push(SourceStatus {
+                source: "Robinhood holder replay".to_string(),
+                ok: holder_evidence.top_ten_percentage.is_some(),
+                detail: holder_evidence.detail.clone(),
+            });
+        }
+    }
 
     match &market_result {
         Ok(_) => sources.insert(

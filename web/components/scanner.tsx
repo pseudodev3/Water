@@ -19,9 +19,13 @@ import {
   ScanResult,
 } from "@/lib/api";
 
-const chains: Array<{ id: Chain; label: string; short: string }> = [
-  { id: "solana", label: "Solana", short: "SOL" },
-  { id: "robinhood", label: "Robinhood Chain", short: "RHC" },
+const chains: Array<{ id: Chain; label: string; logoClass: string }> = [
+  { id: "solana", label: "Solana", logoClass: "chain-logo-solana" },
+  {
+    id: "robinhood",
+    label: "Robinhood Chain",
+    logoClass: "chain-logo-robinhood",
+  },
 ];
 
 export function Scanner() {
@@ -111,8 +115,11 @@ export function Scanner() {
                   setError("");
                 }}
               >
-                <span>{item.short}</span>
-                {item.label}
+                <span
+                  className={`chain-logo ${item.logoClass}`}
+                  aria-hidden="true"
+                />
+                <span className="chain-label">{item.label}</span>
               </button>
             ))}
           </div>
