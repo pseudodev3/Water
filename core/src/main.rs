@@ -1,4 +1,5 @@
 mod chains;
+mod cohort;
 mod config;
 mod early;
 mod flow;
@@ -67,6 +68,7 @@ async fn main() {
         .route("/health", get(health))
         .route("/v1/scan", post(scan))
         .route("/v1/wallet-position", post(wallet_position))
+        .route("/v1/holder-cohort", post(holder_cohort))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -155,6 +157,27 @@ async fn wallet_position(
     Json(request): Json<position::WalletPositionRequest>,
 ) -> Result<Json<position::WalletPositionResponse>, (StatusCode, Json<Value>)> {
     position::analyze_wallet_position(
+        state.http.clone(),
+        &state.config,
+        &state.gecko,
+        request,
+    )
+    .await
+    .map(Json)
+    .map_err(|message| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": message })),
+        )
+    })
+}
+
+
+async fn holder_cohort(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<cohort::HolderCohortRequest>,
+) -> Result<Json<cohort::HolderCohortResponse>, (StatusCode, Json<Value>)> {
+    cohort::analyze_holder_cohort(
         state.http.clone(),
         &state.config,
         &state.gecko,
