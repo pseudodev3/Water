@@ -21,6 +21,7 @@ pub struct GeckoClient {
     pool_cache: Arc<Mutex<HashMap<String, String>>>,
     candle_cache: Arc<Mutex<HashMap<String, HashMap<u64, Decimal>>>>,
     market_cache: Arc<Mutex<HashMap<String, (Instant, MarketSnapshot)>>>,
+    info_cache: Arc<Mutex<HashMap<String, (Instant, TokenInfoSnapshot)>>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -28,6 +29,18 @@ pub struct GeckoClient {
 pub enum PriceGranularity {
     Hour,
     Day,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TokenInfoSnapshot {
+    pub image_url: Option<String>,
+    pub websites: Vec<String>,
+    pub twitter_url: Option<String>,
+    pub telegram_url: Option<String>,
+    pub discord_url: Option<String>,
+    pub farcaster_url: Option<String>,
+    pub zora_url: Option<String>,
+    pub gt_verified: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +69,7 @@ impl GeckoClient {
             pool_cache: Arc::new(Mutex::new(HashMap::new())),
             candle_cache: Arc::new(Mutex::new(HashMap::new())),
             market_cache: Arc::new(Mutex::new(HashMap::new())),
+            info_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -99,6 +113,40 @@ impl GeckoClient {
         }
 
         Ok(snapshot)
+    }
+
+    pub async fn token_info(
+        &self,
+        chain: Chain,
+        address: &str,
+    ) -> Result<TokenInfoSnapshot, GeckoError> {
+        let network = chain.market_network();
+        let cache_key = format!("{network}:{}", address.to_ascii_lowercase());
+
+        if let Some(info) = self
+            .info_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&cache_key).cloned())
+            .and_then(|(fetched_at, info)| {
+                (fetched_at.elapsed() < StdDuration::from_secs(600)).then_some(info)
+            })
+        {
+            return Ok(info);
+        }
+
+        let url = format!(
+            "{}/networks/{network}/tokens/{address}/info",
+            self.host
+        );
+        let payload = self.get_json(&url).await?;
+        let info = token_info_from_payload(&payload)?;
+
+        if let Ok(mut cache) = self.info_cache.lock() {
+            cache.insert(cache_key, (Instant::now(), info.clone()));
+        }
+
+        Ok(info)
     }
 
     /// Resolve many transaction timestamps with at most three public API calls:
@@ -318,6 +366,67 @@ async fn send_json_with_retry(
 }
 
 
+fn token_info_from_payload(payload: &Value) -> Result<TokenInfoSnapshot, GeckoError> {
+    let attributes = payload
+        .pointer("/data/attributes")
+        .and_then(Value::as_object)
+        .ok_or(GeckoError::NoData)?;
+
+    let websites = attributes
+        .get("websites")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(safe_external_url)
+                .take(3)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let twitter_url = string_field(attributes.get("twitter_handle"))
+        .and_then(|value| normalize_social_handle(&value, "https://x.com/"));
+    let telegram_url = string_field(attributes.get("telegram_handle"))
+        .and_then(|value| normalize_social_handle(&value, "https://t.me/"));
+
+    Ok(TokenInfoSnapshot {
+        image_url: string_field(attributes.get("image_url")).and_then(|value| safe_external_url(&value)),
+        websites,
+        twitter_url,
+        telegram_url,
+        discord_url: string_field(attributes.get("discord_url"))
+            .and_then(|value| safe_external_url(&value)),
+        farcaster_url: string_field(attributes.get("farcaster_url"))
+            .and_then(|value| safe_external_url(&value)),
+        zora_url: string_field(attributes.get("zora_url"))
+            .and_then(|value| safe_external_url(&value)),
+        gt_verified: attributes.get("gt_verified").and_then(Value::as_bool),
+    })
+}
+
+fn safe_external_url(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    match parsed.scheme() {
+        "http" | "https" => Some(parsed.to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_social_handle(value: &str, base: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return safe_external_url(trimmed);
+    }
+
+    let handle = trimmed.trim_start_matches('@').trim_start_matches('/');
+    (!handle.is_empty()).then(|| format!("{base}{handle}"))
+}
+
 fn market_snapshot_from_payload(payload: &Value) -> Result<MarketSnapshot, GeckoError> {
     let attributes = payload
         .pointer("/data/attributes")
@@ -489,6 +598,30 @@ mod tests {
         assert_eq!(snapshot.sellers_h1, Some(7));
         assert_eq!(snapshot.buyers_h24, Some(120));
         assert_eq!(snapshot.sellers_h24, Some(105));
+    }
+
+    #[test]
+    fn token_info_normalizes_provider_links() {
+        let payload = json!({
+            "data": {
+                "attributes": {
+                    "image_url": "https://assets.example/token.png",
+                    "websites": ["https://example.com", "javascript:alert(1)"],
+                    "twitter_handle": "@example_token",
+                    "telegram_handle": "example_chat",
+                    "discord_url": "https://discord.gg/example",
+                    "farcaster_url": null,
+                    "zora_url": null,
+                    "gt_verified": true
+                }
+            }
+        });
+
+        let info = token_info_from_payload(&payload).unwrap();
+        assert_eq!(info.websites.len(), 1);
+        assert_eq!(info.twitter_url.as_deref(), Some("https://x.com/example_token"));
+        assert_eq!(info.telegram_url.as_deref(), Some("https://t.me/example_chat"));
+        assert_eq!(info.gt_verified, Some(true));
     }
 
     #[test]

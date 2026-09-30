@@ -126,6 +126,35 @@ Successful scans are retained locally on the device (bounded to 180 observations
 
 This is personal calibration evidence, not a forecast and not a server-side backtest dataset.
 
+## Evidence-depth behavior
+
+### Large-holder rows survive incomplete history
+
+Water now separates **who currently holds tokens** from **what Water can prove about that wallet's past**.
+
+The holder candidate source establishes the current wallet and current quantity. Historical movement reconstruction is a second layer. If that history is partial or unavailable, the wallet still appears; unsupported peak, distribution, and entry fields stay unknown instead of dropping the holder or inventing zeros.
+
+`entry cost unknown` means the wallet is real and its movement history may reconcile, but Water cannot prove the USD economic basis of the remaining tokens. A transfer-in is one common example.
+
+### Launchpad recognition
+
+Origin evidence can recognize launchpad families only when Water has direct support:
+
+- Solana: a bounded mint-history transaction is inspected for known launch-program IDs. Shared programs are labeled as families rather than falsely naming a specific frontend.
+- Robinhood Chain: the indexed contract creator/factory is matched against Blockscout's own contract labels/tags.
+
+No match is reported as `Not identified`, not guessed from token names or symbols.
+
+### Token links
+
+Website/social links come from GeckoTerminal's token-info metadata and are fetched independently of the main scan. Only HTTP(S) links are rendered; a metadata failure does not block market or chain analysis.
+
+### Countercase and concentration path
+
+The countercase places the same visible evidence on a continuation side or fragility side using the neutral midpoints already exposed by Water's diagnostics. It does not add a hidden score.
+
+Saved local reads also show a top-wallet concentration path. Local outcome calibration is conditioned on the same 25-point Exit Pressure band as the current read so unrelated pressure regimes are not mixed together.
+
 ## Security
 
 V1 is read-only. It does not need, accept, or store trading private keys.

@@ -4,9 +4,11 @@ import {
   Activity,
   ArrowRight,
   Fingerprint,
+  ExternalLink,
   History,
   MoveUpRight,
   Save,
+  Scale,
   UsersRound,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -15,8 +17,10 @@ import {
   EarlyHolderMap,
   fetchEarlyHolders,
   fetchOrigin,
+  fetchTokenInfo,
   OriginEvidence,
   ScanResult,
+  TokenInfo,
 } from "@/lib/api";
 
 export function EarlyHolderPanel({
@@ -62,11 +66,11 @@ export function EarlyHolderPanel({
     <article className="early-panel">
       <div className="section-heading compact early-heading">
         <div>
-          <div className="eyebrow">Early holder map</div>
+          <div className="eyebrow">Large holder map</div>
           <h3>Where the big wallets stand</h3>
           <p className="section-subcopy">
-            Current large wallets, ordered by the earliest entry Water can
-            reconstruct.
+            Current large wallet-controlled holders. Movement and entry numbers
+            only appear when Water can support them.
           </p>
         </div>
         <UsersRound size={18} strokeWidth={1.5} aria-hidden="true" />
@@ -79,7 +83,7 @@ export function EarlyHolderPanel({
         </div>
       ) : error ? (
         <div className="early-state muted">
-          Not enough verified holder history yet.
+          Holder candidates were unavailable from the current providers.
         </div>
       ) : data && data.holders.length ? (
         <>
@@ -87,28 +91,40 @@ export function EarlyHolderPanel({
             <div>
               <span>Still holding</span>
               <strong>{formatPercent(data.cohort_retained_from_peak)}</strong>
-              <small>of combined peak position</small>
+              <small>
+                {data.cohort_retained_from_peak === null
+                  ? "needs all movement histories"
+                  : "of combined verified peak"}
+              </small>
             </div>
             <div>
               <span>Distributed</span>
               <strong>{formatPercent(data.cohort_distributed_fraction)}</strong>
-              <small>of observed acquired tokens</small>
+              <small>
+                {data.cohort_distributed_fraction === null
+                  ? "needs all movement histories"
+                  : "of verified acquired tokens"}
+              </small>
             </div>
             <p>
-              {data.wallets_reconstructed} of {data.wallets_requested} wallet
-              histories reconstructed.
+              {data.wallets_listed} top wallets shown ·{" "}
+              {data.complete_movement_histories} complete movement{" "}
+              {data.complete_movement_histories === 1 ? "history" : "histories"}
             </p>
           </div>
 
           <div className="holder-list">
-            {data.holders.map((holder, index) => (
+            {data.holders.map((holder) => (
               <div className="holder-row" key={holder.wallet}>
                 <div className="holder-identity">
-                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <span>{String(holder.rank).padStart(2, "0")}</span>
                   <div>
                     <strong>{shortenAddress(holder.wallet)}</strong>
                     <small>
-                      {formatFirstSeen(holder.first_acquired_at, data.observed_at_unix)}
+                      {formatFirstSeen(
+                        holder.first_acquired_at,
+                        data.observed_at_unix,
+                      )}
                     </small>
                   </div>
                 </div>
@@ -118,12 +134,25 @@ export function EarlyHolderPanel({
                     <span>Still holding</span>
                     <strong>{formatPercent(holder.retained_from_peak)}</strong>
                   </div>
-                  <div className="holder-track" aria-hidden="true">
-                    <span style={{ width: `${Math.max(2, holder.retained_from_peak * 100)}%` }} />
-                  </div>
+                  {holder.retained_from_peak !== null ? (
+                    <div className="holder-track" aria-hidden="true">
+                      <span
+                        style={{
+                          width: `${Math.max(
+                            2,
+                            holder.retained_from_peak * 100,
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="holder-track unknown" aria-hidden="true" />
+                  )}
                   <small>
                     {formatQuantity(holder.current_quantity)} now ·{" "}
-                    {formatQuantity(holder.peak_quantity)} peak
+                    {holder.peak_quantity === null
+                      ? "peak unknown"
+                      : `${formatQuantity(holder.peak_quantity)} peak`}
                   </small>
                 </div>
 
@@ -146,18 +175,25 @@ export function EarlyHolderPanel({
                   </div>
                 </div>
 
-                <span
-                  className={`basis-tag ${holder.basis_status.replace("_", "-")}`}
-                >
-                  {basisLabel(holder.basis_status, holder.basis_coverage)}
-                </span>
+                <div className="holder-coverage">
+                  <span
+                    className={`basis-tag ${
+                      holder.basis_status
+                        ? holder.basis_status.replace("_", "-")
+                        : "unavailable"
+                    }`}
+                  >
+                    {basisLabel(holder.basis_status, holder.basis_coverage)}
+                  </span>
+                  <small>{holderStatusLine(holder)}</small>
+                </div>
               </div>
             ))}
           </div>
         </>
       ) : (
         <div className="early-state muted">
-          No wallet histories could be reconstructed without guessing.
+          No wallet-controlled holder candidates could be verified.
         </div>
       )}
     </article>
@@ -258,26 +294,100 @@ function formatQuantity(value: number) {
 }
 
 function formatFirstSeen(timestamp: number | null, now: number) {
-  if (timestamp === null || timestamp <= 0) return "First entry unknown";
+  if (timestamp === null || timestamp <= 0) return "Entry time unavailable";
 
   const seconds = Math.max(0, now - timestamp);
-  if (seconds < 60) return "First seen <1m ago";
-  if (seconds < 3_600) return `First seen ${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86_400) return `First seen ${Math.floor(seconds / 3_600)}h ago`;
-  return `First seen ${Math.floor(seconds / 86_400)}d ago`;
+  if (seconds < 60) return "Earliest observed <1m ago";
+  if (seconds < 3_600) {
+    return `Earliest observed ${Math.floor(seconds / 60)}m ago`;
+  }
+  if (seconds < 86_400) {
+    return `Earliest observed ${Math.floor(seconds / 3_600)}h ago`;
+  }
+  return `Earliest observed ${Math.floor(seconds / 86_400)}d ago`;
 }
 
 function basisLabel(
-  status: "verified" | "partial_history" | "incomplete",
-  coverage: number,
+  status: "verified" | "partial_history" | "incomplete" | null,
+  coverage: number | null,
 ) {
-  if (status === "verified") return "basis verified";
-  if (status === "partial_history") {
-    return `${Math.round(coverage * 100)}% basis known`;
+  if (status === "verified") return "entry verified";
+  if (status === "partial_history" && coverage !== null) {
+    return `${Math.round(coverage * 100)}% entry basis known`;
   }
-  return "basis incomplete";
+  if (status === "incomplete") return "entry cost unknown";
+  return "history unavailable";
 }
 
+function holderStatusLine(holder: EarlyHolderMap["holders"][number]) {
+  if (holder.movement_history === "unavailable") {
+    return "Current balance verified; wallet history unavailable.";
+  }
+  if (holder.movement_history === "partial") {
+    return "Current balance known; peak/distribution withheld.";
+  }
+  if (holder.basis_status === "incomplete") {
+    return "Movement history reconciles; economic entry could not be proven.";
+  }
+  return "Movement history reconciles.";
+}
+
+
+export function AssetLinks({
+  chain,
+  token,
+}: {
+  chain: Chain;
+  token: string;
+}) {
+  const [info, setInfo] = useState<TokenInfo | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setInfo(null);
+
+    fetchTokenInfo(chain, token)
+      .then((value) => {
+        if (active) setInfo(value);
+      })
+      .catch(() => {
+        if (active) setInfo(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [chain, token]);
+
+  if (!info) return null;
+
+  const links = [
+    info.websites[0] ? { label: "Website", url: info.websites[0] } : null,
+    info.twitter_url ? { label: "X", url: info.twitter_url } : null,
+    info.telegram_url ? { label: "Telegram", url: info.telegram_url } : null,
+    info.discord_url ? { label: "Discord", url: info.discord_url } : null,
+    info.farcaster_url ? { label: "Farcaster", url: info.farcaster_url } : null,
+    info.zora_url ? { label: "Zora", url: info.zora_url } : null,
+  ].filter((item): item is { label: string; url: string } => Boolean(item));
+
+  if (!links.length) return null;
+
+  return (
+    <div className="asset-links" aria-label="Token links">
+      {links.slice(0, 5).map((link) => (
+        <a
+          key={link.label}
+          href={link.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {link.label}
+          <ExternalLink size={10} strokeWidth={1.5} aria-hidden="true" />
+        </a>
+      ))}
+    </div>
+  );
+}
 
 export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
   const [data, setData] = useState<OriginEvidence | null>(null);
@@ -321,12 +431,31 @@ export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
         </div>
       ) : data ? (
         <div className="origin-body">
+          {data.launchpad ? (
+            <div className="launchpad-match">
+              <span>Launchpad recognized</span>
+              <strong>{data.launchpad.name}</strong>
+              <small>{data.launchpad.evidence}</small>
+            </div>
+          ) : (
+            <div className="launchpad-match quiet">
+              <span>Launchpad</span>
+              <strong>Not identified</strong>
+              <small>
+                Water did not find a high-confidence program/factory match.
+              </small>
+            </div>
+          )}
+
           <div className="origin-addresses">
             <div>
               <span>{data.primary_label}</span>
               <strong>
                 {data.primary_address ? shortenAddress(data.primary_address) : "revoked / unknown"}
               </strong>
+              {data.creator_label ? (
+                <small>{data.creator_label}</small>
+              ) : null}
               {data.primary_balance_percentage !== null ? (
                 <small>
                   holds about {data.primary_balance_percentage.toFixed(2)}% of supply
@@ -366,6 +495,89 @@ export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
   );
 }
 
+
+export function CounterCasePanel({ result }: { result: ScanResult }) {
+  const continuation: string[] = [];
+  const fragility: string[] = [];
+
+  if (result.demand.buy_share_h1 !== null) {
+    const buyShare = result.demand.buy_share_h1;
+    const sentence = `${Math.round(buyShare * 100)}% of last-hour top-pool transactions were buys.`;
+    (buyShare >= 0.5 ? continuation : fragility).push(sentence);
+  }
+
+  if (result.demand.buyer_arrival_vs_h24_hourly !== null) {
+    const pace = result.demand.buyer_arrival_vs_h24_hourly;
+    const sentence = `Unique-buyer arrival is ${pace.toFixed(1)}× the token's 24h hourly average.`;
+    (pace >= 1 ? continuation : fragility).push(sentence);
+  }
+
+  const concentration = result.pressure.components.find(
+    (component) => component.key === "top_holder_concentration",
+  );
+  if (concentration) {
+    const sentence = `Top-wallet concentration is ${concentration.observed} of supply.`;
+    (concentration.pressure >= 0.5 ? fragility : continuation).push(sentence);
+  }
+
+  const coverage = result.pressure.components.find(
+    (component) => component.key === "liquidity_coverage",
+  );
+  if (coverage) {
+    const sentence = `Observed DEX liquidity covers ${coverage.observed} of the valuation reference.`;
+    (coverage.pressure >= 0.5 ? fragility : continuation).push(sentence);
+  }
+
+  return (
+    <article className="countercase-panel">
+      <div className="section-heading compact countercase-heading">
+        <div>
+          <div className="eyebrow">Countercase</div>
+          <h3>Build both sides before you decide.</h3>
+          <p className="section-subcopy">
+            Same evidence, argued in opposite directions. Placement uses the
+            same neutral midpoints as Water&apos;s visible diagnostics.
+          </p>
+        </div>
+        <Scale size={18} strokeWidth={1.5} aria-hidden="true" />
+      </div>
+
+      <div className="countercase-body">
+        <EvidenceCase
+          label="Continuation case"
+          items={continuation}
+          empty="No current buyer-side evidence clears its neutral comparison."
+        />
+        <EvidenceCase
+          label="Fragility case"
+          items={fragility}
+          empty="No current holder/liquidity constraint was available."
+        />
+      </div>
+    </article>
+  );
+}
+
+function EvidenceCase({
+  label,
+  items,
+  empty,
+}: {
+  label: string;
+  items: string[];
+  empty: string;
+}) {
+  return (
+    <div className="evidence-case">
+      <span>{label}</span>
+      {items.length ? (
+        items.slice(0, 3).map((item) => <p key={item}>{item}</p>)
+      ) : (
+        <p className="case-empty">{empty}</p>
+      )}
+    </div>
+  );
+}
 
 type ThesisSnapshot = {
   savedAt: number;
@@ -665,7 +877,7 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
       ? tokenHistory[tokenHistory.length - 2]
       : null;
   const current = tokenHistory[tokenHistory.length - 1] ?? null;
-  const calibration = localCalibration(history);
+  const calibration = localCalibration(history, result.pressure.index);
 
   return (
     <article className="memory-panel">
@@ -704,6 +916,12 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
                 now={current.liquidityUsd}
                 kind="relative"
               />
+              <MemoryDelta
+                label="Top wallets"
+                before={previous.holderConcentration}
+                now={current.holderConcentration}
+                kind="points"
+              />
             </div>
           </div>
         ) : (
@@ -712,10 +930,13 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
           </p>
         )}
 
+        <HolderConcentrationPath history={tokenHistory} />
+
         <div className="calibration-strip">
           <div>
-            <span>Saved reads</span>
-            <strong>{history.length}</strong>
+            <span>{calibration.label}</span>
+            <strong>{calibration.samples}</strong>
+            <small>matching saved starting reads</small>
           </div>
           <CalibrationCell label="~1h" sample={calibration.h1} />
           <CalibrationCell label="~6h" sample={calibration.h6} />
@@ -723,11 +944,41 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
         </div>
 
         <p className="memory-note">
-          Outcome samples use later scans from the same token inside a narrow
-          time window. They are calibration evidence, not a forecast.
+          Outcome samples compare later reads from the same token and the same
+          25-point Exit Pressure band. They are calibration evidence, not a
+          forecast.
         </p>
       </div>
     </article>
+  );
+}
+
+function HolderConcentrationPath({
+  history,
+}: {
+  history: ScanMemory[];
+}) {
+  const points = history
+    .filter((item) => item.holderConcentration !== null)
+    .slice(-5);
+
+  if (points.length < 2) return null;
+
+  return (
+    <div className="holder-path">
+      <span>Top-wallet concentration path</span>
+      <div>
+        {points.map((point, index) => (
+          <span key={`${point.at}-${index}`}>
+            <strong>{point.holderConcentration!.toFixed(1)}%</strong>
+            {index < points.length - 1 ? (
+              <ArrowRight size={11} strokeWidth={1.5} aria-hidden="true" />
+            ) : null}
+          </span>
+        ))}
+      </div>
+      <small>Oldest → newest from your saved reads on this device.</small>
+    </div>
   );
 }
 
@@ -787,24 +1038,59 @@ function CalibrationCell({
   );
 }
 
-function localCalibration(history: ScanMemory[]) {
+function localCalibration(
+  history: ScanMemory[],
+  currentPressure: number | null,
+) {
+  const band = pressureBand(currentPressure);
+  const starts = history.filter((item) => pressureBand(item.pressure) === band);
+
   return {
-    h1: calibrationWindow(history, 3_600, 7_200),
-    h6: calibrationWindow(history, 21_600, 32_400),
-    h24: calibrationWindow(history, 86_400, 129_600),
+    label:
+      band === null
+        ? "Unscored calibration"
+        : `Pressure ${band[0]}–${band[1]}`,
+    samples: starts.length,
+    h1: calibrationWindow(history, 3_600, 7_200, band),
+    h6: calibrationWindow(history, 21_600, 32_400, band),
+    h24: calibrationWindow(history, 86_400, 129_600, band),
   };
+}
+
+function pressureBand(
+  pressure: number | null,
+): readonly [number, number] | null {
+  if (pressure === null || !Number.isFinite(pressure)) return null;
+  const low = Math.min(75, Math.floor(pressure / 25) * 25);
+  return [low, low + 24] as const;
+}
+
+function samePressureBand(
+  pressure: number | null,
+  band: readonly [number, number] | null,
+) {
+  const candidate = pressureBand(pressure);
+  if (band === null) return candidate === null;
+  return candidate !== null && candidate[0] === band[0];
 }
 
 function calibrationWindow(
   history: ScanMemory[],
   minSeconds: number,
   maxSeconds: number,
+  band: readonly [number, number] | null,
 ) {
   const returns: number[] = [];
 
   for (let index = 0; index < history.length; index += 1) {
     const start = history[index];
-    if (start.priceUsd === null || start.priceUsd <= 0) continue;
+    if (
+      start.priceUsd === null ||
+      start.priceUsd <= 0 ||
+      !samePressureBand(start.pressure, band)
+    ) {
+      continue;
+    }
 
     const later = history.find(
       (candidate, candidateIndex) =>

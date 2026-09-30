@@ -19,6 +19,8 @@ import {
   ScanResult,
 } from "@/lib/api";
 import {
+  AssetLinks,
+  CounterCasePanel,
   DemandPanel,
   EarlyHolderPanel,
   MemoryPanel,
@@ -274,6 +276,7 @@ function ResultView({ result }: { result: ScanResult }) {
           <div className="eyebrow">Observed asset</div>
           <h2>{title}</h2>
           <p>{subtitle}</p>
+          <AssetLinks chain={result.chain} token={result.address} />
         </div>
         <div className="asset-metrics">
           <Metric label="Price" value={formatUsd(result.token.price_usd)} />
@@ -359,6 +362,8 @@ function ResultView({ result }: { result: ScanResult }) {
       />
 
       <DemandPanel demand={result.demand} />
+
+      <CounterCasePanel result={result} />
 
       <OriginPanel
         key={`origin-${result.chain}-${result.address}`}

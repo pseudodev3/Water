@@ -11,6 +11,14 @@ pub struct OriginRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct LaunchpadEvidence {
+    pub name: String,
+    pub family: String,
+    pub evidence: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct OriginResponse {
     pub chain: Chain,
     pub token: String,
@@ -19,6 +27,8 @@ pub struct OriginResponse {
     pub secondary_label: Option<String>,
     pub secondary_address: Option<String>,
     pub primary_balance_percentage: Option<f64>,
+    pub creator_label: Option<String>,
+    pub launchpad: Option<LaunchpadEvidence>,
     pub active_controls: Vec<String>,
     pub source: String,
     pub detail: String,
@@ -132,6 +142,8 @@ async fn inspect_solana(
         None => None,
     };
 
+    let launchpad = detect_solana_launchpad(http, config, token).await;
+
     Ok(OriginResponse {
         chain: Chain::Solana,
         token: token.to_string(),
@@ -140,6 +152,8 @@ async fn inspect_solana(
         secondary_label: Some("Freeze authority".to_string()),
         secondary_address: freeze_authority,
         primary_balance_percentage: authority_balance_percentage,
+        creator_label: None,
+        launchpad,
         active_controls,
         source: "Solana parsed mint state".to_string(),
         detail: "Water shows the standard SPL mint and freeze authorities only. Token-2022 extension authorities are not inferred here, and unrelated wallets are never labeled as insiders without an onchain relationship.".to_string(),
@@ -196,6 +210,16 @@ async fn inspect_robinhood(
         .get("implementation_address")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
+    let creator_metadata = match creator.as_deref() {
+        Some(address) => blockscout_address(http, config, address).await.ok(),
+        None => None,
+    };
+    let creator_label = creator_metadata
+        .as_ref()
+        .and_then(blockscout_best_label);
+    let launchpad = creator_metadata
+        .as_ref()
+        .and_then(|metadata| recognize_robinhood_launchpad(metadata, creator.as_deref()));
 
     let creator_balance_percentage = match creator.as_deref() {
         Some(address) => erc20_balance_percentage(http, &config.robinhood_rpc_url, token, address)
@@ -240,6 +264,8 @@ async fn inspect_robinhood(
         secondary_label: creation_tx.as_ref().map(|_| "Creation transaction".to_string()),
         secondary_address: creation_tx,
         primary_balance_percentage: creator_balance_percentage,
+        creator_label,
+        launchpad,
         active_controls,
         source: "Blockscout indexed contract origin + Robinhood JSON-RPC".to_string(),
         detail: match implementation {
@@ -249,6 +275,278 @@ async fn inspect_robinhood(
             None => "Water does not infer additional insider wallets without direct evidence.".to_string(),
         },
     })
+}
+
+
+async fn detect_solana_launchpad(
+    http: &Client,
+    config: &Config,
+    mint: &str,
+) -> Option<LaunchpadEvidence> {
+    let signatures = solana_rpc_with_fallback(
+        http,
+        &config.solana_rpc_url,
+        &config.solana_fallback_rpc_url,
+        "getSignaturesForAddress",
+        json!([mint, {"limit": 100}]),
+    )
+    .await
+    .ok()?;
+
+    let rows = signatures.as_array()?;
+    let signature = rows
+        .last()
+        .and_then(|row| row.get("signature"))
+        .and_then(Value::as_str)?;
+
+    let transaction = solana_rpc_with_fallback(
+        http,
+        &config.solana_rpc_url,
+        &config.solana_fallback_rpc_url,
+        "getTransaction",
+        json!([
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": "confirmed",
+                "maxSupportedTransactionVersion": 0
+            }
+        ]),
+    )
+    .await
+    .ok()?;
+
+    let program_ids = solana_transaction_program_ids(&transaction);
+
+    const PROGRAMS: &[(&str, &str, &str)] = &[
+        (
+            "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e",
+            "Pump.fun Mayhem",
+            "Pump.fun",
+        ),
+        (
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+            "Pump.fun",
+            "Pump.fun",
+        ),
+        (
+            "boop8hVGQGqehUK2iVEMEnMrL5RbjywRzHKBmBE7ry4",
+            "Boop.fun",
+            "Boop.fun",
+        ),
+        (
+            "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+            "Raydium LaunchLab family",
+            "Raydium LaunchLab",
+        ),
+        (
+            "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+            "Meteora DBC family",
+            "Meteora Dynamic Bonding Curve",
+        ),
+        (
+            "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
+            "Moonshot",
+            "Moonshot",
+        ),
+    ];
+
+    PROGRAMS.iter().find_map(|(program, name, family)| {
+        program_ids.iter().any(|seen| seen == program).then(|| LaunchpadEvidence {
+            name: (*name).to_string(),
+            family: (*family).to_string(),
+            evidence: format!("Mint history invoked launch program {program}."),
+            source: "Solana transaction program match".to_string(),
+        })
+    })
+}
+
+fn solana_transaction_program_ids(transaction: &Value) -> Vec<String> {
+    let mut programs = Vec::new();
+
+    if let Some(keys) = transaction
+        .pointer("/transaction/message/accountKeys")
+        .and_then(Value::as_array)
+    {
+        for key in keys {
+            let pubkey = key
+                .as_str()
+                .or_else(|| key.get("pubkey").and_then(Value::as_str));
+            if let Some(pubkey) = pubkey {
+                programs.push(pubkey.to_string());
+            }
+        }
+    }
+
+    if let Some(instructions) = transaction
+        .pointer("/transaction/message/instructions")
+        .and_then(Value::as_array)
+    {
+        collect_program_ids(instructions, &mut programs);
+    }
+
+    if let Some(groups) = transaction
+        .pointer("/meta/innerInstructions")
+        .and_then(Value::as_array)
+    {
+        for group in groups {
+            if let Some(instructions) = group.get("instructions").and_then(Value::as_array) {
+                collect_program_ids(instructions, &mut programs);
+            }
+        }
+    }
+
+    programs.sort();
+    programs.dedup();
+    programs
+}
+
+fn collect_program_ids(instructions: &[Value], output: &mut Vec<String>) {
+    for instruction in instructions {
+        if let Some(program) = instruction.get("programId").and_then(Value::as_str) {
+            output.push(program.to_string());
+        }
+    }
+}
+
+async fn blockscout_address(
+    http: &Client,
+    config: &Config,
+    address: &str,
+) -> Result<Value, String> {
+    let key = config
+        .blockscout_api_key
+        .as_ref()
+        .ok_or_else(|| "BLOCKSCOUT_API_KEY is not configured.".to_string())?;
+    let url = format!(
+        "{}/addresses/{address}",
+        config.blockscout_api_url.trim_end_matches('/')
+    );
+
+    let response = http
+        .get(url)
+        .header("Accept", "application/json")
+        .header("User-Agent", "water/0.1")
+        .query(&[("apikey", key)])
+        .send()
+        .await
+        .map_err(|error| format!("Blockscout creator metadata failed: {error}"))?;
+
+    let status = response.status();
+    let body = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Blockscout creator metadata returned unreadable JSON: {error}"))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Blockscout creator metadata returned HTTP {}.",
+            status.as_u16()
+        ));
+    }
+
+    Ok(body.get("data").cloned().unwrap_or(body))
+}
+
+fn blockscout_best_label(value: &Value) -> Option<String> {
+    value
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            value
+                .get("public_tags")
+                .and_then(Value::as_array)
+                .and_then(|tags| tags.first())
+                .and_then(|tag| {
+                    tag.get("label")
+                        .or_else(|| tag.get("name"))
+                        .and_then(Value::as_str)
+                })
+                .filter(|name| !name.trim().is_empty())
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn recognize_robinhood_launchpad(
+    metadata: &Value,
+    creator: Option<&str>,
+) -> Option<LaunchpadEvidence> {
+    let mut labels = Vec::new();
+    collect_label_strings(metadata, &mut labels);
+    let joined = labels.join(" ").to_ascii_lowercase();
+
+    const PATTERNS: &[(&[&str], &str)] = &[
+        (&["pons"], "Pons"),
+        (&["hood.fun", "hoodfun"], "hood.fun"),
+        (&["long.xyz", "longxyz"], "Long.xyz"),
+        (&["noxa"], "NOXA Fun"),
+        (&["coinbarrel"], "Coinbarrel"),
+        (&["robinpad"], "Robinpad"),
+        (&["stonkbroker"], "StonkBrokers"),
+        (&["token.select"], "token.select"),
+        (&["hookr"], "hookr.fun"),
+        (&["v4.fun", "v4fun"], "v4.fun"),
+        (&["raisehood"], "RaiseHood"),
+        (&["perpshood"], "PerpsHood"),
+        (&["pairyard"], "PairYard"),
+        (&["pairex"], "Pairex"),
+        (&["unihood"], "Unihood"),
+        (&["arrowpad"], "ArrowPad"),
+        (&["ponzu"], "Ponzu"),
+        (&["merryforge"], "MerryForge"),
+        (&["par.family"], "par.family"),
+        (&["pyre"], "Pyre"),
+        (&["froth"], "Froth"),
+        (&["peeps"], "Peeps"),
+        (&["pump.fun", "pumpfun"], "Pump.fun"),
+    ];
+
+    PATTERNS.iter().find_map(|(patterns, name)| {
+        patterns
+            .iter()
+            .any(|pattern| joined.contains(pattern))
+            .then(|| LaunchpadEvidence {
+                name: (*name).to_string(),
+                family: "Robinhood Chain launchpad".to_string(),
+                evidence: match creator {
+                    Some(address) => format!(
+                        "Blockscout labels creator/factory {address} with metadata matching {name}."
+                    ),
+                    None => format!("Blockscout creator metadata matches {name}."),
+                },
+                source: "Blockscout creator/factory label".to_string(),
+            })
+    })
+}
+
+fn collect_label_strings(value: &Value, output: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if matches!(
+                    key.as_str(),
+                    "name" | "label" | "display_name" | "implementation_name"
+                ) {
+                    if let Some(text) = child.as_str() {
+                        if !text.trim().is_empty() {
+                            output.push(text.to_string());
+                        }
+                    }
+                }
+                if key == "public_tags" || key == "implementations" {
+                    collect_label_strings(child, output);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_label_strings(child, output);
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn erc20_balance_percentage(
@@ -381,6 +679,47 @@ fn hex_biguint(value: &str) -> Option<BigUint> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn recognizes_robinhood_launchpad_from_creator_label() {
+        let metadata = json!({
+            "name": "PonsTokenFactory",
+            "is_contract": true
+        });
+
+        let launchpad = recognize_robinhood_launchpad(
+            &metadata,
+            Some("0x1111111111111111111111111111111111111111"),
+        )
+        .unwrap();
+
+        assert_eq!(launchpad.name, "Pons");
+    }
+
+    #[test]
+    fn collects_solana_program_ids_from_parsed_transaction() {
+        let transaction = json!({
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "11111111111111111111111111111111"}
+                    ],
+                    "instructions": [
+                        {"programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"}
+                    ]
+                }
+            },
+            "meta": {
+                "innerInstructions": []
+            }
+        });
+
+        let programs = solana_transaction_program_ids(&transaction);
+        assert!(programs.iter().any(|value| value == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"));
+    }
+
     #[test]
     fn pads_evm_wallet_for_balance_of() {
         let wallet = "1111111111111111111111111111111111111111";
