@@ -35,6 +35,9 @@ export type ScanResult = {
     sells_h1: number | null;
     buy_share_h1: number | null;
     transactions_h1: number | null;
+    unique_buyers_h1: number | null;
+    unique_sellers_h1: number | null;
+    buyer_arrival_vs_h24_hourly: number | null;
     volume_h24_usd: number | null;
     volume_to_liquidity: number | null;
   };
