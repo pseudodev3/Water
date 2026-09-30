@@ -116,6 +116,7 @@ impl RobinhoodHistoryClient {
                 pages_read: transfer_pages.pages_read,
                 candidate_transactions,
                 reconstructed_transactions: transactions.len(),
+                observed_current_quantity: self.current_token_balance(wallet, target_token).await,
                 truncated,
                 notes,
             },
@@ -244,6 +245,41 @@ impl RobinhoodHistoryClient {
         ))
     }
 
+
+    async fn current_token_balance(
+        &self,
+        wallet: &str,
+        target_token: &str,
+    ) -> Option<Decimal> {
+        let url = format!(
+            "{}/api/v2/addresses/{wallet}/token-balances",
+            self.blockscout_url
+        );
+        let rows = self.get_json(&url).await.ok()?.as_array()?.clone();
+
+        for row in rows {
+            let token = row.get("token")?;
+            let address = token
+                .get("address")
+                .and_then(Value::as_str)
+                .or_else(|| token.get("address_hash").and_then(Value::as_str))?;
+
+            if !address.eq_ignore_ascii_case(target_token) {
+                continue;
+            }
+
+            let raw = row.get("value")?.as_str()?;
+            let decimals = token
+                .get("decimals")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<u32>().ok())?;
+
+            return scaled_decimal(raw, decimals);
+        }
+
+        Some(Decimal::ZERO)
+    }
+
     async fn fetch_pages(&self, mut url: Url, max_pages: usize) -> PageResult {
         let mut items = Vec::new();
         let mut pages_read = 0usize;
@@ -343,6 +379,7 @@ fn empty_history(detail: String) -> RawHistory {
             pages_read: 0,
             candidate_transactions: 0,
             reconstructed_transactions: 0,
+            observed_current_quantity: None,
             truncated: false,
             notes: vec![detail],
         },
