@@ -95,6 +95,7 @@ impl SolanaHistoryClient {
 
         let truncated = truncated_by_tx_cap || !signature_scan_complete;
         let complete = false; // See closed-ATA limitation above.
+        let reconstructed_transactions = transactions.len();
 
         RawHistory {
             transactions,
@@ -103,7 +104,7 @@ impl SolanaHistoryClient {
                 complete,
                 pages_read,
                 candidate_transactions,
-                reconstructed_transactions: results_len_without_errors(&notes, candidate_transactions),
+                reconstructed_transactions,
                 truncated,
                 notes,
             },
@@ -272,9 +273,8 @@ impl SolanaHistoryClient {
             .is_some_and(|address| address == wallet);
 
         let fee_quantity = if wallet_is_fee_payer {
-            fee_lamports.and_then(|lamports| {
-                Decimal::from_u64(lamports)
-                    .map(|value| value / Decimal::from(LAMPORTS_PER_SOL))
+            fee_lamports.map(|lamports| {
+                Decimal::from(lamports) / Decimal::from(LAMPORTS_PER_SOL)
             })
         } else {
             None
@@ -462,14 +462,6 @@ fn scaled_decimal(raw: &str, decimals: u32) -> Option<Decimal> {
     };
 
     Decimal::from_str(&normalized).ok()
-}
-
-fn results_len_without_errors(notes: &[String], candidates: usize) -> usize {
-    let errors = notes
-        .iter()
-        .filter(|note| note.starts_with("Could not reconstruct Solana tx"))
-        .count();
-    candidates.saturating_sub(errors)
 }
 
 #[cfg(test)]
