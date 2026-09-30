@@ -171,7 +171,11 @@ async fn wallet_holder_concentration(
         return Err("No token-account authorities could be resolved.".to_string());
     }
 
-    let authorities: Vec<String> = by_authority.keys().cloned().collect();
+    let authority_balances: Vec<(String, f64)> = by_authority.into_iter().collect();
+    let authorities: Vec<String> = authority_balances
+        .iter()
+        .map(|(authority, _)| authority.clone())
+        .collect();
     let authority_infos = rpc_with_fallback(
         http,
         rpc_url,
@@ -195,7 +199,7 @@ async fn wallet_holder_concentration(
     let mut excluded_balance = 0.0;
     let mut excluded_count = 0usize;
 
-    for (index, (authority, balance)) in by_authority.into_iter().enumerate() {
+    for (index, (authority, balance)) in authority_balances.into_iter().enumerate() {
         let on_curve = is_on_curve(&authority);
         let account_value = authority_values.and_then(|values| values.get(index));
 
