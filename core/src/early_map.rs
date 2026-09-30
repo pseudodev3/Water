@@ -6,7 +6,7 @@ use crate::{
     position::{analyze_wallet_position, BasisStatus, WalletPositionRequest, WalletPositionResponse},
     providers::gecko::GeckoClient,
 };
-use futures::future::join_all;
+use futures::{stream, StreamExt};
 use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -82,27 +82,35 @@ pub async fn analyze_early_holder_map(
     let (candidates, _candidate_source, mut notes) = candidate_result?;
     let current_price_usd = market_result.ok().and_then(|market| market.price_usd);
 
-    // Each wallet history is independent. Running three histories concurrently is
-    // both faster and safer than letting one slow wallet prevent the others from
-    // appearing in the map.
-    let analyses = join_all(candidates.iter().cloned().map(|candidate| {
-        analyze_candidate(
-            http.clone(),
-            config,
-            gecko,
-            request.chain,
-            token.clone(),
-            candidate,
-        )
+    // Each wallet history is independent, but cold historical pricing can make
+    // several Gecko requests. Keep concurrency at two so one slow wallet does not
+    // block the map without bursting the public market-data budget.
+    let analyses = stream::iter(candidates.into_iter().map(|candidate| {
+        let http = http.clone();
+        let token = token.clone();
+        async move {
+            let result = analyze_candidate(
+                http,
+                config,
+                gecko,
+                request.chain,
+                token,
+                candidate.clone(),
+            )
+            .await;
+            (candidate, result)
+        }
     }))
+    .buffer_unordered(2)
+    .collect::<Vec<_>>()
     .await;
 
-    let mut holders = Vec::with_capacity(candidates.len());
+    let mut holders = Vec::with_capacity(analyses.len());
     let mut reconstructed = 0usize;
     let mut complete_movement_histories = 0usize;
     let mut complete_positions = Vec::new();
 
-    for (candidate, result) in candidates.into_iter().zip(analyses.into_iter()) {
+    for (candidate, result) in analyses {
         match result {
             Ok(analysis) => {
                 reconstructed += 1;
