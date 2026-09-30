@@ -1,4 +1,4 @@
-use super::{HistoryCoverage, RawAssetFlow, RawHistory, RawWalletTransaction};
+use super::{HolderCandidate, HistoryCoverage, RawAssetFlow, RawHistory, RawWalletTransaction};
 use futures::{stream, StreamExt};
 use reqwest::Client;
 use rust_decimal::Decimal;
@@ -23,6 +23,88 @@ pub struct SolanaHistoryClient {
 impl SolanaHistoryClient {
     pub fn new(http: Client, rpc_url: String) -> Self {
         Self { http, rpc_url }
+    }
+
+
+    pub async fn top_current_holders(
+        &self,
+        target_mint: &str,
+        limit: usize,
+    ) -> Result<Vec<HolderCandidate>, String> {
+        let largest = self
+            .rpc("getTokenLargestAccounts", json!([target_mint]))
+            .await?;
+
+        let rows = largest
+            .get("value")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let account_addresses: Vec<String> = rows
+            .iter()
+            .filter_map(|row| row.get("address").and_then(Value::as_str))
+            .map(ToOwned::to_owned)
+            .collect();
+
+        if account_addresses.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let infos = self
+            .rpc(
+                "getMultipleAccounts",
+                json!([
+                    account_addresses,
+                    {"encoding": "jsonParsed", "commitment": "confirmed"}
+                ]),
+            )
+            .await?;
+
+        let account_infos = infos
+            .get("value")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut by_owner: HashMap<String, Decimal> = HashMap::new();
+
+        for (row, info) in rows.iter().zip(account_infos.iter()) {
+            let Some(owner) = info
+                .pointer("/data/parsed/info/owner")
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+
+            let quantity = row
+                .get("uiAmountString")
+                .and_then(Value::as_str)
+                .and_then(|value| Decimal::from_str(value).ok())
+                .or_else(|| {
+                    let raw = row.get("amount")?.as_str()?;
+                    let decimals = row.get("decimals")?.as_u64()? as u32;
+                    scaled_decimal(raw, decimals)
+                });
+
+            if let Some(quantity) = quantity {
+                *by_owner.entry(owner.to_string()).or_insert(Decimal::ZERO) += quantity;
+            }
+        }
+
+        let mut owners: Vec<(String, Decimal)> = by_owner.into_iter().collect();
+        owners.sort_by(|left, right| right.1.cmp(&left.1));
+
+        Ok(owners
+            .into_iter()
+            .take(limit)
+            .enumerate()
+            .map(|(index, (wallet, current_quantity))| HolderCandidate {
+                wallet,
+                current_quantity,
+                source_rank: index + 1,
+            })
+            .collect())
     }
 
     pub async fn wallet_token_history(
