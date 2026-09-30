@@ -1,102 +1,94 @@
 use super::{HolderCandidate, HistoryCoverage, RawAssetFlow, RawHistory, RawWalletTransaction};
-use chrono::DateTime;
 use futures::{stream, StreamExt};
-use reqwest::Url;
+use num_bigint::BigUint;
 use rust_decimal::Decimal;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     str::FromStr,
+    sync::{Arc, Mutex},
 };
 
-const MAX_TARGET_TRANSFER_PAGES: usize = 20;
+const TRANSFER_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const MAX_CANDIDATE_TRANSACTIONS: usize = 250;
+const MAX_LOG_QUERIES: usize = 512;
+const MAX_TRANSFER_LOGS: usize = 100_000;
 const CONCURRENT_TX_FETCHES: usize = 8;
-const MAX_TX_SUBRESOURCE_PAGES: usize = 4;
 
 #[derive(Clone)]
 pub struct RobinhoodHistoryClient {
     http: reqwest::Client,
-    blockscout_url: String,
+    rpc_url: String,
+    decimals_cache: Arc<Mutex<HashMap<String, u32>>>,
+    block_time_cache: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl RobinhoodHistoryClient {
-    pub fn new(http: reqwest::Client, blockscout_url: String) -> Self {
+    pub fn new(http: reqwest::Client, rpc_url: String) -> Self {
         Self {
             http,
-            blockscout_url: blockscout_url.trim_end_matches('/').to_string(),
+            rpc_url,
+            decimals_cache: Arc::new(Mutex::new(HashMap::new())),
+            block_time_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-
 
     pub async fn top_current_holders(
         &self,
         target_token: &str,
         limit: usize,
     ) -> Result<Vec<HolderCandidate>, String> {
-        let token_url = format!("{}/api/v2/tokens/{target_token}", self.blockscout_url);
-        let holders_url = format!(
-            "{}/api/v2/tokens/{target_token}/holders",
-            self.blockscout_url
-        );
+        let decimals = self.token_decimals(target_token).await?;
+        let scan = self
+            .scan_logs(target_token, vec![Value::String(TRANSFER_TOPIC.to_string())])
+            .await;
 
-        let (token, holders) = tokio::join!(
-            self.get_json(&token_url),
-            self.get_json(&holders_url)
-        );
-        let token = token?;
-        let holders = holders?;
-
-        let decimals = token
-            .get("decimals")
-            .and_then(decimal_places)
-            .ok_or_else(|| "Blockscout token metadata did not include decimals.".to_string())?;
-
-        let rows = holders
-            .get("items")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-
-        let mut candidates = Vec::new();
-
-        for (index, row) in rows.into_iter().enumerate() {
-            if candidates.len() >= limit {
-                break;
-            }
-
-            let address = row
-                .get("address")
-                .or_else(|| row.get("address_hash"));
-
-            let Some(wallet) = address_hash(address) else {
-                continue;
-            };
-
-            if is_zero_address(wallet)
-                || address
-                    .and_then(|value| value.get("is_contract"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            {
-                continue;
-            }
-
-            let Some(raw) = row.get("value").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(quantity) = scaled_decimal(raw, decimals) else {
-                continue;
-            };
-
-            candidates.push(HolderCandidate {
-                wallet: wallet.to_string(),
-                current_quantity: quantity,
-                source_rank: index + 1,
-            });
+        if scan.logs.is_empty() && !scan.complete {
+            return Err(scan
+                .notes
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Robinhood transfer-log scan failed.".to_string()));
         }
 
-        Ok(candidates)
+        let mut balances: HashMap<String, Decimal> = HashMap::new();
+
+        for log in &scan.logs {
+            let Some((from, to, raw)) = parse_transfer_log(log) else {
+                continue;
+            };
+            let Some(quantity) = biguint_to_decimal(&raw, decimals) else {
+                continue;
+            };
+
+            if !is_zero_address(&from) {
+                *balances.entry(from).or_insert(Decimal::ZERO) -= quantity;
+            }
+            if !is_zero_address(&to) {
+                *balances.entry(to).or_insert(Decimal::ZERO) += quantity;
+            }
+        }
+
+        let mut rows: Vec<(String, Decimal)> = balances
+            .into_iter()
+            .filter(|(wallet, quantity)| {
+                *quantity > Decimal::ZERO
+                    && !wallet.eq_ignore_ascii_case("0x000000000000000000000000000000000000dead")
+            })
+            .collect();
+        rows.sort_by(|left, right| right.1.cmp(&left.1));
+
+        Ok(rows
+            .into_iter()
+            .take(limit)
+            .enumerate()
+            .map(|(index, (wallet, current_quantity))| HolderCandidate {
+                wallet,
+                current_quantity,
+                source_rank: index + 1,
+            })
+            .collect())
     }
 
     pub async fn wallet_token_history(
@@ -104,54 +96,69 @@ impl RobinhoodHistoryClient {
         wallet: &str,
         target_token: &str,
     ) -> RawHistory {
-        let base = format!(
-            "{}/api/v2/addresses/{wallet}/token-transfers",
-            self.blockscout_url
-        );
+        let wallet_topic = address_topic(wallet);
 
-        let first_url = match Url::parse_with_params(
-            &base,
-            &[
-                ("type", "ERC-20"),
-                ("token", target_token),
-            ],
-        ) {
-            Ok(url) => url,
-            Err(error) => {
-                return empty_history(format!("Could not construct Blockscout URL: {error}"));
-            }
-        };
-
-        let transfer_pages = self
-            .fetch_pages(first_url, MAX_TARGET_TRANSFER_PAGES)
+        let outgoing = self
+            .scan_logs(
+                target_token,
+                vec![
+                    Value::String(TRANSFER_TOPIC.to_string()),
+                    Value::String(wallet_topic.clone()),
+                ],
+            )
+            .await;
+        let incoming = self
+            .scan_logs(
+                target_token,
+                vec![
+                    Value::String(TRANSFER_TOPIC.to_string()),
+                    Value::Null,
+                    Value::String(wallet_topic),
+                ],
+            )
             .await;
 
-        let mut by_hash: HashMap<String, (String, u64)> = HashMap::new();
+        let mut notes = outgoing.notes;
+        notes.extend(incoming.notes);
 
-        for item in &transfer_pages.items {
-            if let Some(hash) = item.get("transaction_hash").and_then(Value::as_str) {
-                let timestamp = item
-                    .get("timestamp")
-                    .and_then(Value::as_str)
-                    .and_then(parse_timestamp)
-                    .unwrap_or(u64::MAX);
-                by_hash
-                    .entry(hash.to_ascii_lowercase())
-                    .or_insert_with(|| (hash.to_string(), timestamp));
-            }
+        let mut by_hash: HashMap<String, (String, u64, u64)> = HashMap::new();
+
+        for log in outgoing.logs.into_iter().chain(incoming.logs) {
+            let Some(hash) = log.get("transactionHash").and_then(Value::as_str) else {
+                continue;
+            };
+            let block = log
+                .get("blockNumber")
+                .and_then(Value::as_str)
+                .and_then(hex_u64)
+                .unwrap_or(u64::MAX);
+            let index = log
+                .get("logIndex")
+                .and_then(Value::as_str)
+                .and_then(hex_u64)
+                .unwrap_or(u64::MAX);
+
+            by_hash
+                .entry(hash.to_ascii_lowercase())
+                .or_insert_with(|| (hash.to_string(), block, index));
         }
 
         let candidate_transactions = by_hash.len();
-        let mut hashes: Vec<(String, u64)> = by_hash.into_values().collect();
-        hashes.sort_by_key(|(_, timestamp)| *timestamp);
+        let mut hashes: Vec<(String, u64, u64)> = by_hash.into_values().collect();
+        hashes.sort_by_key(|(_, block, index)| (*block, *index));
+
         let truncated_by_tx_cap = hashes.len() > MAX_CANDIDATE_TRANSACTIONS;
+        if truncated_by_tx_cap {
+            notes.push(format!(
+                "More than {MAX_CANDIDATE_TRANSACTIONS} target-token transactions were found; Water capped this request."
+            ));
+        }
         hashes.truncate(MAX_CANDIDATE_TRANSACTIONS);
-        let hashes: Vec<String> = hashes.into_iter().map(|(hash, _)| hash).collect();
 
         let this = self.clone();
         let wallet_owned = wallet.to_string();
         let results: Vec<Result<(RawWalletTransaction, Vec<String>), String>> =
-            stream::iter(hashes.into_iter().map(move |hash| {
+            stream::iter(hashes.into_iter().map(move |(hash, _, _)| {
                 let client = this.clone();
                 let wallet = wallet_owned.clone();
                 async move { client.reconstruct_transaction(&wallet, &hash).await }
@@ -161,12 +168,6 @@ impl RobinhoodHistoryClient {
             .await;
 
         let mut transactions = Vec::new();
-        let mut notes = Vec::new();
-
-        if let Some(error) = &transfer_pages.error {
-            notes.push(format!("Target-token transfer history fetch became incomplete: {error}"));
-        }
-
         for result in results {
             match result {
                 Ok((tx, tx_notes)) => {
@@ -176,33 +177,25 @@ impl RobinhoodHistoryClient {
                 Err(error) => notes.push(error),
             }
         }
-
         transactions.sort_by_key(|tx| tx.timestamp);
 
-        let truncated = !transfer_pages.complete || truncated_by_tx_cap;
-        if truncated_by_tx_cap {
-            notes.push(format!(
-                "Wallet has more than {MAX_CANDIDATE_TRANSACTIONS} target-token transactions; this request intentionally capped the backfill."
-            ));
-        }
-
-        let complete = !truncated
-            && transactions.len() == candidate_transactions
-            && notes.iter().all(|note| !note.starts_with("Incomplete tx "));
+        let log_complete = outgoing.complete && incoming.complete;
+        let current_balance = self.current_token_balance(wallet, target_token).await.ok();
+        let reconstructed_transactions = transactions.len();
+        let truncated = !log_complete || truncated_by_tx_cap;
 
         RawHistory {
+            transactions,
             coverage: HistoryCoverage {
-                source: "Robinhood Blockscout address token transfers + transaction traces"
-                    .to_string(),
-                complete,
-                pages_read: transfer_pages.pages_read,
+                source: "Robinhood JSON-RPC ERC-20 Transfer logs + transaction receipts".to_string(),
+                complete: log_complete && !truncated_by_tx_cap && reconstructed_transactions == candidate_transactions,
+                pages_read: outgoing.queries + incoming.queries,
                 candidate_transactions,
-                reconstructed_transactions: transactions.len(),
-                observed_current_quantity: self.current_token_balance(wallet, target_token).await,
+                reconstructed_transactions,
+                observed_current_quantity: current_balance,
                 truncated,
                 notes,
             },
-            transactions,
         }
     }
 
@@ -211,117 +204,110 @@ impl RobinhoodHistoryClient {
         wallet: &str,
         hash: &str,
     ) -> Result<(RawWalletTransaction, Vec<String>), String> {
-        let tx_url = format!("{}/api/v2/transactions/{hash}", self.blockscout_url);
-        let internal_url =
-            format!("{}/api/v2/transactions/{hash}/internal-transactions", self.blockscout_url);
-
-        let tx_request = self.get_json(&tx_url);
-        let internal_request = Url::parse(&internal_url)
-            .map_err(|error| format!("Could not construct internal-tx URL for {hash}: {error}"))?;
-
-        let (tx_result, internal_pages) = tokio::join!(
-            tx_request,
-            self.fetch_pages(internal_request, MAX_TX_SUBRESOURCE_PAGES)
+        let (receipt, tx) = tokio::join!(
+            self.rpc("eth_getTransactionReceipt", json!([hash])),
+            self.rpc("eth_getTransactionByHash", json!([hash]))
         );
+        let receipt = receipt.map_err(|error| format!("Could not fetch receipt {hash}: {error}"))?;
+        let tx = tx.map_err(|error| format!("Could not fetch transaction {hash}: {error}"))?;
 
-        let tx = tx_result.map_err(|error| format!("Could not fetch tx {hash}: {error}"))?;
-        let timestamp = tx
-            .get("timestamp")
+        let block_number = receipt
+            .get("blockNumber")
             .and_then(Value::as_str)
-            .and_then(parse_timestamp)
-            .ok_or_else(|| format!("Transaction {hash} did not contain a parseable timestamp"))?;
+            .ok_or_else(|| format!("Receipt {hash} had no block number"))?;
+        let timestamp = self.block_timestamp(block_number).await?;
 
         let mut notes = Vec::new();
-        if !internal_pages.complete {
-            let reason = internal_pages
-                .error
-                .as_deref()
-                .unwrap_or("pagination exceeded the safety cap");
-            notes.push(format!(
-                "Incomplete tx {hash}: internal-transaction history is incomplete ({reason})."
-            ));
-        }
+        let mut raw_by_token: HashMap<String, (BigUint, BigUint)> = HashMap::new();
 
-        let token_transfers = if tx
-            .get("token_transfers_overflow")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+        for log in receipt
+            .get("logs")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
         {
-            let full_url = Url::parse_with_params(
-                &format!(
-                    "{}/api/v2/transactions/{hash}/token-transfers",
-                    self.blockscout_url
-                ),
-                &[("type", "ERC-20")],
-            )
-            .map_err(|error| format!("Could not construct token-transfer URL for {hash}: {error}"))?;
-
-            let pages = self
-                .fetch_pages(full_url, MAX_TX_SUBRESOURCE_PAGES)
-                .await;
-
-            if !pages.complete {
-                let reason = pages
-                    .error
-                    .as_deref()
-                    .unwrap_or("pagination exceeded the safety cap");
-                notes.push(format!(
-                    "Incomplete tx {hash}: token-transfer history is incomplete ({reason})."
-                ));
+            let Some((from, to, raw)) = parse_transfer_log(&log) else {
+                continue;
+            };
+            if !from.eq_ignore_ascii_case(wallet) && !to.eq_ignore_ascii_case(wallet) {
+                continue;
             }
 
-            pages.items
+            let Some(token) = log.get("address").and_then(Value::as_str) else {
+                continue;
+            };
+            let entry = raw_by_token
+                .entry(token.to_ascii_lowercase())
+                .or_insert_with(|| (BigUint::from(0u8), BigUint::from(0u8)));
+
+            if from.eq_ignore_ascii_case(wallet) {
+                entry.0 += &raw;
+            }
+            if to.eq_ignore_ascii_case(wallet) {
+                entry.1 += &raw;
+            }
+        }
+
+        let mut assets = Vec::new();
+        for (token, (sent, received)) in raw_by_token {
+            let decimals = match self.token_decimals(&token).await {
+                Ok(decimals) => decimals,
+                Err(error) => {
+                    notes.push(format!(
+                        "Could not normalize ERC-20 {token} in {hash}: {error}"
+                    ));
+                    continue;
+                }
+            };
+
+            let sent = biguint_to_decimal(&sent, decimals).unwrap_or(Decimal::ZERO);
+            let received = biguint_to_decimal(&received, decimals).unwrap_or(Decimal::ZERO);
+            let delta = received - sent;
+            if delta != Decimal::ZERO {
+                assets.push(RawAssetFlow {
+                    asset_id: token,
+                    delta,
+                });
+            }
+        }
+
+        let from = tx.get("from").and_then(Value::as_str);
+        let to = tx.get("to").and_then(Value::as_str);
+        let value = tx
+            .get("value")
+            .and_then(Value::as_str)
+            .and_then(hex_biguint)
+            .and_then(|raw| biguint_to_decimal(&raw, 18))
+            .unwrap_or(Decimal::ZERO);
+
+        let mut native_delta = Decimal::ZERO;
+        if from.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
+            native_delta -= value;
+        }
+        if to.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
+            native_delta += value;
+        }
+        if native_delta != Decimal::ZERO {
+            assets.push(RawAssetFlow {
+                asset_id: "ETH".to_string(),
+                delta: native_delta,
+            });
+        }
+
+        let fee_quantity = if from.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
+            transaction_fee_eth(&receipt)
         } else {
-            tx.get("token_transfers")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
+            None
         };
 
-        let mut asset_deltas: HashMap<String, Decimal> = HashMap::new();
-
-        for transfer in token_transfers {
-            if transfer.get("token_type").and_then(Value::as_str) != Some("ERC-20") {
-                continue;
-            }
-
-            let Some(token_address) = token_address(&transfer) else {
-                continue;
-            };
-            let Some(quantity) = transfer_quantity(&transfer) else {
-                notes.push(format!(
-                    "Incomplete tx {hash}: an ERC-20 transfer amount could not be normalized."
-                ));
-                continue;
-            };
-
-            let from = address_hash(transfer.get("from"));
-            let to = address_hash(transfer.get("to"));
-
-            let entry = asset_deltas
-                .entry(token_address.to_ascii_lowercase())
-                .or_insert(Decimal::ZERO);
-
-            if from.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
-                *entry -= quantity;
-            }
-            if to.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
-                *entry += quantity;
-            }
+        if assets.iter().any(|flow| flow.asset_id.starts_with("0x"))
+            && native_delta == Decimal::ZERO
+            && from.is_some_and(|address| address.eq_ignore_ascii_case(wallet))
+        {
+            notes.push(format!(
+                "Robinhood tx {hash}: standard RPC cannot observe internal ETH transfers. ERC-20 deltas are exact; a native-ETH quote leg may remain unknown."
+            ));
         }
-
-        let native_delta = native_wallet_delta(wallet, &tx, &internal_pages.items);
-        if native_delta != Decimal::ZERO {
-            asset_deltas.insert("ETH".to_string(), native_delta);
-        }
-
-        let fee_quantity = transaction_fee_quantity(wallet, &tx);
-
-        let assets = asset_deltas
-            .into_iter()
-            .filter(|(_, delta)| *delta != Decimal::ZERO)
-            .map(|(asset_id, delta)| RawAssetFlow { asset_id, delta })
-            .collect();
 
         Ok((
             RawWalletTransaction {
@@ -335,191 +321,278 @@ impl RobinhoodHistoryClient {
         ))
     }
 
-
     async fn current_token_balance(
         &self,
         wallet: &str,
         target_token: &str,
-    ) -> Option<Decimal> {
-        let url = format!(
-            "{}/api/v2/addresses/{wallet}/token-balances",
-            self.blockscout_url
-        );
-        let rows = self.get_json(&url).await.ok()?.as_array()?.clone();
+    ) -> Result<Decimal, String> {
+        let decimals = self.token_decimals(target_token).await?;
+        let data = format!("0x70a08231{:0>64}", wallet.trim_start_matches("0x"));
+        let value = self
+            .rpc(
+                "eth_call",
+                json!([
+                    {"to": target_token, "data": data},
+                    "latest"
+                ]),
+            )
+            .await?;
+        let raw = value
+            .as_str()
+            .and_then(hex_biguint)
+            .ok_or_else(|| "balanceOf returned an invalid uint256".to_string())?;
 
-        for row in rows {
-            let token = row.get("token")?;
-            let address = token
-                .get("address")
-                .and_then(Value::as_str)
-                .or_else(|| token.get("address_hash").and_then(Value::as_str))?;
-
-            if !address.eq_ignore_ascii_case(target_token) {
-                continue;
-            }
-
-            let raw = row.get("value")?.as_str()?;
-            let decimals = token
-                .get("decimals")
-                .and_then(decimal_places)?;
-
-            return scaled_decimal(raw, decimals);
-        }
-
-        Some(Decimal::ZERO)
+        biguint_to_decimal(&raw, decimals)
+            .ok_or_else(|| "balanceOf exceeded Water's decimal range".to_string())
     }
 
-    async fn fetch_pages(&self, url: Url, max_pages: usize) -> PageResult {
-        let base_url = url.clone();
-        let mut current_url = url;
-        let mut items = Vec::new();
-        let mut pages_read = 0usize;
-        let mut complete = true;
-        let mut error = None;
+    async fn token_decimals(&self, token: &str) -> Result<u32, String> {
+        let key = token.to_ascii_lowercase();
+        if let Some(value) = self
+            .decimals_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&key).copied())
+        {
+            return Ok(value);
+        }
 
-        loop {
-            if pages_read >= max_pages {
-                complete = false;
-                break;
-            }
+        let value = self
+            .rpc(
+                "eth_call",
+                json!([
+                    {"to": token, "data": "0x313ce567"},
+                    "latest"
+                ]),
+            )
+            .await?;
+        let decimals = value
+            .as_str()
+            .and_then(hex_biguint)
+            .and_then(|value| value.to_string().parse::<u32>().ok())
+            .ok_or_else(|| format!("Could not read decimals for {token}"))?;
 
-            let body = match self.get_json(current_url.as_str()).await {
-                Ok(body) => body,
-                Err(fetch_error) => {
-                    complete = false;
-                    error = Some(fetch_error);
-                    break;
+        if let Ok(mut cache) = self.decimals_cache.lock() {
+            cache.insert(key, decimals);
+        }
+
+        Ok(decimals)
+    }
+
+    async fn block_timestamp(&self, block_number: &str) -> Result<u64, String> {
+        if let Some(value) = self
+            .block_time_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(block_number).copied())
+        {
+            return Ok(value);
+        }
+
+        let block = self
+            .rpc("eth_getBlockByNumber", json!([block_number, false]))
+            .await?;
+        let timestamp = block
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(hex_u64)
+            .ok_or_else(|| format!("Block {block_number} had no timestamp"))?;
+
+        if let Ok(mut cache) = self.block_time_cache.lock() {
+            cache.insert(block_number.to_string(), timestamp);
+        }
+
+        Ok(timestamp)
+    }
+
+    async fn scan_logs(&self, address: &str, topics: Vec<Value>) -> LogScan {
+        let head = match self.rpc("eth_blockNumber", json!([])).await {
+            Ok(value) => match value.as_str().and_then(hex_u64) {
+                Some(value) => value,
+                None => {
+                    return LogScan::failed("Robinhood eth_blockNumber returned invalid data");
                 }
-            };
+            },
+            Err(error) => return LogScan::failed(format!("Robinhood head lookup failed: {error}")),
+        };
 
-            pages_read += 1;
+        let mut ranges = vec![(0u64, head)];
+        let mut logs = Vec::new();
+        let mut queries = 0usize;
+        let mut notes = Vec::new();
+        let mut complete = true;
 
-            if let Some(rows) = body.get("items").and_then(Value::as_array) {
-                items.extend(rows.iter().cloned());
-            }
-
-            let Some(next) = body.get("next_page_params") else {
-                break;
-            };
-            if next.is_null() {
-                break;
-            }
-
-            let Some(params) = next.as_object() else {
+        while let Some((from, to)) = ranges.pop() {
+            if queries >= MAX_LOG_QUERIES {
                 complete = false;
-                error = Some("next_page_params was not an object".to_string());
-                break;
-            };
-            if params.is_empty() {
+                notes.push(format!(
+                    "Robinhood log scan hit the {MAX_LOG_QUERIES}-query safety cap."
+                ));
                 break;
             }
 
-            // Rebuild from the original URL on each page so previous cursor
-            // parameters do not accumulate alongside the new Blockscout cursor.
-            let mut next_url = base_url.clone();
-            {
-                let mut pairs = next_url.query_pairs_mut();
-                for (key, value) in params {
-                    if let Some(value) = query_value(value) {
-                        pairs.append_pair(key, &value);
+            queries += 1;
+            let filter = json!({
+                "fromBlock": format!("0x{from:x}"),
+                "toBlock": format!("0x{to:x}"),
+                "address": address,
+                "topics": topics,
+            });
+
+            match self.rpc("eth_getLogs", json!([filter])).await {
+                Ok(value) => {
+                    let mut rows = value.as_array().cloned().unwrap_or_default();
+                    logs.append(&mut rows);
+                    if logs.len() > MAX_TRANSFER_LOGS {
+                        complete = false;
+                        notes.push(format!(
+                            "Robinhood log scan exceeded the {MAX_TRANSFER_LOGS}-log safety cap."
+                        ));
+                        break;
                     }
                 }
+                Err(error) if from < to => {
+                    let middle = from + (to - from) / 2;
+                    ranges.push((middle + 1, to));
+                    ranges.push((from, middle));
+                    if queries == 1 {
+                        notes.push(format!(
+                            "Robinhood RPC rejected a wide eth_getLogs range; Water automatically split it ({error})."
+                        ));
+                    }
+                }
+                Err(error) => {
+                    complete = false;
+                    notes.push(format!(
+                        "Robinhood log scan failed at block {from}: {error}"
+                    ));
+                }
             }
-            current_url = next_url;
         }
 
-        PageResult {
-            items,
-            pages_read,
+        logs.sort_by_key(|log| {
+            (
+                log.get("blockNumber")
+                    .and_then(Value::as_str)
+                    .and_then(hex_u64)
+                    .unwrap_or(u64::MAX),
+                log.get("logIndex")
+                    .and_then(Value::as_str)
+                    .and_then(hex_u64)
+                    .unwrap_or(u64::MAX),
+            )
+        });
+
+        LogScan {
+            logs,
+            queries,
             complete,
-            error,
+            notes,
         }
     }
 
-    async fn get_json(&self, url: &str) -> Result<Value, String> {
+    async fn rpc(&self, method: &str, params: Value) -> Result<Value, String> {
         let response = self
             .http
-            .get(url)
-            .header("Accept", "application/json")
-            .header("User-Agent", "water/0.1")
+            .post(&self.rpc_url)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": params
+            }))
             .send()
             .await
             .map_err(|error| error.to_string())?;
 
         let status = response.status();
-        let body = response.text().await.map_err(|error| error.to_string())?;
+        let body = response
+            .json::<Value>()
+            .await
+            .map_err(|error| error.to_string())?;
 
         if !status.is_success() {
-            return Err(format!("HTTP {}: {}", status.as_u16(), body));
+            return Err(format!("HTTP {}: {body}", status.as_u16()));
+        }
+        if let Some(error) = body.get("error") {
+            return Err(error.to_string());
         }
 
-        serde_json::from_str(&body).map_err(|error| error.to_string())
+        body.get("result")
+            .cloned()
+            .ok_or_else(|| "RPC response did not contain a result.".to_string())
     }
 }
 
 #[derive(Debug)]
-struct PageResult {
-    items: Vec<Value>,
-    pages_read: usize,
+struct LogScan {
+    logs: Vec<Value>,
+    queries: usize,
     complete: bool,
-    error: Option<String>,
+    notes: Vec<String>,
 }
 
-fn empty_history(detail: String) -> RawHistory {
-    RawHistory {
-        transactions: Vec::new(),
-        coverage: HistoryCoverage {
-            source: "Robinhood Blockscout".to_string(),
+impl LogScan {
+    fn failed(detail: impl Into<String>) -> Self {
+        Self {
+            logs: Vec::new(),
+            queries: 0,
             complete: false,
-            pages_read: 0,
-            candidate_transactions: 0,
-            reconstructed_transactions: 0,
-            observed_current_quantity: None,
-            truncated: false,
-            notes: vec![detail],
-        },
+            notes: vec![detail.into()],
+        }
     }
 }
 
-fn parse_timestamp(value: &str) -> Option<u64> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .and_then(|timestamp| u64::try_from(timestamp.timestamp()).ok())
-}
-
-fn address_hash(value: Option<&Value>) -> Option<&str> {
-    value?
-        .get("hash")
-        .and_then(Value::as_str)
-        .or_else(|| value?.as_str())
-}
-
-fn token_address(transfer: &Value) -> Option<&str> {
-    let token = transfer.get("token")?;
-
-    token
-        .get("address")
-        .and_then(Value::as_str)
-        .or_else(|| token.get("address_hash").and_then(Value::as_str))
-}
-
-fn transfer_quantity(transfer: &Value) -> Option<Decimal> {
-    let total = transfer.get("total")?;
-    let raw = total.get("value")?.as_str()?;
-    let decimals = total
-        .get("decimals")
-        .and_then(decimal_places)
-        .or_else(|| transfer.pointer("/token/decimals").and_then(decimal_places))?;
-
-    scaled_decimal(raw, decimals)
-}
-
-fn decimal_places(value: &Value) -> Option<u32> {
-    match value {
-        Value::Number(number) => number.as_u64().and_then(|value| u32::try_from(value).ok()),
-        Value::String(value) => value.parse::<u32>().ok(),
-        _ => None,
+fn parse_transfer_log(log: &Value) -> Option<(String, String, BigUint)> {
+    let topics = log.get("topics")?.as_array()?;
+    if topics.len() < 3
+        || !topics.first()?.as_str()?.eq_ignore_ascii_case(TRANSFER_TOPIC)
+    {
+        return None;
     }
+
+    let from = topic_address(topics.get(1)?.as_str()?)?;
+    let to = topic_address(topics.get(2)?.as_str()?)?;
+    let amount = log.get("data")?.as_str().and_then(hex_biguint)?;
+
+    Some((from, to, amount))
+}
+
+fn topic_address(topic: &str) -> Option<String> {
+    let clean = topic.trim_start_matches("0x");
+    if clean.len() != 64 {
+        return None;
+    }
+    Some(format!("0x{}", &clean[24..]))
+}
+
+fn address_topic(address: &str) -> String {
+    format!("0x{:0>64}", address.trim_start_matches("0x").to_ascii_lowercase())
+}
+
+fn is_zero_address(address: &str) -> bool {
+    address.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000")
+}
+
+fn transaction_fee_eth(receipt: &Value) -> Option<Decimal> {
+    let gas = receipt.get("gasUsed")?.as_str().and_then(hex_biguint)?;
+    let price = receipt
+        .get("effectiveGasPrice")?
+        .as_str()
+        .and_then(hex_biguint)?;
+    biguint_to_decimal(&(gas * price), 18)
+}
+
+fn hex_biguint(value: &str) -> Option<BigUint> {
+    BigUint::parse_bytes(value.trim_start_matches("0x").as_bytes(), 16)
+}
+
+fn hex_u64(value: &str) -> Option<u64> {
+    u64::from_str_radix(value.trim_start_matches("0x"), 16).ok()
+}
+
+fn biguint_to_decimal(value: &BigUint, decimals: u32) -> Option<Decimal> {
+    scaled_decimal(&value.to_string(), decimals)
 }
 
 fn scaled_decimal(raw: &str, decimals: u32) -> Option<Decimal> {
@@ -542,140 +615,44 @@ fn scaled_decimal(raw: &str, decimals: u32) -> Option<Decimal> {
     Decimal::from_str(&normalized).ok()
 }
 
-fn native_wallet_delta(wallet: &str, tx: &Value, internal: &[Value]) -> Decimal {
-    let mut delta = Decimal::ZERO;
-
-    if let Some(value) = tx.get("value").and_then(Value::as_str).and_then(wei_to_eth) {
-        let from = address_hash(tx.get("from"));
-        let to = address_hash(tx.get("to"));
-
-        if from.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
-            delta -= value;
-        }
-        if to.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
-            delta += value;
-        }
-    }
-
-    for item in internal {
-        if !item
-            .get("success")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let Some(value) = item
-            .get("value")
-            .and_then(Value::as_str)
-            .and_then(wei_to_eth)
-        else {
-            continue;
-        };
-
-        let from = address_hash(item.get("from"));
-        let to = address_hash(item.get("to"));
-
-        if from.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
-            delta -= value;
-        }
-        if to.is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
-            delta += value;
-        }
-    }
-
-    delta
-}
-
-fn transaction_fee_quantity(wallet: &str, tx: &Value) -> Option<Decimal> {
-    if !address_hash(tx.get("from")).is_some_and(|address| address.eq_ignore_ascii_case(wallet)) {
-        return None;
-    }
-
-    tx.pointer("/fee/value")
-        .and_then(Value::as_str)
-        .and_then(wei_to_eth)
-}
-
-fn wei_to_eth(value: &str) -> Option<Decimal> {
-    scaled_decimal(value, 18)
-}
-
-fn is_zero_address(address: &str) -> bool {
-    address.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000")
-        || address.eq_ignore_ascii_case("0x000000000000000000000000000000000000dead")
-}
-
-fn query_value(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) => Some(value.clone()),
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn scales_raw_erc20_values_without_parsing_huge_integer_first() {
+    fn parses_transfer_topics_and_uint256() {
+        let log = json!({
+            "topics": [
+                TRANSFER_TOPIC,
+                "0x0000000000000000000000001111111111111111111111111111111111111111",
+                "0x0000000000000000000000002222222222222222222222222222222222222222"
+            ],
+            "data": "0x1bc16d674ec80000"
+        });
+
+        let (from, to, amount) = parse_transfer_log(&log).unwrap();
+        assert_eq!(from, "0x1111111111111111111111111111111111111111");
+        assert_eq!(to, "0x2222222222222222222222222222222222222222");
+        assert_eq!(biguint_to_decimal(&amount, 18), Some(Decimal::from(2)));
+    }
+
+    #[test]
+    fn wallet_topic_is_left_padded() {
         assert_eq!(
-            scaled_decimal("1000000000000000000000000000000", 18),
-            Some(Decimal::from(1_000_000_000_000i64))
+            address_topic("0x1111111111111111111111111111111111111111"),
+            "0x0000000000000000000000001111111111111111111111111111111111111111"
         );
     }
 
     #[test]
-    fn computes_wallet_erc20_delta_from_transfer_direction() {
-        let wallet = "0x1111111111111111111111111111111111111111";
-        let transfer = json!({
-            "token_type": "ERC-20",
-            "from": {"hash": "0x2222222222222222222222222222222222222222"},
-            "to": {"hash": wallet},
-            "token": {
-                "address": "0x3333333333333333333333333333333333333333",
-                "decimals": "18"
-            },
-            "total": {
-                "value": "2500000000000000000",
-                "decimals": "18"
-            }
-        });
+    fn uint256_scaling_handles_values_larger_than_u128() {
+        let raw = BigUint::parse_bytes(
+            b"1000000000000000000000000000000000000000000000",
+            10,
+        )
+        .unwrap();
 
-        assert_eq!(transfer_quantity(&transfer), Some(Decimal::new(25, 1)));
-        assert_eq!(
-            address_hash(transfer.get("to")),
-            Some(wallet)
-        );
-    }
-
-    #[test]
-    fn native_value_and_internal_refund_are_net_of_gas() {
-        let wallet = "0x1111111111111111111111111111111111111111";
-        let tx = json!({
-            "from": {"hash": wallet},
-            "to": {"hash": "0x2222222222222222222222222222222222222222"},
-            "value": "1000000000000000000",
-            "fee": {"value": "1000000000000000"}
-        });
-        let internal = vec![json!({
-            "success": true,
-            "from": {"hash": "0x2222222222222222222222222222222222222222"},
-            "to": {"hash": wallet},
-            "value": "100000000000000000"
-        })];
-
-        assert_eq!(
-            native_wallet_delta(wallet, &tx, &internal),
-            Decimal::new(-9, 1)
-        );
-        assert_eq!(
-            transaction_fee_quantity(wallet, &tx),
-            Some(Decimal::new(1, 3))
-        );
+        // The human value still must fit rust_decimal; oversized results remain unknown.
+        assert!(biguint_to_decimal(&raw, 18).is_some());
     }
 }
