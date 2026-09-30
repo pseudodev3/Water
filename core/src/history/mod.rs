@@ -32,6 +32,7 @@ pub struct HistoryCoverage {
     pub pages_read: usize,
     pub candidate_transactions: usize,
     pub reconstructed_transactions: usize,
+    pub observed_current_quantity: Option<Decimal>,
     pub truncated: bool,
     pub notes: Vec<String>,
 }
