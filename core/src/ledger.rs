@@ -227,7 +227,10 @@ impl WalletLedger {
         Ok(())
     }
 
-    pub fn transfer_in(
+    /// Apply carried economic basis only when the caller has evidence that
+    /// ownership did not economically change (for example, a verified same-owner wallet move).
+    /// Ordinary inbound transfers should use reconcile_unknown_in instead.
+    pub fn transfer_in_with_carried_basis(
         &mut self,
         packet: BasisPacket,
         timestamp: u64,
@@ -605,7 +608,9 @@ mod tests {
 
         let packet = source.transfer_out(d(40), 20).unwrap();
         let mut destination = WalletLedger::default();
-        destination.transfer_in(packet, 20).unwrap();
+        destination
+            .transfer_in_with_carried_basis(packet, 20)
+            .unwrap();
 
         let source_summary = source.summary();
         let destination_summary = destination.summary();
