@@ -1,0 +1,86 @@
+name: Live provider smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  live-shapes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify public provider shapes
+        shell: python
+        run: |
+          import json
+          import time
+          import urllib.request
+          import urllib.parse
+
+          UA = {"User-Agent": "water-live-smoke/0.1", "Accept": "application/json"}
+          WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+          WSOL = "So11111111111111111111111111111111111111112"
+          KNOWN_RH_TX = "0x86cb71309e4b5aa175267153c28ddb2d77660d345eb7c7833917625845dd239a"
+
+          def request_json(url, data=None, headers=None, attempts=3):
+              last = None
+              all_headers = dict(UA)
+              if headers:
+                  all_headers.update(headers)
+              for attempt in range(attempts):
+                  try:
+                      req = urllib.request.Request(
+                          url,
+                          data=json.dumps(data).encode() if data is not None else None,
+                          headers={**all_headers, **({"Content-Type": "application/json"} if data is not None else {})},
+                          method="POST" if data is not None else "GET",
+                      )
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          return json.loads(response.read().decode())
+                  except Exception as exc:
+                      last = exc
+                      time.sleep(1 + attempt)
+              raise RuntimeError(f"{url} failed after {attempts} attempts: {last}")
+
+          # Robinhood public RPC: chain ID + real contract bytecode.
+          rh_rpc = "https://rpc.mainnet.chain.robinhood.com"
+          chain = request_json(rh_rpc, {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]})
+          assert int(chain["result"], 16) == 4663, chain
+          code = request_json(rh_rpc, {"jsonrpc":"2.0","id":2,"method":"eth_getCode","params":[WETH,"latest"]})
+          assert isinstance(code.get("result"), str) and code["result"] not in ("0x", "0x0"), code
+
+          # Robinhood Blockscout token metadata + current holders.
+          explorer = "https://robinhoodchain.blockscout.com"
+          token = request_json(f"{explorer}/api/v2/tokens/{WETH}")
+          assert token.get("decimals") is not None, token
+          holders = request_json(f"{explorer}/api/v2/tokens/{WETH}/holders")
+          assert isinstance(holders.get("items"), list), holders
+          if holders["items"]:
+              first = holders["items"][0]
+              assert first.get("value") is not None, first
+              assert first.get("address") is not None or first.get("address_hash") is not None, first
+
+          # Transaction shape used by Robinhood reconstruction.
+          tx = request_json(f"{explorer}/api/v2/transactions/{KNOWN_RH_TX}")
+          assert tx.get("timestamp"), tx
+          assert tx.get("from") is not None and tx.get("to") is not None, tx
+          assert tx.get("fee", {}).get("value") is not None, tx
+          assert isinstance(tx.get("token_transfers", []), list), tx
+          internals = request_json(f"{explorer}/api/v2/transactions/{KNOWN_RH_TX}/internal-transactions")
+          assert isinstance(internals.get("items"), list), internals
+
+          # GeckoTerminal network/token-pool shape used for market + historical-price discovery.
+          gecko = f"https://api.geckoterminal.com/api/v2/networks/robinhood/tokens/{WETH}/pools"
+          pools = request_json(gecko, headers={"Accept": "application/json;version=20230203"})
+          assert isinstance(pools.get("data"), list) and pools["data"], pools
+          attrs = pools["data"][0].get("attributes", {})
+          assert attrs.get("address"), attrs
+
+          # Solana standard RPC response shapes used by the zero-key adapter.
+          sol_rpc = "https://api.mainnet-beta.solana.com"
+          supply = request_json(sol_rpc, {"jsonrpc":"2.0","id":1,"method":"getTokenSupply","params":[WSOL]})
+          assert supply.get("result", {}).get("value", {}).get("amount") is not None, supply
+          largest = request_json(sol_rpc, {"jsonrpc":"2.0","id":2,"method":"getTokenLargestAccounts","params":[WSOL]})
+          assert isinstance(largest.get("result", {}).get("value"), list), largest
+
+          print("Live provider shapes verified.")
