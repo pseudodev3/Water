@@ -877,7 +877,7 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
       ? tokenHistory[tokenHistory.length - 2]
       : null;
   const current = tokenHistory[tokenHistory.length - 1] ?? null;
-  const calibration = localCalibration(history);
+  const calibration = localCalibration(history, result.pressure.index);
 
   return (
     <article className="memory-panel">
@@ -934,8 +934,9 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
 
         <div className="calibration-strip">
           <div>
-            <span>Saved reads</span>
-            <strong>{history.length}</strong>
+            <span>{calibration.label}</span>
+            <strong>{calibration.samples}</strong>
+            <small>matching saved starting reads</small>
           </div>
           <CalibrationCell label="~1h" sample={calibration.h1} />
           <CalibrationCell label="~6h" sample={calibration.h6} />
@@ -943,8 +944,9 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
         </div>
 
         <p className="memory-note">
-          Outcome samples use later scans from the same token inside a narrow
-          time window. They are calibration evidence, not a forecast.
+          Outcome samples compare later reads from the same token and the same
+          25-point Exit Pressure band. They are calibration evidence, not a
+          forecast.
         </p>
       </div>
     </article>
@@ -1036,24 +1038,59 @@ function CalibrationCell({
   );
 }
 
-function localCalibration(history: ScanMemory[]) {
+function localCalibration(
+  history: ScanMemory[],
+  currentPressure: number | null,
+) {
+  const band = pressureBand(currentPressure);
+  const starts = history.filter((item) => pressureBand(item.pressure) === band);
+
   return {
-    h1: calibrationWindow(history, 3_600, 7_200),
-    h6: calibrationWindow(history, 21_600, 32_400),
-    h24: calibrationWindow(history, 86_400, 129_600),
+    label:
+      band === null
+        ? "Unscored calibration"
+        : `Pressure ${band[0]}–${band[1]}`,
+    samples: starts.length,
+    h1: calibrationWindow(history, 3_600, 7_200, band),
+    h6: calibrationWindow(history, 21_600, 32_400, band),
+    h24: calibrationWindow(history, 86_400, 129_600, band),
   };
+}
+
+function pressureBand(
+  pressure: number | null,
+): readonly [number, number] | null {
+  if (pressure === null || !Number.isFinite(pressure)) return null;
+  const low = Math.min(75, Math.floor(pressure / 25) * 25);
+  return [low, low + 24] as const;
+}
+
+function samePressureBand(
+  pressure: number | null,
+  band: readonly [number, number] | null,
+) {
+  const candidate = pressureBand(pressure);
+  if (band === null) return candidate === null;
+  return candidate !== null && candidate[0] === band[0];
 }
 
 function calibrationWindow(
   history: ScanMemory[],
   minSeconds: number,
   maxSeconds: number,
+  band: readonly [number, number] | null,
 ) {
   const returns: number[] = [];
 
   for (let index = 0; index < history.length; index += 1) {
     const start = history[index];
-    if (start.priceUsd === null || start.priceUsd <= 0) continue;
+    if (
+      start.priceUsd === null ||
+      start.priceUsd <= 0 ||
+      !samePressureBand(start.pressure, band)
+    ) {
+      continue;
+    }
 
     const later = history.find(
       (candidate, candidateIndex) =>
