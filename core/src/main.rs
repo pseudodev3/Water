@@ -69,6 +69,7 @@ async fn main() {
         .route("/v1/holder-cohort", post(holder_cohort))
         .route("/v1/early-holders", post(early_holders))
         .route("/v1/origin", post(origin))
+        .route("/v1/token-info", post(token_info))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -262,6 +263,27 @@ async fn origin(
             Json(json!({ "error": "Origin evidence exceeded Water's verification budget." })),
         )),
     }
+}
+
+async fn token_info(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ScanRequest>,
+) -> Result<Json<providers::gecko::TokenInfoSnapshot>, (StatusCode, Json<Value>)> {
+    if let Err(message) = request.validate() {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))));
+    }
+
+    state
+        .gecko
+        .token_info(request.chain, request.address.trim())
+        .await
+        .map(Json)
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": error.to_string() })),
+            )
+        })
 }
 
 async fn shutdown_signal() {
