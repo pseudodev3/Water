@@ -40,12 +40,11 @@ impl RobinhoodHistoryClient {
         target_token: &str,
         limit: usize,
     ) -> Result<Vec<HolderCandidate>, String> {
-        let mut rows = self.current_holder_balances(target_token).await?;
-        rows.sort_by(|left, right| right.1.cmp(&left.1));
+        let ranked = self.ranked_wallet_holders(target_token, limit).await?;
 
-        Ok(rows
+        Ok(ranked
+            .wallets
             .into_iter()
-            .take(limit)
             .enumerate()
             .map(|(index, (wallet, current_quantity))| HolderCandidate {
                 wallet,
@@ -59,28 +58,102 @@ impl RobinhoodHistoryClient {
         &self,
         target_token: &str,
         top_n: usize,
-    ) -> Result<f64, String> {
-        let mut rows = self.current_holder_balances(target_token).await?;
-        rows.sort_by(|left, right| right.1.cmp(&left.1));
-
-        let total = rows
-            .iter()
-            .fold(Decimal::ZERO, |sum, (_, quantity)| sum + *quantity);
-        if total <= Decimal::ZERO {
-            return Err("Robinhood transfer replay produced zero circulating holder balance.".to_string());
+    ) -> Result<WalletHolderConcentration, String> {
+        let ranked = self.ranked_wallet_holders(target_token, top_n).await?;
+        if ranked.total_balance <= Decimal::ZERO {
+            return Err(
+                "Robinhood transfer replay produced zero circulating holder balance.".to_string(),
+            );
         }
 
-        let top = rows
+        let top = ranked
+            .wallets
             .iter()
             .take(top_n)
             .fold(Decimal::ZERO, |sum, (_, quantity)| sum + *quantity);
-        let percent = (top / total) * Decimal::from(100u32);
+        let percent = decimal_percent(top, ranked.total_balance)?;
+        let excluded_percent =
+            decimal_percent(ranked.excluded_contract_balance, ranked.total_balance)?;
 
-        percent
-            .to_string()
-            .parse::<f64>()
-            .map(|value| value.clamp(0.0, 100.0))
-            .map_err(|error| error.to_string())
+        Ok(WalletHolderConcentration {
+            percentage: percent,
+            wallets_used: ranked.wallets.len().min(top_n),
+            excluded_contract_count: ranked.excluded_contract_count,
+            excluded_contract_percentage: excluded_percent,
+        })
+    }
+
+    async fn ranked_wallet_holders(
+        &self,
+        target_token: &str,
+        limit: usize,
+    ) -> Result<RankedWalletHolders, String> {
+        let mut rows = self.current_holder_balances(target_token).await?;
+        rows.sort_by(|left, right| right.1.cmp(&left.1));
+
+        let total_balance = rows
+            .iter()
+            .fold(Decimal::ZERO, |sum, (_, quantity)| sum + *quantity);
+
+        let mut wallets = Vec::new();
+        let mut excluded_contract_count = 0usize;
+        let mut excluded_contract_balance = Decimal::ZERO;
+
+        // Walk ranked balances until enough externally-owned wallets are found.
+        // Contracts are excluded from the wallet-holder numerator; this removes
+        // AMM pools, vaults and most protocol-controlled balances without
+        // pretending every contract is specifically an LP.
+        for chunk in rows.chunks(24) {
+            let this = self.clone();
+            let checks: Vec<Result<(String, Decimal, bool), String>> =
+                stream::iter(chunk.iter().cloned().map(move |(address, balance)| {
+                    let client = this.clone();
+                    async move {
+                        let code = client
+                            .rpc("eth_getCode", json!([address, "latest"]))
+                            .await?;
+                        let is_contract = code
+                            .as_str()
+                            .map(|value| value != "0x" && value != "0x0")
+                            .ok_or_else(|| "eth_getCode returned invalid data.".to_string())?;
+                        Ok((address, balance, is_contract))
+                    }
+                }))
+                .buffered(8)
+                .collect()
+                .await;
+
+            for check in checks {
+                let (address, balance, is_contract) = check?;
+                if is_contract {
+                    excluded_contract_count += 1;
+                    excluded_contract_balance += balance;
+                } else {
+                    wallets.push((address, balance));
+                    if wallets.len() >= limit {
+                        break;
+                    }
+                }
+            }
+
+            if wallets.len() >= limit {
+                break;
+            }
+        }
+
+        if wallets.is_empty() {
+            return Err(
+                "No externally-owned wallet holders could be verified from ranked balances."
+                    .to_string(),
+            );
+        }
+
+        Ok(RankedWalletHolders {
+            wallets,
+            total_balance,
+            excluded_contract_count,
+            excluded_contract_balance,
+        })
     }
 
     async fn current_holder_balances(
@@ -579,6 +652,35 @@ impl RobinhoodHistoryClient {
         Err(last_error.unwrap_or_else(|| "Robinhood RPC request failed.".to_string()))
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct WalletHolderConcentration {
+    pub percentage: f64,
+    pub wallets_used: usize,
+    pub excluded_contract_count: usize,
+    pub excluded_contract_percentage: f64,
+}
+
+#[derive(Debug)]
+struct RankedWalletHolders {
+    wallets: Vec<(String, Decimal)>,
+    total_balance: Decimal,
+    excluded_contract_count: usize,
+    excluded_contract_balance: Decimal,
+}
+
+fn decimal_percent(numerator: Decimal, denominator: Decimal) -> Result<f64, String> {
+    if denominator <= Decimal::ZERO {
+        return Err("Cannot calculate holder concentration with zero denominator.".to_string());
+    }
+
+    ((numerator / denominator) * Decimal::from(100u32))
+        .to_string()
+        .parse::<f64>()
+        .map(|value| value.clamp(0.0, 100.0))
+        .map_err(|error| error.to_string())
+}
+
 
 #[derive(Debug)]
 struct LogScan {
