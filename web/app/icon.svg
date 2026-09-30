@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="rim" x1="14" y1="8" x2="50" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b1a083"/>
+      <stop offset=".48" stop-color="#89998a"/>
+      <stop offset="1" stop-color="#6f786f"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="18" y1="38" x2="46" y2="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#9f9078"/>
+      <stop offset="1" stop-color="#768579"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="#0b0e0d"/>
+  <path
+    d="M32 8.5C27.2 17.1 17.6 28.3 17.6 39c0 8.2 6.4 14.6 14.4 14.6S46.4 47.2 46.4 39C46.4 28.3 36.8 17.1 32 8.5Z"
+    fill="#101412"
+    stroke="url(#rim)"
+    stroke-width="2.2"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M20.8 41.5c4.2 1.6 8.3 1.7 12.1.4 4.2-1.4 7.8-4.3 10.6-8.4.3 1.8.5 3.7.5 5.5 0 6.9-5.3 12.2-12 12.2-5.5 0-10-3.6-11.2-9.7Z"
+    fill="none"
+    stroke="url(#wave)"
+    stroke-width="2"
+    stroke-linecap="round"
+  />
+  <path d="M32 25.5v12" stroke="#b8aa8e" stroke-width="1.2" stroke-linecap="round"/>
+  <path d="M26 31.5h12" stroke="#b8aa8e" stroke-width="1.2" stroke-linecap="round"/>
+  <circle cx="32" cy="31.5" r="1.7" fill="#d2c8ae"/>
+</svg>
