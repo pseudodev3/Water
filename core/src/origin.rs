@@ -78,7 +78,7 @@ async fn inspect_solana(
         active_controls.push("Freeze authority is still active".to_string());
     }
     if active_controls.is_empty() {
-        active_controls.push("Mint and freeze authorities are revoked".to_string());
+        active_controls.push("Standard mint and freeze authorities are revoked".to_string());
     }
 
     let authority_balance_percentage = match mint_authority.as_deref() {
@@ -142,7 +142,7 @@ async fn inspect_solana(
         primary_balance_percentage: authority_balance_percentage,
         active_controls,
         source: "Solana parsed mint state".to_string(),
-        detail: "Water shows explicit mint-control authorities only. It does not label unrelated wallets as insiders without an onchain relationship.".to_string(),
+        detail: "Water shows the standard SPL mint and freeze authorities only. Token-2022 extension authorities are not inferred here, and unrelated wallets are never labeled as insiders without an onchain relationship.".to_string(),
     })
 }
 
