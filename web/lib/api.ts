@@ -65,17 +65,33 @@ export async function scanToken(
   chain: Chain,
   address: string,
 ): Promise<ScanResult> {
-  const response = await fetch(`${API_URL}/v1/scan`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chain, address }),
-  });
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 20_000);
 
-  const body = await response.json().catch(() => null);
+  try {
+    const response = await fetch(`${API_URL}/v1/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chain, address }),
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(body?.error ?? "Water could not complete this scan.");
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(body?.error ?? "Water could not complete this scan.");
+    }
+
+    return body;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "Water stopped waiting after 20 seconds. The public chain provider did not answer in time.",
+      );
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
   }
-
-  return body;
 }

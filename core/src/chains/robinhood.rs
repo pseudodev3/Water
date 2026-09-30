@@ -4,7 +4,7 @@ use crate::{
 };
 use num_bigint::BigUint;
 use serde_json::{json, Value};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 
 pub async fn observe(
     http: &reqwest::Client,
@@ -14,7 +14,20 @@ pub async fn observe(
     let chain_id_request = rpc(http, rpc_url, "eth_chainId", json!([]));
     let code_request = rpc(http, rpc_url, "eth_getCode", json!([address, "latest"]));
     let holder_client = RobinhoodHistoryClient::new(http.clone(), rpc_url.to_string());
-    let holder_request = holder_client.top_wallet_holders(address, 10);
+    let holder_request = async {
+        match timeout(
+            Duration::from_secs(9),
+            holder_client.top_wallet_holders(address, 10),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(
+                "Robinhood wallet-holder reconstruction exceeded the 9s scan budget; market, supply, and chain evidence were returned without waiting longer."
+                    .to_string(),
+            ),
+        }
+    };
     let supply_request = erc20_total_supply(http, rpc_url, address);
 
     let (chain_id_result, code_result, holder_result, supply_result) =
