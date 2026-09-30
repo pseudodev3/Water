@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowRight,
   Fingerprint,
+  ExternalLink,
   History,
   MoveUpRight,
   Save,
@@ -15,8 +16,10 @@ import {
   EarlyHolderMap,
   fetchEarlyHolders,
   fetchOrigin,
+  fetchTokenInfo,
   OriginEvidence,
   ScanResult,
+  TokenInfo,
 } from "@/lib/api";
 
 export function EarlyHolderPanel({
@@ -62,11 +65,11 @@ export function EarlyHolderPanel({
     <article className="early-panel">
       <div className="section-heading compact early-heading">
         <div>
-          <div className="eyebrow">Early holder map</div>
+          <div className="eyebrow">Large holder map</div>
           <h3>Where the big wallets stand</h3>
           <p className="section-subcopy">
-            Current large wallets, ordered by the earliest entry Water can
-            reconstruct.
+            Current large wallet-controlled holders. Movement and entry numbers
+            only appear when Water can support them.
           </p>
         </div>
         <UsersRound size={18} strokeWidth={1.5} aria-hidden="true" />
@@ -79,7 +82,7 @@ export function EarlyHolderPanel({
         </div>
       ) : error ? (
         <div className="early-state muted">
-          Not enough verified holder history yet.
+          Holder candidates were unavailable from the current providers.
         </div>
       ) : data && data.holders.length ? (
         <>
@@ -87,28 +90,40 @@ export function EarlyHolderPanel({
             <div>
               <span>Still holding</span>
               <strong>{formatPercent(data.cohort_retained_from_peak)}</strong>
-              <small>of combined peak position</small>
+              <small>
+                {data.cohort_retained_from_peak === null
+                  ? "needs all movement histories"
+                  : "of combined verified peak"}
+              </small>
             </div>
             <div>
               <span>Distributed</span>
               <strong>{formatPercent(data.cohort_distributed_fraction)}</strong>
-              <small>of observed acquired tokens</small>
+              <small>
+                {data.cohort_distributed_fraction === null
+                  ? "needs all movement histories"
+                  : "of verified acquired tokens"}
+              </small>
             </div>
             <p>
-              {data.wallets_reconstructed} of {data.wallets_requested} wallet
-              histories reconstructed.
+              {data.wallets_listed} top wallets shown ·{" "}
+              {data.complete_movement_histories} complete movement{" "}
+              {data.complete_movement_histories === 1 ? "history" : "histories"}
             </p>
           </div>
 
           <div className="holder-list">
-            {data.holders.map((holder, index) => (
+            {data.holders.map((holder) => (
               <div className="holder-row" key={holder.wallet}>
                 <div className="holder-identity">
-                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <span>{String(holder.rank).padStart(2, "0")}</span>
                   <div>
                     <strong>{shortenAddress(holder.wallet)}</strong>
                     <small>
-                      {formatFirstSeen(holder.first_acquired_at, data.observed_at_unix)}
+                      {formatFirstSeen(
+                        holder.first_acquired_at,
+                        data.observed_at_unix,
+                      )}
                     </small>
                   </div>
                 </div>
@@ -118,12 +133,25 @@ export function EarlyHolderPanel({
                     <span>Still holding</span>
                     <strong>{formatPercent(holder.retained_from_peak)}</strong>
                   </div>
-                  <div className="holder-track" aria-hidden="true">
-                    <span style={{ width: `${Math.max(2, holder.retained_from_peak * 100)}%` }} />
-                  </div>
+                  {holder.retained_from_peak !== null ? (
+                    <div className="holder-track" aria-hidden="true">
+                      <span
+                        style={{
+                          width: `${Math.max(
+                            2,
+                            holder.retained_from_peak * 100,
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="holder-track unknown" aria-hidden="true" />
+                  )}
                   <small>
                     {formatQuantity(holder.current_quantity)} now ·{" "}
-                    {formatQuantity(holder.peak_quantity)} peak
+                    {holder.peak_quantity === null
+                      ? "peak unknown"
+                      : `${formatQuantity(holder.peak_quantity)} peak`}
                   </small>
                 </div>
 
@@ -146,18 +174,25 @@ export function EarlyHolderPanel({
                   </div>
                 </div>
 
-                <span
-                  className={`basis-tag ${holder.basis_status.replace("_", "-")}`}
-                >
-                  {basisLabel(holder.basis_status, holder.basis_coverage)}
-                </span>
+                <div className="holder-coverage">
+                  <span
+                    className={`basis-tag ${
+                      holder.basis_status
+                        ? holder.basis_status.replace("_", "-")
+                        : "unavailable"
+                    }`}
+                  >
+                    {basisLabel(holder.basis_status, holder.basis_coverage)}
+                  </span>
+                  <small>{holderStatusLine(holder)}</small>
+                </div>
               </div>
             ))}
           </div>
         </>
       ) : (
         <div className="early-state muted">
-          No wallet histories could be reconstructed without guessing.
+          No wallet-controlled holder candidates could be verified.
         </div>
       )}
     </article>
@@ -258,26 +293,100 @@ function formatQuantity(value: number) {
 }
 
 function formatFirstSeen(timestamp: number | null, now: number) {
-  if (timestamp === null || timestamp <= 0) return "First entry unknown";
+  if (timestamp === null || timestamp <= 0) return "Entry time unavailable";
 
   const seconds = Math.max(0, now - timestamp);
-  if (seconds < 60) return "First seen <1m ago";
-  if (seconds < 3_600) return `First seen ${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86_400) return `First seen ${Math.floor(seconds / 3_600)}h ago`;
-  return `First seen ${Math.floor(seconds / 86_400)}d ago`;
+  if (seconds < 60) return "Earliest observed <1m ago";
+  if (seconds < 3_600) {
+    return `Earliest observed ${Math.floor(seconds / 60)}m ago`;
+  }
+  if (seconds < 86_400) {
+    return `Earliest observed ${Math.floor(seconds / 3_600)}h ago`;
+  }
+  return `Earliest observed ${Math.floor(seconds / 86_400)}d ago`;
 }
 
 function basisLabel(
-  status: "verified" | "partial_history" | "incomplete",
-  coverage: number,
+  status: "verified" | "partial_history" | "incomplete" | null,
+  coverage: number | null,
 ) {
-  if (status === "verified") return "basis verified";
-  if (status === "partial_history") {
-    return `${Math.round(coverage * 100)}% basis known`;
+  if (status === "verified") return "entry verified";
+  if (status === "partial_history" && coverage !== null) {
+    return `${Math.round(coverage * 100)}% entry basis known`;
   }
-  return "basis incomplete";
+  if (status === "incomplete") return "entry cost unknown";
+  return "history unavailable";
 }
 
+function holderStatusLine(holder: EarlyHolderMap["holders"][number]) {
+  if (holder.movement_history === "unavailable") {
+    return "Current balance verified; wallet history unavailable.";
+  }
+  if (holder.movement_history === "partial") {
+    return "Current balance known; peak/distribution withheld.";
+  }
+  if (holder.basis_status === "incomplete") {
+    return "Movement history reconciles; economic entry could not be proven.";
+  }
+  return "Movement history reconciles.";
+}
+
+
+export function AssetLinks({
+  chain,
+  token,
+}: {
+  chain: Chain;
+  token: string;
+}) {
+  const [info, setInfo] = useState<TokenInfo | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setInfo(null);
+
+    fetchTokenInfo(chain, token)
+      .then((value) => {
+        if (active) setInfo(value);
+      })
+      .catch(() => {
+        if (active) setInfo(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [chain, token]);
+
+  if (!info) return null;
+
+  const links = [
+    info.websites[0] ? { label: "Website", url: info.websites[0] } : null,
+    info.twitter_url ? { label: "X", url: info.twitter_url } : null,
+    info.telegram_url ? { label: "Telegram", url: info.telegram_url } : null,
+    info.discord_url ? { label: "Discord", url: info.discord_url } : null,
+    info.farcaster_url ? { label: "Farcaster", url: info.farcaster_url } : null,
+    info.zora_url ? { label: "Zora", url: info.zora_url } : null,
+  ].filter((item): item is { label: string; url: string } => Boolean(item));
+
+  if (!links.length) return null;
+
+  return (
+    <div className="asset-links" aria-label="Token links">
+      {links.slice(0, 5).map((link) => (
+        <a
+          key={link.label}
+          href={link.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {link.label}
+          <ExternalLink size={10} strokeWidth={1.5} aria-hidden="true" />
+        </a>
+      ))}
+    </div>
+  );
+}
 
 export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
   const [data, setData] = useState<OriginEvidence | null>(null);
@@ -321,12 +430,31 @@ export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
         </div>
       ) : data ? (
         <div className="origin-body">
+          {data.launchpad ? (
+            <div className="launchpad-match">
+              <span>Launchpad recognized</span>
+              <strong>{data.launchpad.name}</strong>
+              <small>{data.launchpad.evidence}</small>
+            </div>
+          ) : (
+            <div className="launchpad-match quiet">
+              <span>Launchpad</span>
+              <strong>Not identified</strong>
+              <small>
+                Water did not find a high-confidence program/factory match.
+              </small>
+            </div>
+          )}
+
           <div className="origin-addresses">
             <div>
               <span>{data.primary_label}</span>
               <strong>
                 {data.primary_address ? shortenAddress(data.primary_address) : "revoked / unknown"}
               </strong>
+              {data.creator_label ? (
+                <small>{data.creator_label}</small>
+              ) : null}
               {data.primary_balance_percentage !== null ? (
                 <small>
                   holds about {data.primary_balance_percentage.toFixed(2)}% of supply
