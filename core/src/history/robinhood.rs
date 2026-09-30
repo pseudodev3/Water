@@ -5,7 +5,7 @@ use reqwest::Url;
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     str::FromStr,
 };
 
@@ -127,20 +127,27 @@ impl RobinhoodHistoryClient {
             .fetch_pages(first_url, MAX_TARGET_TRANSFER_PAGES)
             .await;
 
-        let mut hashes = Vec::new();
-        let mut seen = HashSet::new();
+        let mut by_hash: HashMap<String, (String, u64)> = HashMap::new();
 
         for item in &transfer_pages.items {
             if let Some(hash) = item.get("transaction_hash").and_then(Value::as_str) {
-                if seen.insert(hash.to_ascii_lowercase()) {
-                    hashes.push(hash.to_string());
-                }
+                let timestamp = item
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_timestamp)
+                    .unwrap_or(u64::MAX);
+                by_hash
+                    .entry(hash.to_ascii_lowercase())
+                    .or_insert_with(|| (hash.to_string(), timestamp));
             }
         }
 
-        let candidate_transactions = hashes.len();
+        let candidate_transactions = by_hash.len();
+        let mut hashes: Vec<(String, u64)> = by_hash.into_values().collect();
+        hashes.sort_by_key(|(_, timestamp)| *timestamp);
         let truncated_by_tx_cap = hashes.len() > MAX_CANDIDATE_TRANSACTIONS;
         hashes.truncate(MAX_CANDIDATE_TRANSACTIONS);
+        let hashes: Vec<String> = hashes.into_iter().map(|(hash, _)| hash).collect();
 
         let this = self.clone();
         let wallet_owned = wallet.to_string();
@@ -156,6 +163,10 @@ impl RobinhoodHistoryClient {
 
         let mut transactions = Vec::new();
         let mut notes = Vec::new();
+
+        if let Some(error) = &transfer_pages.error {
+            notes.push(format!("Target-token transfer history fetch became incomplete: {error}"));
+        }
 
         for result in results {
             match result {
@@ -223,8 +234,12 @@ impl RobinhoodHistoryClient {
 
         let mut notes = Vec::new();
         if !internal_pages.complete {
+            let reason = internal_pages
+                .error
+                .as_deref()
+                .unwrap_or("pagination exceeded the safety cap");
             notes.push(format!(
-                "Incomplete tx {hash}: internal-transaction pagination exceeded the safety cap."
+                "Incomplete tx {hash}: internal-transaction history is incomplete ({reason})."
             ));
         }
 
@@ -247,8 +262,12 @@ impl RobinhoodHistoryClient {
                 .await;
 
             if !pages.complete {
+                let reason = pages
+                    .error
+                    .as_deref()
+                    .unwrap_or("pagination exceeded the safety cap");
                 notes.push(format!(
-                    "Incomplete tx {hash}: token-transfer pagination exceeded the safety cap."
+                    "Incomplete tx {hash}: token-transfer history is incomplete ({reason})."
                 ));
             }
 
@@ -352,10 +371,13 @@ impl RobinhoodHistoryClient {
         Some(Decimal::ZERO)
     }
 
-    async fn fetch_pages(&self, mut url: Url, max_pages: usize) -> PageResult {
+    async fn fetch_pages(&self, url: Url, max_pages: usize) -> PageResult {
+        let base_url = url.clone();
+        let mut current_url = url;
         let mut items = Vec::new();
         let mut pages_read = 0usize;
         let mut complete = true;
+        let mut error = None;
 
         loop {
             if pages_read >= max_pages {
@@ -363,13 +385,11 @@ impl RobinhoodHistoryClient {
                 break;
             }
 
-            let body = match self.get_json(url.as_str()).await {
+            let body = match self.get_json(current_url.as_str()).await {
                 Ok(body) => body,
-                Err(error) => {
+                Err(fetch_error) => {
                     complete = false;
-                    items.push(serde_json::json!({
-                        "_water_fetch_error": error
-                    }));
+                    error = Some(fetch_error);
                     break;
                 }
             };
@@ -389,13 +409,16 @@ impl RobinhoodHistoryClient {
 
             let Some(params) = next.as_object() else {
                 complete = false;
+                error = Some("next_page_params was not an object".to_string());
                 break;
             };
             if params.is_empty() {
                 break;
             }
 
-            let mut next_url = url.clone();
+            // Rebuild from the original URL on each page so previous cursor
+            // parameters do not accumulate alongside the new Blockscout cursor.
+            let mut next_url = base_url.clone();
             {
                 let mut pairs = next_url.query_pairs_mut();
                 for (key, value) in params {
@@ -404,13 +427,14 @@ impl RobinhoodHistoryClient {
                     }
                 }
             }
-            url = next_url;
+            current_url = next_url;
         }
 
         PageResult {
             items,
             pages_read,
             complete,
+            error,
         }
     }
 
@@ -440,6 +464,7 @@ struct PageResult {
     items: Vec<Value>,
     pages_read: usize,
     complete: bool,
+    error: Option<String>,
 }
 
 fn empty_history(detail: String) -> RawHistory {
