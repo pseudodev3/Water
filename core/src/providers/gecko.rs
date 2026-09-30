@@ -2,7 +2,11 @@ use crate::model::{Chain, MarketSnapshot};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use serde_json::Value;
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::HashMap,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 use thiserror::Error;
 
 const SOL_WRAPPED_NATIVE: &str = "So11111111111111111111111111111111111111112";
@@ -12,6 +16,8 @@ const ROBINHOOD_WRAPPED_NATIVE: &str = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD
 pub struct GeckoClient {
     http: reqwest::Client,
     host: String,
+    pool_cache: Arc<Mutex<HashMap<String, String>>>,
+    candle_cache: Arc<Mutex<HashMap<String, HashMap<u64, Decimal>>>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -44,6 +50,8 @@ impl GeckoClient {
         Self {
             http,
             host: host.trim_end_matches('/').to_string(),
+            pool_cache: Arc::new(Mutex::new(HashMap::new())),
+            candle_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -109,39 +117,96 @@ impl GeckoClient {
 
         let token = market_asset_id(chain, asset_id);
         let network = chain.market_network();
-        let pools_url = format!("{}/networks/{network}/tokens/{token}/pools", self.host);
-        let pools = self.get_json(&pools_url).await?;
-        let pool_address = first_pool_address(&pools).ok_or(GeckoError::NoData)?;
+        let asset_key = format!("{network}:{}", token.to_ascii_lowercase());
+
+        let pool_address = if let Some(cached) = self
+            .pool_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&asset_key).cloned())
+        {
+            cached
+        } else {
+            let pools_url = format!("{}/networks/{network}/tokens/{token}/pools", self.host);
+            let pools = self.get_json(&pools_url).await?;
+            let discovered = first_pool_address(&pools).ok_or(GeckoError::NoData)?;
+            if let Ok(mut cache) = self.pool_cache.lock() {
+                cache.insert(asset_key.clone(), discovered.clone());
+            }
+            discovered
+        };
+
+        let hourly_key = format!("{asset_key}:hour");
+        let daily_key = format!("{asset_key}:day");
+        let needs_hourly = {
+            let cache = self.candle_cache.lock().ok();
+            timestamps.iter().any(|timestamp| {
+                let hour = timestamp / 3_600 * 3_600;
+                cache
+                    .as_ref()
+                    .and_then(|cache| cache.get(&hourly_key))
+                    .is_none_or(|prices| !prices.contains_key(&hour))
+            })
+        };
+        let needs_daily = {
+            let cache = self.candle_cache.lock().ok();
+            timestamps.iter().any(|timestamp| {
+                let day = timestamp / 86_400 * 86_400;
+                cache
+                    .as_ref()
+                    .and_then(|cache| cache.get(&daily_key))
+                    .is_none_or(|prices| !prices.contains_key(&day))
+            })
+        };
 
         let max_timestamp = timestamps.iter().copied().max().ok_or(GeckoError::NoData)?;
-        let hourly = self
-            .ohlcv(
-                network,
-                &pool_address,
-                "hour",
-                token,
-                max_timestamp.saturating_add(3_600),
-            )
-            .await?;
-        let daily = self
-            .ohlcv(
-                network,
-                &pool_address,
-                "day",
-                token,
-                max_timestamp.saturating_add(86_400),
-            )
-            .await?;
 
-        let hourly_prices = candle_map(&hourly);
-        let daily_prices = candle_map(&daily);
+        if needs_hourly {
+            let hourly = self
+                .ohlcv(
+                    network,
+                    &pool_address,
+                    "hour",
+                    token,
+                    max_timestamp.saturating_add(3_600),
+                )
+                .await?;
+            if let Ok(mut cache) = self.candle_cache.lock() {
+                cache
+                    .entry(hourly_key.clone())
+                    .or_default()
+                    .extend(candle_map(&hourly));
+            }
+        }
+
+        if needs_daily {
+            let daily = self
+                .ohlcv(
+                    network,
+                    &pool_address,
+                    "day",
+                    token,
+                    max_timestamp.saturating_add(86_400),
+                )
+                .await?;
+            if let Ok(mut cache) = self.candle_cache.lock() {
+                cache
+                    .entry(daily_key.clone())
+                    .or_default()
+                    .extend(candle_map(&daily));
+            }
+        }
+
+        let cache = self.candle_cache.lock().map_err(|_| GeckoError::InvalidResponse)?;
+        let hourly_prices = cache.get(&hourly_key);
+        let daily_prices = cache.get(&daily_key);
         let mut resolved = HashMap::new();
 
         for timestamp in timestamps {
             let hour = timestamp / 3_600 * 3_600;
             let day = timestamp / 86_400 * 86_400;
 
-            if let Some(price) = hourly_prices.get(&hour).copied() {
+            if let Some(price) = hourly_prices.and_then(|prices| prices.get(&hour)).copied() {
                 resolved.insert(
                     *timestamp,
                     HistoricalPrice {
@@ -149,7 +214,7 @@ impl GeckoClient {
                         granularity: PriceGranularity::Hour,
                     },
                 );
-            } else if let Some(price) = daily_prices.get(&day).copied() {
+            } else if let Some(price) = daily_prices.and_then(|prices| prices.get(&day)).copied() {
                 resolved.insert(
                     *timestamp,
                     HistoricalPrice {
