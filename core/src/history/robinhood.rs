@@ -16,8 +16,12 @@ const MAX_CANDIDATE_TRANSACTIONS: usize = 250;
 const MAX_LOG_QUERIES: usize = 512;
 const MAX_TRANSFER_LOGS: usize = 100_000;
 const CONCURRENT_TX_FETCHES: usize = 8;
-const CONCURRENT_CODE_FETCHES: usize = 8;
-const MAX_HOLDER_CLASSIFICATION_CANDIDATES: usize = 128;
+const CONCURRENT_CODE_FETCHES: usize = 3;
+const MAX_HOLDER_CLASSIFICATION_CANDIDATES: usize = 256;
+const MAX_HOLDER_LOG_QUERIES: usize = 2_048;
+const INITIAL_HOLDER_BLOCK_WINDOW: u64 = 20_000;
+const MAX_HOLDER_BLOCK_WINDOW: u64 = 80_000;
+const MIN_HOLDER_BLOCK_WINDOW: u64 = 250;
 
 #[derive(Clone)]
 pub struct RobinhoodHistoryClient {
@@ -199,36 +203,101 @@ impl RobinhoodHistoryClient {
         target_token: &str,
     ) -> Result<Vec<(String, Decimal)>, String> {
         let decimals = self.token_decimals(target_token).await?;
-        let scan = self
-            .scan_logs(target_token, vec![Value::String(TRANSFER_TOPIC.to_string())])
-            .await;
+        let head = self
+            .rpc("eth_blockNumber", json!([]))
+            .await?
+            .as_str()
+            .and_then(hex_u64)
+            .ok_or_else(|| "Robinhood eth_blockNumber returned invalid data.".to_string())?;
 
-        if !scan.complete {
-            return Err(scan
-                .notes
-                .first()
-                .cloned()
-                .unwrap_or_else(|| {
-                    "Robinhood transfer-log scan was incomplete; holder ranking was not published."
-                        .to_string()
-                }));
-        }
+        // Best-effort deployment discovery avoids scanning millions of empty
+        // pre-deployment blocks. If historical state is unavailable, the
+        // adaptive pager safely falls back to block zero.
+        let start_block = self
+            .find_contract_deployment_block(target_token, head)
+            .await
+            .unwrap_or(0);
 
         let mut balances: HashMap<String, Decimal> = HashMap::new();
+        let mut from = start_block;
+        let mut window = INITIAL_HOLDER_BLOCK_WINDOW;
+        let mut queries = 0usize;
 
-        for log in &scan.logs {
-            let Some((from, to, raw)) = parse_transfer_log(log) else {
-                continue;
-            };
-            let Some(quantity) = biguint_to_decimal(&raw, decimals) else {
-                continue;
-            };
-
-            if !is_zero_address(&from) {
-                *balances.entry(from).or_insert(Decimal::ZERO) -= quantity;
+        while from <= head {
+            if queries >= MAX_HOLDER_LOG_QUERIES {
+                return Err(format!(
+                    "Robinhood wallet-holder replay hit the {MAX_HOLDER_LOG_QUERIES}-query safety cap before reaching the chain head."
+                ));
             }
-            if !is_zero_address(&to) {
-                *balances.entry(to).or_insert(Decimal::ZERO) += quantity;
+
+            let to = from
+                .saturating_add(window.saturating_sub(1))
+                .min(head);
+
+            let filter = json!({
+                "fromBlock": format!("0x{from:x}"),
+                "toBlock": format!("0x{to:x}"),
+                "address": target_token,
+                "topics": [TRANSFER_TOPIC],
+            });
+
+            queries += 1;
+
+            match self.rpc("eth_getLogs", json!([filter])).await {
+                Ok(value) => {
+                    let rows = value
+                        .as_array()
+                        .cloned()
+                        .ok_or_else(|| {
+                            "Robinhood eth_getLogs returned an unreadable result.".to_string()
+                        })?;
+                    let row_count = rows.len();
+
+                    for log in rows {
+                        let Some((sender, recipient, raw)) = parse_transfer_log(&log) else {
+                            continue;
+                        };
+                        let Some(quantity) = biguint_to_decimal(&raw, decimals) else {
+                            continue;
+                        };
+
+                        if !is_zero_address(&sender) {
+                            *balances.entry(sender).or_insert(Decimal::ZERO) -= quantity;
+                        }
+                        if !is_zero_address(&recipient) {
+                            *balances.entry(recipient).or_insert(Decimal::ZERO) += quantity;
+                        }
+                    }
+
+                    if to == head {
+                        break;
+                    }
+
+                    from = to.saturating_add(1);
+
+                    // Grow aggressively through quiet history, shrink after dense
+                    // windows. This adapts to each RPC's range/result ceiling.
+                    if row_count < 200 {
+                        window = window
+                            .saturating_mul(2)
+                            .min(MAX_HOLDER_BLOCK_WINDOW);
+                    } else if row_count > 5_000 {
+                        window = (window / 2).max(MIN_HOLDER_BLOCK_WINDOW);
+                    }
+                }
+                Err(error) if window > MIN_HOLDER_BLOCK_WINDOW => {
+                    window = (window / 2).max(MIN_HOLDER_BLOCK_WINDOW);
+                    // Retry the same starting block with the smaller window.
+                    if queries % 32 == 0 {
+                        sleep(Duration::from_millis(250)).await;
+                    }
+                    let _ = error;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Robinhood holder replay could not read blocks {from}-{to} even at the minimum adaptive window: {error}"
+                    ));
+                }
             }
         }
 
@@ -236,9 +305,60 @@ impl RobinhoodHistoryClient {
             .into_iter()
             .filter(|(wallet, quantity)| {
                 *quantity > Decimal::ZERO
-                    && !wallet.eq_ignore_ascii_case("0x000000000000000000000000000000000000dead")
+                    && !wallet.eq_ignore_ascii_case(
+                        "0x000000000000000000000000000000000000dead",
+                    )
             })
             .collect())
+    }
+
+    async fn find_contract_deployment_block(
+        &self,
+        address: &str,
+        head: u64,
+    ) -> Option<u64> {
+        let latest_code = self
+            .rpc(
+                "eth_getCode",
+                json!([address, format!("0x{head:x}")]),
+            )
+            .await
+            .ok()?;
+
+        if !has_contract_code(&latest_code) {
+            return None;
+        }
+
+        let genesis_code = self
+            .rpc("eth_getCode", json!([address, "0x0"]))
+            .await
+            .ok()?;
+
+        if has_contract_code(&genesis_code) {
+            return Some(0);
+        }
+
+        let mut low = 0u64;
+        let mut high = head;
+
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let value = self
+                .rpc(
+                    "eth_getCode",
+                    json!([address, format!("0x{mid:x}")]),
+                )
+                .await
+                .ok()?;
+
+            if has_contract_code(&value) {
+                high = mid;
+            } else {
+                low = mid.saturating_add(1);
+            }
+        }
+
+        Some(low)
     }
 
     pub async fn wallet_token_history(
@@ -651,7 +771,7 @@ impl RobinhoodHistoryClient {
 
         let mut last_error = None;
 
-        for attempt in 0..3 {
+        for attempt in 0..4 {
             match self.http.post(&self.rpc_url).json(&payload).send().await {
                 Ok(response) => {
                     let status = response.status();
@@ -666,8 +786,8 @@ impl RobinhoodHistoryClient {
                         .await
                         .map_err(|error| error.to_string())?;
 
-                    if status.as_u16() == 429 {
-                        last_error = Some(format!("HTTP 429: {body}"));
+                    if status.as_u16() == 429 || status.is_server_error() {
+                        last_error = Some(format!("HTTP {}: {body}", status.as_u16()));
                         sleep(Duration::from_secs(retry_after.min(5))).await;
                         continue;
                     }
@@ -675,6 +795,12 @@ impl RobinhoodHistoryClient {
                         return Err(format!("HTTP {}: {body}", status.as_u16()));
                     }
                     if let Some(error) = body.get("error") {
+                        let code = error.get("code").and_then(Value::as_i64);
+                        if code == Some(429) {
+                            last_error = Some(error.to_string());
+                            sleep(Duration::from_secs((1 + attempt as u64).min(5))).await;
+                            continue;
+                        }
                         return Err(error.to_string());
                     }
 
@@ -740,6 +866,14 @@ impl LogScan {
             notes: vec![detail.into()],
         }
     }
+}
+
+
+fn has_contract_code(value: &Value) -> bool {
+    value
+        .as_str()
+        .map(|code| code != "0x" && code != "0x0")
+        .unwrap_or(false)
 }
 
 fn parse_transfer_log(log: &Value) -> Option<(String, String, BigUint)> {
@@ -817,6 +951,14 @@ fn scaled_decimal(raw: &str, decimals: u32) -> Option<Decimal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn contract_code_detection_is_strict() {
+        assert!(!has_contract_code(&json!("0x")));
+        assert!(!has_contract_code(&json!("0x0")));
+        assert!(has_contract_code(&json!("0x6001600055")));
+    }
 
     #[test]
     fn parses_transfer_topics_and_uint256() {
