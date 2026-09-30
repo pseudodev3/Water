@@ -119,7 +119,7 @@ async fn scan(
                 detail: holder_evidence.detail.clone(),
             });
             sources.push(SourceStatus {
-                source: "Solana getTokenLargestAccounts".to_string(),
+                source: "Solana wallet-holder reconstruction".to_string(),
                 ok: holder_evidence.top_ten_percentage.is_some(),
                 detail: holder_evidence.detail.clone(),
             });
@@ -131,7 +131,7 @@ async fn scan(
                 detail: holder_evidence.detail.clone(),
             });
             sources.push(SourceStatus {
-                source: "Robinhood holder replay".to_string(),
+                source: "Robinhood wallet-holder reconstruction".to_string(),
                 ok: holder_evidence.top_ten_percentage.is_some(),
                 detail: holder_evidence.detail.clone(),
             });
