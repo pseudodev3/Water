@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tower_http::{cors::{Any, CorsLayer}, trace::TraceLayer};
 use tracing::info;
+use tokio::time::{timeout, Duration};
 
 #[derive(Clone)]
 struct AppState {
@@ -216,20 +217,29 @@ async fn early_holders(
     State(state): State<Arc<AppState>>,
     Json(request): Json<early_map::EarlyHolderMapRequest>,
 ) -> Result<Json<early_map::EarlyHolderMapResponse>, (StatusCode, Json<Value>)> {
-    early_map::analyze_early_holder_map(
-        state.http.clone(),
-        &state.config,
-        &state.gecko,
-        request,
+    match timeout(
+        Duration::from_secs(24),
+        early_map::analyze_early_holder_map(
+            state.http.clone(),
+            &state.config,
+            &state.gecko,
+            request,
+        ),
     )
     .await
-    .map(Json)
-    .map_err(|message| {
-        (
+    {
+        Ok(Ok(response)) => Ok(Json(response)),
+        Ok(Err(message)) => Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": message })),
-        )
-    })
+        )),
+        Err(_) => Err((
+            StatusCode::REQUEST_TIMEOUT,
+            Json(json!({
+                "error": "Early-holder history exceeded Water's verification budget."
+            })),
+        )),
+    }
 }
 
 async fn origin(
