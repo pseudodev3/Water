@@ -7,6 +7,7 @@ mod engine;
 mod ledger;
 mod model;
 mod providers;
+mod position;
 mod reconstruct;
 
 use axum::{
@@ -65,6 +66,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/scan", post(scan))
+        .route("/v1/wallet-position", post(wallet_position))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -145,6 +147,27 @@ async fn scan(
         chain_evidence,
         sources,
     )))
+}
+
+
+async fn wallet_position(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<position::WalletPositionRequest>,
+) -> Result<Json<position::WalletPositionResponse>, (StatusCode, Json<Value>)> {
+    position::analyze_wallet_position(
+        state.http.clone(),
+        &state.config,
+        &state.gecko,
+        request,
+    )
+    .await
+    .map(Json)
+    .map_err(|message| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": message })),
+        )
+    })
 }
 
 async fn shutdown_signal() {
