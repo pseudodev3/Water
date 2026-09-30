@@ -7,6 +7,7 @@ import {
   CircleDot,
   Database,
   Droplets,
+  Fingerprint,
   MoveUpRight,
   ShieldCheck,
   TriangleAlert,
@@ -17,8 +18,10 @@ import {
   Chain,
   EarlyHolderMap,
   fetchEarlyHolders,
+  fetchOrigin,
   getHealth,
   Health,
+  OriginEvidence,
   scanToken,
   ScanResult,
 } from "@/lib/api";
@@ -357,6 +360,12 @@ function ResultView({ result }: { result: ScanResult }) {
 
       <DemandPanel demand={result.demand} />
 
+      <OriginPanel
+        key={`origin-${result.chain}-${result.address}`}
+        chain={result.chain}
+        token={result.address}
+      />
+
       <div className="evidence-grid">
         <article className="evidence-panel">
           <div className="section-heading compact">
@@ -653,6 +662,94 @@ function basisLabel(
     return `${Math.round(coverage * 100)}% basis known`;
   }
   return "basis incomplete";
+}
+
+
+function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
+  const [data, setData] = useState<OriginEvidence | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setData(null);
+
+    fetchOrigin(chain, token)
+      .then((value) => {
+        if (active) setData(value);
+      })
+      .catch(() => {
+        if (active) setData(null);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [chain, token]);
+
+  return (
+    <article className="origin-panel">
+      <div className="section-heading compact origin-heading">
+        <div>
+          <div className="eyebrow">Origin &amp; control</div>
+          <h3>Who can still touch the machinery?</h3>
+        </div>
+        <Fingerprint size={18} strokeWidth={1.5} aria-hidden="true" />
+      </div>
+
+      {loading ? (
+        <div className="origin-state">
+          <Activity className="spin" size={15} strokeWidth={1.5} />
+          Verifying origin…
+        </div>
+      ) : data ? (
+        <div className="origin-body">
+          <div className="origin-addresses">
+            <div>
+              <span>{data.primary_label}</span>
+              <strong>
+                {data.primary_address ? shortenAddress(data.primary_address) : "revoked / unknown"}
+              </strong>
+              {data.primary_balance_percentage !== null ? (
+                <small>
+                  holds about {data.primary_balance_percentage.toFixed(2)}% of supply
+                </small>
+              ) : null}
+            </div>
+
+            {data.secondary_label ? (
+              <div>
+                <span>{data.secondary_label}</span>
+                <strong>
+                  {data.secondary_address
+                    ? shortenAddress(data.secondary_address)
+                    : "none"}
+                </strong>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="origin-controls">
+            {data.active_controls.map((control) => (
+              <div key={control}>
+                <span className="source-state ok" />
+                <p>{control}</p>
+              </div>
+            ))}
+          </div>
+
+          <p className="method-note origin-note">{data.detail}</p>
+        </div>
+      ) : (
+        <p className="muted-copy origin-empty">
+          Water could not prove origin/control relationships for this token.
+        </p>
+      )}
+    </article>
+  );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
