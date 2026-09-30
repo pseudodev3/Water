@@ -237,7 +237,7 @@ async fn inspect_robinhood(
         token: token.to_string(),
         primary_label: "Contract creator".to_string(),
         primary_address: creator,
-        secondary_label: creation_tx.map(|_| "Creation transaction".to_string()),
+        secondary_label: creation_tx.as_ref().map(|_| "Creation transaction".to_string()),
         secondary_address: creation_tx,
         primary_balance_percentage: creator_balance_percentage,
         active_controls,
@@ -381,8 +381,6 @@ fn hex_biguint(value: &str) -> Option<BigUint> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn pads_evm_wallet_for_balance_of() {
         let wallet = "1111111111111111111111111111111111111111";
