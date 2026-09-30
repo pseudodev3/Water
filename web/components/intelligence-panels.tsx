@@ -184,8 +184,16 @@ export function DemandPanel({ demand }: { demand: ScanResult["demand"] }) {
       {hasTrades ? (
         <div className="demand-body">
           <div className="demand-share">
-            <strong>{formatPercent(buyShare)}</strong>
-            <span>of top-pool trades were buys in the last hour</span>
+            <strong>
+              {demand.unique_buyers_h1 === null
+                ? formatPercent(buyShare)
+                : demand.unique_buyers_h1}
+            </strong>
+            <span>
+              {demand.unique_buyers_h1 === null
+                ? "of top-pool trades were buys in the last hour"
+                : "unique buyer wallets in the top pool during the last hour"}
+            </span>
           </div>
 
           <div className="demand-track" aria-hidden="true">
@@ -194,26 +202,31 @@ export function DemandPanel({ demand }: { demand: ScanResult["demand"] }) {
 
           <div className="demand-facts">
             <div>
-              <span>Buy transactions</span>
-              <strong>{demand.buys_h1}</strong>
+              <span>Unique sellers</span>
+              <strong>{demand.unique_sellers_h1 ?? "—"}</strong>
             </div>
             <div>
-              <span>Sell transactions</span>
-              <strong>{demand.sells_h1}</strong>
+              <span>Buy share</span>
+              <strong>{formatPercent(demand.buy_share_h1)}</strong>
             </div>
             <div>
-              <span>24h turnover</span>
+              <span>Buyer pace</span>
               <strong>
-                {demand.volume_to_liquidity === null
+                {demand.buyer_arrival_vs_h24_hourly === null
                   ? "—"
-                  : `${demand.volume_to_liquidity.toFixed(1)}×`}
+                  : `${demand.buyer_arrival_vs_h24_hourly.toFixed(1)}×`}
               </strong>
             </div>
           </div>
 
           <p className="method-note demand-note">
-            This shows transaction demand and turnover, not unique-buyer growth
-            yet. Water does not infer buyers it cannot verify.
+            Buyer pace compares last-hour unique buyers with the 24-hour hourly
+            average. Turnover is{" "}
+            {demand.volume_to_liquidity === null
+              ? "unavailable"
+              : `${demand.volume_to_liquidity.toFixed(1)}× liquidity`}
+            . These are observed wallets and transactions, not a directional
+            prediction.
           </p>
         </div>
       ) : (
