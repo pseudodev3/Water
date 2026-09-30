@@ -65,6 +65,17 @@ pub struct PositionSummary {
     pub peak_quantity: Decimal,
     pub bought_quantity: Decimal,
     pub sold_quantity: Decimal,
+
+    pub lifetime_buy_cost_usd_known: Decimal,
+    pub lifetime_buy_known_quantity: Decimal,
+    pub lifetime_buy_unknown_quantity: Decimal,
+    pub lifetime_sell_proceeds_usd_known: Decimal,
+    pub lifetime_sell_known_quantity: Decimal,
+    pub lifetime_sell_unknown_proceeds_quantity: Decimal,
+    pub lifetime_average_buy_usd: Option<Decimal>,
+    pub net_execution_capital_usd: Option<Decimal>,
+    pub break_even_price_usd: Option<Decimal>,
+    pub capital_recovered_ratio: Option<Decimal>,
     pub transferred_in_quantity: Decimal,
     pub transferred_out_quantity: Decimal,
     pub airdropped_quantity: Decimal,
@@ -116,6 +127,12 @@ pub struct WalletLedger {
 
     bought_quantity: Decimal,
     sold_quantity: Decimal,
+    lifetime_buy_cost_usd_known: Decimal,
+    lifetime_buy_known_quantity: Decimal,
+    lifetime_buy_unknown_quantity: Decimal,
+    lifetime_sell_proceeds_usd_known: Decimal,
+    lifetime_sell_known_quantity: Decimal,
+    lifetime_sell_unknown_proceeds_quantity: Decimal,
     transferred_in_quantity: Decimal,
     transferred_out_quantity: Decimal,
     airdropped_quantity: Decimal,
@@ -157,6 +174,8 @@ impl WalletLedger {
         });
 
         self.bought_quantity += quantity;
+        self.lifetime_buy_cost_usd_known += trade_cost_usd;
+        self.lifetime_buy_known_quantity += quantity;
         self.record_acquisition(quantity, timestamp);
         Ok(())
     }
@@ -181,6 +200,7 @@ impl WalletLedger {
         });
 
         self.bought_quantity += quantity;
+        self.lifetime_buy_unknown_quantity += quantity;
         self.record_acquisition(quantity, timestamp);
         Ok(())
     }
@@ -295,6 +315,8 @@ impl WalletLedger {
 
         self.current_quantity -= quantity;
         self.sold_quantity += quantity;
+        self.lifetime_sell_proceeds_usd_known += proceeds_usd;
+        self.lifetime_sell_known_quantity += quantity;
         self.realized_proceeds_usd += proceeds_usd;
         self.realized_cost_usd_known += disposal.known_cost_usd;
         self.realized_acquisition_fees_usd += disposal.acquisition_fee_usd;
@@ -322,6 +344,7 @@ impl WalletLedger {
 
         self.current_quantity -= quantity;
         self.sold_quantity += quantity;
+        self.lifetime_sell_unknown_proceeds_quantity += quantity;
         self.realized_cost_usd_known += disposal.known_cost_usd;
         self.realized_acquisition_fees_usd += disposal.acquisition_fee_usd;
         self.realized_disposal_fees_usd += network_fee_usd;
@@ -418,11 +441,53 @@ impl WalletLedger {
             None
         };
 
+        let lifetime_average_buy_usd = if self.lifetime_buy_unknown_quantity == Decimal::ZERO {
+            nonzero_div(
+                self.lifetime_buy_cost_usd_known,
+                self.lifetime_buy_known_quantity,
+            )
+        } else {
+            None
+        };
+
+        let cash_flow_complete = self.lifetime_buy_unknown_quantity == Decimal::ZERO
+            && self.lifetime_sell_unknown_proceeds_quantity == Decimal::ZERO
+            && self.transferred_in_quantity == Decimal::ZERO
+            && self.transferred_out_quantity == Decimal::ZERO;
+
+        let net_execution_capital_usd = cash_flow_complete.then_some(
+            self.lifetime_buy_cost_usd_known - self.lifetime_sell_proceeds_usd_known,
+        );
+        let break_even_price_usd = net_execution_capital_usd
+            .and_then(|capital| nonzero_div(capital, self.current_quantity));
+        let capital_recovered_ratio = if cash_flow_complete
+            && self.lifetime_buy_cost_usd_known > Decimal::ZERO
+        {
+            Some(
+                self.lifetime_sell_proceeds_usd_known
+                    / self.lifetime_buy_cost_usd_known,
+            )
+        } else {
+            None
+        };
+
         PositionSummary {
             current_quantity: self.current_quantity,
             peak_quantity: self.peak_quantity,
             bought_quantity: self.bought_quantity,
             sold_quantity: self.sold_quantity,
+
+            lifetime_buy_cost_usd_known: self.lifetime_buy_cost_usd_known,
+            lifetime_buy_known_quantity: self.lifetime_buy_known_quantity,
+            lifetime_buy_unknown_quantity: self.lifetime_buy_unknown_quantity,
+            lifetime_sell_proceeds_usd_known: self.lifetime_sell_proceeds_usd_known,
+            lifetime_sell_known_quantity: self.lifetime_sell_known_quantity,
+            lifetime_sell_unknown_proceeds_quantity: self.lifetime_sell_unknown_proceeds_quantity,
+            lifetime_average_buy_usd,
+            net_execution_capital_usd,
+            break_even_price_usd,
+            capital_recovered_ratio,
+
             transferred_in_quantity: self.transferred_in_quantity,
             transferred_out_quantity: self.transferred_out_quantity,
             airdropped_quantity: self.airdropped_quantity,
@@ -715,6 +780,37 @@ mod tests {
         assert_eq!(summary.sold_quantity, d(50));
         assert_eq!(summary.realized_proceeds_coverage, Decimal::ZERO);
         assert_eq!(summary.realized_pnl_usd, None);
+    }
+
+
+    #[test]
+    fn cash_flow_view_shows_recovered_capital_and_remaining_break_even() {
+        let mut ledger = WalletLedger::default();
+        ledger.buy(d(100), d(200), Decimal::ZERO, 10, "buy").unwrap();
+        ledger.sell(d(40), d(500), Decimal::ZERO, 20).unwrap();
+
+        let summary = ledger.summary();
+
+        assert_eq!(summary.lifetime_average_buy_usd, Some(d(2)));
+        assert_eq!(summary.net_execution_capital_usd, Some(d(-300)));
+        assert_eq!(summary.break_even_price_usd, Some(d(-5)));
+        assert_eq!(
+            summary.capital_recovered_ratio,
+            Some(Decimal::new(25, 1))
+        );
+    }
+
+    #[test]
+    fn external_transfer_makes_cash_flow_break_even_unknown() {
+        let mut ledger = WalletLedger::default();
+        ledger.buy(d(100), d(200), Decimal::ZERO, 10, "buy").unwrap();
+        ledger.transfer_out(d(20), 20).unwrap();
+
+        let summary = ledger.summary();
+
+        assert_eq!(summary.net_execution_capital_usd, None);
+        assert_eq!(summary.break_even_price_usd, None);
+        assert_eq!(summary.capital_recovered_ratio, None);
     }
 
 }
