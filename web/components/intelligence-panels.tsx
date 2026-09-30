@@ -379,6 +379,7 @@ export function WaterPanel({ result }: { result: ScanResult }) {
   const storageKey = `water:thesis:${result.chain}:${result.address.toLowerCase()}`;
   const [saved, setSaved] = useState<ThesisSnapshot | null>(null);
   const current = thesisSnapshot(result);
+  const changeFlags = saved ? thesisChangeFlags(saved, current) : [];
 
   useEffect(() => {
     try {
@@ -417,6 +418,20 @@ export function WaterPanel({ result }: { result: ScanResult }) {
           <p className="water-saved-at">
             Compared with {formatSavedTime(saved.savedAt)}
           </p>
+          {changeFlags.length ? (
+            <div className="water-alerts">
+              <span>Change flags</span>
+              <div>
+                {changeFlags.map((flag) => (
+                  <p key={flag}>{flag}</p>
+                ))}
+              </div>
+              <small>
+                Sensitivity thresholds only — these are not buy/sell signals.
+              </small>
+            </div>
+          ) : null}
+
           <div className="water-deltas">
             <ThesisDelta
               label="Top wallets"
@@ -451,7 +466,7 @@ export function WaterPanel({ result }: { result: ScanResult }) {
         <div className="water-empty">
           <p>No baseline saved for this token yet.</p>
           <button className="quiet-action" type="button" onClick={saveCurrent}>
-            Save this setup
+            Save &amp; watch this setup
           </button>
         </div>
       )}
@@ -525,6 +540,50 @@ function formatThesisDelta(
 
   const points = value * 100;
   return `${points >= 0 ? "+" : ""}${points.toFixed(1)}pp`;
+}
+
+
+function thesisChangeFlags(before: ThesisSnapshot, now: ThesisSnapshot) {
+  const flags: string[] = [];
+
+  if (
+    before.holderConcentration !== null &&
+    now.holderConcentration !== null
+  ) {
+    const delta = now.holderConcentration - before.holderConcentration;
+    if (Math.abs(delta) >= 0.05) {
+      flags.push(
+        `Top-wallet concentration ${delta >= 0 ? "+" : ""}${(
+          delta * 100
+        ).toFixed(1)}pp`,
+      );
+    }
+  }
+
+  if (before.buyShare !== null && now.buyShare !== null) {
+    const delta = now.buyShare - before.buyShare;
+    if (Math.abs(delta) >= 0.1) {
+      flags.push(
+        `Buy share ${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}pp`,
+      );
+    }
+  }
+
+  for (const [label, previous, current, threshold] of [
+    ["Liquidity", before.liquidityUsd, now.liquidityUsd, 0.2],
+    ["Market cap", before.marketCapUsd, now.marketCapUsd, 0.25],
+  ] as const) {
+    if (previous !== null && current !== null && previous !== 0) {
+      const delta = (current - previous) / Math.abs(previous);
+      if (Math.abs(delta) >= threshold) {
+        flags.push(
+          `${label} ${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(0)}%`,
+        );
+      }
+    }
+  }
+
+  return flags;
 }
 
 function formatSavedTime(timestamp: number) {
