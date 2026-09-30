@@ -5,7 +5,7 @@ use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use tokio::time::{sleep, Duration};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     str::FromStr,
     sync::{Arc, Mutex},
 };
@@ -40,6 +40,53 @@ impl RobinhoodHistoryClient {
         target_token: &str,
         limit: usize,
     ) -> Result<Vec<HolderCandidate>, String> {
+        let mut rows = self.current_holder_balances(target_token).await?;
+        rows.sort_by(|left, right| right.1.cmp(&left.1));
+
+        Ok(rows
+            .into_iter()
+            .take(limit)
+            .enumerate()
+            .map(|(index, (wallet, current_quantity))| HolderCandidate {
+                wallet,
+                current_quantity,
+                source_rank: index + 1,
+            })
+            .collect())
+    }
+
+    pub async fn top_holder_concentration(
+        &self,
+        target_token: &str,
+        top_n: usize,
+    ) -> Result<f64, String> {
+        let mut rows = self.current_holder_balances(target_token).await?;
+        rows.sort_by(|left, right| right.1.cmp(&left.1));
+
+        let total = rows
+            .iter()
+            .fold(Decimal::ZERO, |sum, (_, quantity)| sum + *quantity);
+        if total <= Decimal::ZERO {
+            return Err("Robinhood transfer replay produced zero circulating holder balance.".to_string());
+        }
+
+        let top = rows
+            .iter()
+            .take(top_n)
+            .fold(Decimal::ZERO, |sum, (_, quantity)| sum + *quantity);
+        let percent = (top / total) * Decimal::from(100u32);
+
+        percent
+            .to_string()
+            .parse::<f64>()
+            .map(|value| value.clamp(0.0, 100.0))
+            .map_err(|error| error.to_string())
+    }
+
+    async fn current_holder_balances(
+        &self,
+        target_token: &str,
+    ) -> Result<Vec<(String, Decimal)>, String> {
         let decimals = self.token_decimals(target_token).await?;
         let scan = self
             .scan_logs(target_token, vec![Value::String(TRANSFER_TOPIC.to_string())])
@@ -71,23 +118,11 @@ impl RobinhoodHistoryClient {
             }
         }
 
-        let mut rows: Vec<(String, Decimal)> = balances
+        Ok(balances
             .into_iter()
             .filter(|(wallet, quantity)| {
                 *quantity > Decimal::ZERO
                     && !wallet.eq_ignore_ascii_case("0x000000000000000000000000000000000000dead")
-            })
-            .collect();
-        rows.sort_by(|left, right| right.1.cmp(&left.1));
-
-        Ok(rows
-            .into_iter()
-            .take(limit)
-            .enumerate()
-            .map(|(index, (wallet, current_quantity))| HolderCandidate {
-                wallet,
-                current_quantity,
-                source_rank: index + 1,
             })
             .collect())
     }
