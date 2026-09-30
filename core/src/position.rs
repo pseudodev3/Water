@@ -81,7 +81,7 @@ pub async fn analyze_wallet_position(
                 .await
         }
         Chain::Robinhood => {
-            RobinhoodHistoryClient::new(http, config.robinhood_blockscout_url.clone())
+            RobinhoodHistoryClient::new(http, config.robinhood_rpc_url.clone())
                 .wallet_token_history(&wallet, &token)
                 .await
         }
