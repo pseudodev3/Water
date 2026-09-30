@@ -767,6 +767,7 @@ a:focus-visible {
   }
 
   .spin {
-    animation-duration: 1600ms;
+    animation: none;
+    opacity: 0.72;
   }
 }
