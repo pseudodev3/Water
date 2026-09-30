@@ -179,6 +179,7 @@ export type OriginEvidence = {
   primary_balance_percentage: number | null;
   creator_label: string | null;
   launchpad: {
+    slug: string;
     name: string;
     family: string;
     evidence: string;
