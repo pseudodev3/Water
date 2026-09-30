@@ -7,12 +7,16 @@ import {
   CircleDot,
   Database,
   Droplets,
+  MoveUpRight,
   ShieldCheck,
   TriangleAlert,
+  UsersRound,
 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
   Chain,
+  EarlyHolderMap,
+  fetchEarlyHolders,
   getHealth,
   Health,
   scanToken,
@@ -345,6 +349,14 @@ function ResultView({ result }: { result: ScanResult }) {
         </article>
       </div>
 
+      <EarlyHolderPanel
+        key={`early-${result.chain}-${result.address}`}
+        chain={result.chain}
+        token={result.address}
+      />
+
+      <DemandPanel demand={result.demand} />
+
       <div className="evidence-grid">
         <article className="evidence-panel">
           <div className="section-heading compact">
@@ -394,6 +406,253 @@ function ResultView({ result }: { result: ScanResult }) {
       </div>
     </section>
   );
+}
+
+
+function EarlyHolderPanel({
+  chain,
+  token,
+}: {
+  chain: Chain;
+  token: string;
+}) {
+  const [data, setData] = useState<EarlyHolderMap | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    setData(null);
+
+    fetchEarlyHolders(chain, token)
+      .then((value) => {
+        if (active) setData(value);
+      })
+      .catch((caught) => {
+        if (active) {
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "Holder history was unavailable.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [chain, token]);
+
+  return (
+    <article className="early-panel">
+      <div className="section-heading compact early-heading">
+        <div>
+          <div className="eyebrow">Early holder map</div>
+          <h3>Where the big wallets stand</h3>
+          <p className="section-subcopy">
+            Current large wallets, ordered by the earliest entry Water can
+            reconstruct.
+          </p>
+        </div>
+        <UsersRound size={18} strokeWidth={1.5} aria-hidden="true" />
+      </div>
+
+      {loading ? (
+        <div className="early-state">
+          <Activity className="spin" size={15} strokeWidth={1.5} />
+          Reading three wallet histories…
+        </div>
+      ) : error ? (
+        <div className="early-state muted">
+          Not enough verified holder history yet.
+        </div>
+      ) : data && data.holders.length ? (
+        <>
+          <div className="early-summary">
+            <div>
+              <span>Still holding</span>
+              <strong>{formatPercent(data.cohort_retained_from_peak)}</strong>
+              <small>of combined peak position</small>
+            </div>
+            <div>
+              <span>Distributed</span>
+              <strong>{formatPercent(data.cohort_distributed_fraction)}</strong>
+              <small>of observed acquired tokens</small>
+            </div>
+            <p>
+              {data.wallets_reconstructed} of {data.wallets_requested} wallet
+              histories reconstructed.
+            </p>
+          </div>
+
+          <div className="holder-list">
+            {data.holders.map((holder, index) => (
+              <div className="holder-row" key={holder.wallet}>
+                <div className="holder-identity">
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <div>
+                    <strong>{shortenAddress(holder.wallet)}</strong>
+                    <small>
+                      {formatFirstSeen(holder.first_acquired_at, data.observed_at_unix)}
+                    </small>
+                  </div>
+                </div>
+
+                <div className="holder-retention">
+                  <div>
+                    <span>Still holding</span>
+                    <strong>{formatPercent(holder.retained_from_peak)}</strong>
+                  </div>
+                  <div className="holder-track" aria-hidden="true">
+                    <span style={{ width: `${Math.max(2, holder.retained_from_peak * 100)}%` }} />
+                  </div>
+                  <small>
+                    {formatQuantity(holder.current_quantity)} now ·{" "}
+                    {formatQuantity(holder.peak_quantity)} peak
+                  </small>
+                </div>
+
+                <div className="holder-economics">
+                  <div>
+                    <span>Distributed</span>
+                    <strong>{formatPercent(holder.distributed_fraction)}</strong>
+                  </div>
+                  <div>
+                    <span>Known entry</span>
+                    <strong>{formatUsd(holder.average_entry_usd)}</strong>
+                  </div>
+                  <div>
+                    <span>Now / entry</span>
+                    <strong>
+                      {holder.current_multiple_on_entry === null
+                        ? "—"
+                        : `${holder.current_multiple_on_entry.toFixed(1)}×`}
+                    </strong>
+                  </div>
+                </div>
+
+                <span
+                  className={`basis-tag ${holder.basis_status.replace("_", "-")}`}
+                >
+                  {basisLabel(holder.basis_status, holder.basis_coverage)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="early-state muted">
+          No wallet histories could be reconstructed without guessing.
+        </div>
+      )}
+    </article>
+  );
+}
+
+function DemandPanel({ demand }: { demand: ScanResult["demand"] }) {
+  const buyShare = demand.buy_share_h1;
+  const hasTrades =
+    buyShare !== null &&
+    demand.buys_h1 !== null &&
+    demand.sells_h1 !== null;
+
+  return (
+    <article className="demand-panel">
+      <div className="section-heading compact demand-heading">
+        <div>
+          <div className="eyebrow">Who buys after me?</div>
+          <h3>Is demand still arriving?</h3>
+        </div>
+        <MoveUpRight size={18} strokeWidth={1.5} aria-hidden="true" />
+      </div>
+
+      {hasTrades ? (
+        <div className="demand-body">
+          <div className="demand-share">
+            <strong>{formatPercent(buyShare)}</strong>
+            <span>of top-pool trades were buys in the last hour</span>
+          </div>
+
+          <div className="demand-track" aria-hidden="true">
+            <span style={{ width: `${Math.max(2, buyShare * 100)}%` }} />
+          </div>
+
+          <div className="demand-facts">
+            <div>
+              <span>Buy transactions</span>
+              <strong>{demand.buys_h1}</strong>
+            </div>
+            <div>
+              <span>Sell transactions</span>
+              <strong>{demand.sells_h1}</strong>
+            </div>
+            <div>
+              <span>24h turnover</span>
+              <strong>
+                {demand.volume_to_liquidity === null
+                  ? "—"
+                  : `${demand.volume_to_liquidity.toFixed(1)}×`}
+              </strong>
+            </div>
+          </div>
+
+          <p className="method-note demand-note">
+            This shows transaction demand and turnover, not unique-buyer growth
+            yet. Water does not infer buyers it cannot verify.
+          </p>
+        </div>
+      ) : (
+        <p className="muted-copy demand-empty">
+          The top pool did not return enough recent transaction evidence.
+        </p>
+      )}
+    </article>
+  );
+}
+
+function formatPercent(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatQuantity(value: number) {
+  if (!Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(2)}B`;
+  }
+  if (Math.abs(value) >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M`;
+  }
+  if (Math.abs(value) >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}K`;
+  }
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+}
+
+function formatFirstSeen(timestamp: number | null, now: number) {
+  if (timestamp === null || timestamp <= 0) return "First entry unknown";
+
+  const seconds = Math.max(0, now - timestamp);
+  if (seconds < 60) return "First seen <1m ago";
+  if (seconds < 3_600) return `First seen ${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `First seen ${Math.floor(seconds / 3_600)}h ago`;
+  return `First seen ${Math.floor(seconds / 86_400)}d ago`;
+}
+
+function basisLabel(
+  status: "verified" | "partial_history" | "incomplete",
+  coverage: number,
+) {
+  if (status === "verified") return "basis verified";
+  if (status === "partial_history") {
+    return `${Math.round(coverage * 100)}% basis known`;
+  }
+  return "basis incomplete";
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
