@@ -701,7 +701,7 @@ function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
       <div className="section-heading compact origin-heading">
         <div>
           <div className="eyebrow">Origin &amp; control</div>
-          <h3>Who can still touch the machinery?</h3>
+          <h3>Where did control originate?</h3>
         </div>
         <Fingerprint size={18} strokeWidth={1.5} aria-hidden="true" />
       </div>
