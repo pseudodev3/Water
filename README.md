@@ -41,7 +41,7 @@ npm run dev
 ## UI skills
 
 ```bash
-./scripts/install-skills.sh
+sh scripts/install-skills.sh
 ```
 
 Installs `better-ui` and `emil-design-eng`.
