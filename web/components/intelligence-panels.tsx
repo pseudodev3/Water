@@ -389,6 +389,31 @@ export function AssetLinks({
   );
 }
 
+const launchpadLogos: Record<string, string> = {
+  pumpfun: "/launchpads/pumpfun.svg",
+  stonkfun: "/launchpads/stonkfun.svg",
+};
+
+function LaunchpadBrand({ slug, name }: { slug: string; name: string }) {
+  const logo = launchpadLogos[slug];
+
+  return (
+    <div className="launchpad-brand">
+      {logo ? (
+        <img className="launchpad-logo" src={logo} alt="" aria-hidden="true" />
+      ) : (
+        <span className="launchpad-logo-fallback" aria-hidden="true">
+          {name.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <div>
+        <span>Launchpad recognized</span>
+        <strong>{name}</strong>
+      </div>
+    </div>
+  );
+}
+
 export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
   const [data, setData] = useState<OriginEvidence | null>(null);
   const [loading, setLoading] = useState(true);
@@ -433,16 +458,25 @@ export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
         <div className="origin-body">
           {data.launchpad ? (
             <div className="launchpad-match">
-              <span>Launchpad recognized</span>
-              <strong>{data.launchpad.name}</strong>
+              <LaunchpadBrand
+                slug={data.launchpad.slug}
+                name={data.launchpad.name}
+              />
               <small>{data.launchpad.evidence}</small>
             </div>
           ) : (
             <div className="launchpad-match quiet">
-              <span>Launchpad</span>
-              <strong>Not identified</strong>
+              <div className="launchpad-brand">
+                <span className="launchpad-logo-fallback" aria-hidden="true">
+                  ?
+                </span>
+                <div>
+                  <span>Launchpad</span>
+                  <strong>Not identified</strong>
+                </div>
+              </div>
               <small>
-                Water did not find a high-confidence program/factory match.
+                Water did not find a high-confidence launchpad fingerprint.
               </small>
             </div>
           )}

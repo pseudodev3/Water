@@ -1053,6 +1053,40 @@ a:focus-visible {
   background: transparent;
 }
 
+.launchpad-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.launchpad-brand > div {
+  min-width: 0;
+}
+
+.launchpad-logo,
+.launchpad-logo-fallback {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 9px;
+}
+
+.launchpad-logo {
+  display: block;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.launchpad-logo-fallback {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  color: var(--faint);
+  background: rgba(255, 255, 255, 0.018);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .launchpad-match span {
   display: block;
   color: var(--faint);
@@ -1064,7 +1098,7 @@ a:focus-visible {
 
 .launchpad-match strong {
   display: block;
-  margin-top: 5px;
+  margin-top: 3px;
   color: var(--text);
   font-size: 16px;
   font-weight: 590;
