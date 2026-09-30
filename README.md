@@ -118,7 +118,7 @@ Water does not infer unrelated wallets to be insiders.
 
 ### WATER baseline
 
-The web UI can save a token's current structure as a local baseline and compare later scans against it: wallet concentration, buy share, liquidity and market cap. The baseline stays in browser storage; it is not uploaded to Water.
+The web UI can save a token's current structure as a local baseline and compare later scans against it: wallet concentration, buy share, liquidity and market cap. Large changes are surfaced as explicit on-read change flags using visible sensitivity thresholds; they are not trading signals. The baseline stays in browser storage and is not uploaded to Water.
 
 ### Memory & calibration
 
