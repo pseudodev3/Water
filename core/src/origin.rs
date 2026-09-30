@@ -12,6 +12,7 @@ pub struct OriginRequest {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LaunchpadEvidence {
+    pub slug: String,
     pub name: String,
     pub family: String,
     pub evidence: String,
@@ -283,82 +284,189 @@ async fn detect_solana_launchpad(
     config: &Config,
     mint: &str,
 ) -> Option<LaunchpadEvidence> {
-    let signatures = solana_rpc_with_fallback(
-        http,
-        &config.solana_rpc_url,
-        &config.solana_fallback_rpc_url,
-        "getSignaturesForAddress",
-        json!([mint, {"limit": 100}]),
-    )
-    .await
-    .ok()?;
+    const SIGNATURE_PAGE_LIMIT: usize = 1_000;
+    const MAX_SIGNATURE_PAGES: usize = 2;
+    const OLDEST_CANDIDATES_PER_PAGE: usize = 5;
 
-    let rows = signatures.as_array()?;
-    let signature = rows
-        .last()
-        .and_then(|row| row.get("signature"))
-        .and_then(Value::as_str)?;
+    let mut before: Option<String> = None;
+    let mut candidate_signatures = Vec::new();
 
-    let transaction = solana_rpc_with_fallback(
-        http,
-        &config.solana_rpc_url,
-        &config.solana_fallback_rpc_url,
-        "getTransaction",
-        json!([
-            signature,
-            {
-                "encoding": "jsonParsed",
-                "commitment": "confirmed",
-                "maxSupportedTransactionVersion": 0
+    for _ in 0..MAX_SIGNATURE_PAGES {
+        let mut options = serde_json::Map::new();
+        options.insert("limit".to_string(), json!(SIGNATURE_PAGE_LIMIT));
+        if let Some(cursor) = before.as_ref() {
+            options.insert("before".to_string(), json!(cursor));
+        }
+
+        let signatures = solana_rpc_with_fallback(
+            http,
+            &config.solana_rpc_url,
+            &config.solana_fallback_rpc_url,
+            "getSignaturesForAddress",
+            json!([mint, Value::Object(options)]),
+        )
+        .await
+        .ok()?;
+
+        let rows = signatures.as_array()?;
+        if rows.is_empty() {
+            break;
+        }
+
+        for row in rows.iter().rev().take(OLDEST_CANDIDATES_PER_PAGE) {
+            if let Some(signature) = row.get("signature").and_then(Value::as_str) {
+                candidate_signatures.push(signature.to_string());
             }
-        ]),
-    )
-    .await
-    .ok()?;
+        }
 
-    let program_ids = solana_transaction_program_ids(&transaction);
+        before = rows
+            .last()
+            .and_then(|row| row.get("signature"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
 
-    const PROGRAMS: &[(&str, &str, &str)] = &[
-        (
-            "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e",
-            "Pump.fun Mayhem",
-            "Pump.fun",
-        ),
-        (
-            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
-            "Pump.fun",
-            "Pump.fun",
-        ),
-        (
-            "boop8hVGQGqehUK2iVEMEnMrL5RbjywRzHKBmBE7ry4",
-            "Boop.fun",
-            "Boop.fun",
-        ),
-        (
-            "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
-            "Raydium LaunchLab family",
-            "Raydium LaunchLab",
-        ),
-        (
-            "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
-            "Meteora DBC family",
-            "Meteora Dynamic Bonding Curve",
-        ),
-        (
-            "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
-            "Moonshot",
-            "Moonshot",
-        ),
-    ];
+        if rows.len() < SIGNATURE_PAGE_LIMIT {
+            break;
+        }
+    }
 
-    PROGRAMS.iter().find_map(|(program, name, family)| {
-        program_ids.iter().any(|seen| seen == program).then(|| LaunchpadEvidence {
-            name: (*name).to_string(),
-            family: (*family).to_string(),
-            evidence: format!("Mint history invoked launch program {program}."),
-            source: "Solana transaction program match".to_string(),
+    // Check the oldest candidates first. Water only names the launchpad when it
+    // sees a launch-specific fingerprint; shared Raydium infrastructure alone
+    // is deliberately not enough to call something StonkFun.
+    candidate_signatures.reverse();
+    candidate_signatures.dedup();
+
+    for signature in candidate_signatures {
+        let transaction = match solana_rpc_with_fallback(
+            http,
+            &config.solana_rpc_url,
+            &config.solana_fallback_rpc_url,
+            "getTransaction",
+            json!([
+                signature,
+                {
+                    "encoding": "jsonParsed",
+                    "commitment": "confirmed",
+                    "maxSupportedTransactionVersion": 0
+                }
+            ]),
+        )
+        .await
+        {
+            Ok(transaction) => transaction,
+            Err(_) => continue,
+        };
+
+        if let Some(launchpad) = recognize_solana_launchpad(&transaction) {
+            return Some(launchpad);
+        }
+    }
+
+    None
+}
+
+fn recognize_solana_launchpad(transaction: &Value) -> Option<LaunchpadEvidence> {
+    const PUMP_PROGRAM: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+    const PUMP_MAYHEM_PROGRAM: &str = "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e";
+
+    const STONKFUN_STANDARD_CONFIG: &str =
+        "4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7";
+    const STONKFUN_REWARD_CONFIG: &str =
+        "6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt";
+    const STONKFUN_LAUNCHER: &str =
+        "5CEbueQnq1Ym2uSSx2xXds3jQAqT1BDnkA59RZobSPAG";
+    const RAYDIUM_CLMM_PROGRAM: &str =
+        "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
+
+    let accounts = solana_transaction_account_keys(transaction);
+    let programs = solana_transaction_program_ids(transaction);
+
+    if accounts.iter().any(|address| address == STONKFUN_REWARD_CONFIG) {
+        return Some(LaunchpadEvidence {
+            slug: "stonkfun".to_string(),
+            name: "StonkFun".to_string(),
+            family: "StonkFun".to_string(),
+            evidence: format!(
+                "Launch transaction references StonkFun reward config {STONKFUN_REWARD_CONFIG}."
+            ),
+            source: "Solana launch-config match".to_string(),
+        });
+    }
+
+    if accounts.iter().any(|address| address == STONKFUN_STANDARD_CONFIG) {
+        return Some(LaunchpadEvidence {
+            slug: "stonkfun".to_string(),
+            name: "StonkFun".to_string(),
+            family: "StonkFun".to_string(),
+            evidence: format!(
+                "Launch transaction references StonkFun standard config {STONKFUN_STANDARD_CONFIG}."
+            ),
+            source: "Solana launch-config match".to_string(),
+        });
+    }
+
+    // StonkFun's older direct-pool launches predate its LaunchLab configs. The
+    // launcher signer plus the Raydium CLMM program is the conservative legacy
+    // fingerprint; CLMM by itself is not treated as StonkFun.
+    if accounts.iter().any(|address| address == STONKFUN_LAUNCHER)
+        && programs.iter().any(|program| program == RAYDIUM_CLMM_PROGRAM)
+    {
+        return Some(LaunchpadEvidence {
+            slug: "stonkfun".to_string(),
+            name: "StonkFun".to_string(),
+            family: "StonkFun".to_string(),
+            evidence: format!(
+                "Legacy launch transaction contains StonkFun launcher {STONKFUN_LAUNCHER} and Raydium CLMM."
+            ),
+            source: "Solana launcher + program match".to_string(),
+        });
+    }
+
+    if programs
+        .iter()
+        .any(|program| program == PUMP_PROGRAM || program == PUMP_MAYHEM_PROGRAM)
+    {
+        return Some(LaunchpadEvidence {
+            slug: "pumpfun".to_string(),
+            name: "Pump.fun".to_string(),
+            family: "Pump.fun".to_string(),
+            evidence: "Launch transaction invokes a Pump.fun launch program.".to_string(),
+            source: "Solana launch-program match".to_string(),
+        });
+    }
+
+    None
+}
+
+fn solana_transaction_account_keys(transaction: &Value) -> Vec<String> {
+    let mut accounts = transaction
+        .pointer("/transaction/message/accountKeys")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|key| {
+            key.as_str()
+                .or_else(|| key.get("pubkey").and_then(Value::as_str))
+                .map(ToOwned::to_owned)
         })
-    })
+        .collect::<Vec<_>>();
+
+    if let Some(loaded) = transaction.pointer("/meta/loadedAddresses") {
+        for side in ["writable", "readonly"] {
+            if let Some(values) = loaded.get(side).and_then(Value::as_array) {
+                accounts.extend(
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToOwned::to_owned),
+                );
+            }
+        }
+    }
+
+    accounts.sort();
+    accounts.dedup();
+    accounts
 }
 
 fn solana_transaction_program_ids(transaction: &Value) -> Vec<String> {
@@ -508,6 +616,7 @@ fn recognize_robinhood_launchpad(
             .iter()
             .any(|pattern| joined.contains(pattern))
             .then(|| LaunchpadEvidence {
+                slug: robinhood_launchpad_slug(name).to_string(),
                 name: (*name).to_string(),
                 family: "Robinhood Chain launchpad".to_string(),
                 evidence: match creator {
@@ -519,6 +628,35 @@ fn recognize_robinhood_launchpad(
                 source: "Blockscout creator/factory label".to_string(),
             })
     })
+}
+
+fn robinhood_launchpad_slug(name: &str) -> &'static str {
+    match name {
+        "Pons" => "pons",
+        "hood.fun" => "hoodfun",
+        "Long.xyz" => "longxyz",
+        "NOXA Fun" => "noxa",
+        "Coinbarrel" => "coinbarrel",
+        "Robinpad" => "robinpad",
+        "StonkBrokers" => "stonkbrokers",
+        "token.select" => "tokenselect",
+        "hookr.fun" => "hookr",
+        "v4.fun" => "v4fun",
+        "RaiseHood" => "raisehood",
+        "PerpsHood" => "perpshood",
+        "PairYard" => "pairyard",
+        "Pairex" => "pairex",
+        "Unihood" => "unihood",
+        "ArrowPad" => "arrowpad",
+        "Ponzu" => "ponzu",
+        "MerryForge" => "merryforge",
+        "par.family" => "parfamily",
+        "Pyre" => "pyre",
+        "Froth" => "froth",
+        "Peeps" => "peeps",
+        "Pump.fun" => "pumpfun",
+        _ => "unknown",
+    }
 }
 
 fn collect_label_strings(value: &Value, output: &mut Vec<String>) {
@@ -699,25 +837,63 @@ mod tests {
     }
 
     #[test]
-    fn collects_solana_program_ids_from_parsed_transaction() {
+    fn recognizes_stonkfun_before_shared_launchlab_infrastructure() {
         let transaction = json!({
             "transaction": {
                 "message": {
                     "accountKeys": [
-                        {"pubkey": "11111111111111111111111111111111"}
+                        {"pubkey": "4E876qZTE9FJMrBzgVtBrSrzz2TLivB5Y5QXPjB4gZL7"},
+                        {"pubkey": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"}
                     ],
+                    "instructions": [
+                        {"programId": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"}
+                    ]
+                }
+            },
+            "meta": {"innerInstructions": []}
+        });
+
+        let launchpad = recognize_solana_launchpad(&transaction).unwrap();
+        assert_eq!(launchpad.slug, "stonkfun");
+        assert_eq!(launchpad.name, "StonkFun");
+    }
+
+    #[test]
+    fn generic_launchlab_is_not_mislabeled_stonkfun() {
+        let transaction = json!({
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"}
+                    ],
+                    "instructions": [
+                        {"programId": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"}
+                    ]
+                }
+            },
+            "meta": {"innerInstructions": []}
+        });
+
+        assert!(recognize_solana_launchpad(&transaction).is_none());
+    }
+
+    #[test]
+    fn recognizes_pumpfun_program() {
+        let transaction = json!({
+            "transaction": {
+                "message": {
+                    "accountKeys": [],
                     "instructions": [
                         {"programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"}
                     ]
                 }
             },
-            "meta": {
-                "innerInstructions": []
-            }
+            "meta": {"innerInstructions": []}
         });
 
-        let programs = solana_transaction_program_ids(&transaction);
-        assert!(programs.iter().any(|value| value == "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"));
+        let launchpad = recognize_solana_launchpad(&transaction).unwrap();
+        assert_eq!(launchpad.slug, "pumpfun");
+        assert_eq!(launchpad.name, "Pump.fun");
     }
 
     #[test]
