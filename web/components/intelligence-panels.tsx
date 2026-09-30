@@ -512,21 +512,20 @@ export function CounterCasePanel({ result }: { result: ScanResult }) {
     (pace >= 1 ? continuation : fragility).push(sentence);
   }
 
-  if (result.holder_evidence.top_ten_percentage !== null) {
-    fragility.push(
-      `The largest verified wallet holders control ${result.holder_evidence.top_ten_percentage.toFixed(
-        1,
-      )}% of supply.`,
-    );
+  const concentration = result.pressure.components.find(
+    (component) => component.key === "top_holder_concentration",
+  );
+  if (concentration) {
+    const sentence = `Top-wallet concentration is ${concentration.observed} of supply.`;
+    (concentration.pressure >= 0.5 ? fragility : continuation).push(sentence);
   }
 
   const coverage = result.pressure.components.find(
     (component) => component.key === "liquidity_coverage",
   );
   if (coverage) {
-    fragility.push(
-      `Observed DEX liquidity covers ${coverage.observed} of the valuation reference.`,
-    );
+    const sentence = `Observed DEX liquidity covers ${coverage.observed} of the valuation reference.`;
+    (coverage.pressure >= 0.5 ? fragility : continuation).push(sentence);
   }
 
   return (
@@ -536,7 +535,8 @@ export function CounterCasePanel({ result }: { result: ScanResult }) {
           <div className="eyebrow">Countercase</div>
           <h3>Build both sides before you decide.</h3>
           <p className="section-subcopy">
-            Same evidence, argued in opposite directions. No hidden score.
+            Same evidence, argued in opposite directions. Placement uses the
+            same neutral midpoints as Water&apos;s visible diagnostics.
           </p>
         </div>
         <Scale size={18} strokeWidth={1.5} aria-hidden="true" />
