@@ -161,3 +161,48 @@ export async function fetchEarlyHolders(
     window.clearTimeout(timer);
   }
 }
+
+export type OriginEvidence = {
+  chain: Chain;
+  token: string;
+  primary_label: string;
+  primary_address: string | null;
+  secondary_label: string | null;
+  secondary_address: string | null;
+  primary_balance_percentage: number | null;
+  active_controls: string[];
+  source: string;
+  detail: string;
+};
+
+export async function fetchOrigin(
+  chain: Chain,
+  token: string,
+): Promise<OriginEvidence> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 12_000);
+
+  try {
+    const response = await fetch(`${API_URL}/v1/origin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chain, token }),
+      signal: controller.signal,
+    });
+
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(body?.error ?? "Origin evidence was unavailable.");
+    }
+
+    return body;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Origin evidence took too long to verify.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
