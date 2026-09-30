@@ -1,12 +1,12 @@
 # Water
 
-Water is an evidence-first, multi-chain trading research terminal built around a simple idea: **understand the position of the people on the other side of your trade**.
+Water is an evidence-first, multi-chain trading research terminal built around one question:
 
-V1 supports Solana and Robinhood Chain, uses GMGN as the primary market-data provider, verifies assets directly against each chain, and derives a transparent exit-pressure diagnostic from observable holder/trader data.
+**What does the other side of this trade see?**
 
-Water does **not** issue buy/sell instructions. It exposes positioning, pressure, provenance, and the evidence behind each derived metric.
+V1 supports Solana and Robinhood Chain with no paid market-data key required.
 
-## Architecture
+## Data path
 
 ```text
 web/  Next.js phone-first UI
@@ -14,19 +14,29 @@ web/  Next.js phone-first UI
   v
 core/ Rust + Axum
   |
-  +-- providers/gmgn.rs        shared market data (sol + robinhood)
-  +-- chains/solana.rs         direct Solana account verification
-  +-- chains/robinhood.rs      direct EVM contract verification
-  +-- engine.rs                deterministic diagnostics
+  +-- GeckoTerminal public API   price / liquidity / volume / pool flow
+  +-- Solana JSON-RPC            mint + supply + largest token accounts
+  +-- Robinhood JSON-RPC         contract verification
+  +-- Robinhood Blockscout       indexed token holders
+  +-- engine.rs                  deterministic diagnostics
 ```
 
-The first release stays intentionally small: one Rust service, one web app, no queues or pretend microservices.
+Water does not invent missing data and does not issue buy/sell instructions. Every pressure component is derived from visible source values.
+
+### Current pressure inputs
+
+- top-ten holder concentration
+- one-hour sell transaction share
+- DEX liquidity coverage relative to market cap / FDV
+
+The index is a diagnostic, not a prediction or calibrated probability.
 
 ## Run locally
 
+No GMGN key, LLM key, wallet private key, or paid API key is required for V1.
+
 ```bash
 cp .env.example .env
-# set GMGN_API_KEY
 cargo run -p water-core
 ```
 
@@ -44,20 +54,31 @@ npm run dev
 sh scripts/install-skills.sh
 ```
 
-Installs `better-ui` and `emil-design-eng`.
+Installs:
+
+- `better-ui` by Jakub Krehel
+- `emil-design-eng` by Emil Kowalski
 
 ## API
 
 - `GET /health`
 - `POST /v1/scan`
 
+Solana:
+
 ```json
-{"chain":"solana","address":"<token address>"}
+{"chain":"solana","address":"<token mint>"}
 ```
+
+Robinhood Chain:
 
 ```json
 {"chain":"robinhood","address":"0x..."}
 ```
+
+## Limits
+
+GeckoTerminal's public API is rate-limited and cached, so Water V1 is a research terminal rather than a low-latency execution engine. Paid/indexed providers can be added later behind adapters without changing the evidence model.
 
 ## Security
 
