@@ -2,6 +2,7 @@ mod chains;
 mod cohort;
 mod config;
 mod early;
+mod early_map;
 mod flow;
 mod history;
 mod engine;
@@ -64,6 +65,7 @@ async fn main() {
         .route("/v1/scan", post(scan))
         .route("/v1/wallet-position", post(wallet_position))
         .route("/v1/holder-cohort", post(holder_cohort))
+        .route("/v1/early-holders", post(early_holders))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -193,6 +195,26 @@ async fn holder_cohort(
     Json(request): Json<cohort::HolderCohortRequest>,
 ) -> Result<Json<cohort::HolderCohortResponse>, (StatusCode, Json<Value>)> {
     cohort::analyze_holder_cohort(
+        state.http.clone(),
+        &state.config,
+        &state.gecko,
+        request,
+    )
+    .await
+    .map(Json)
+    .map_err(|message| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": message })),
+        )
+    })
+}
+
+async fn early_holders(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<early_map::EarlyHolderMapRequest>,
+) -> Result<Json<early_map::EarlyHolderMapResponse>, (StatusCode, Json<Value>)> {
+    early_map::analyze_early_holder_map(
         state.http.clone(),
         &state.config,
         &state.gecko,
