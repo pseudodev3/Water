@@ -9,11 +9,21 @@ use tokio::time::{sleep, timeout, Duration};
 pub async fn observe(
     http: &reqwest::Client,
     rpc_url: &str,
+    holder_index_url: &str,
+    holder_index_key: Option<&str>,
     address: &str,
 ) -> (ChainEvidence, HolderEvidence) {
     let chain_id_request = rpc(http, rpc_url, "eth_chainId", json!([]));
     let code_request = rpc(http, rpc_url, "eth_getCode", json!([address, "latest"]));
-    let holder_client = RobinhoodHistoryClient::new(http.clone(), rpc_url.to_string());
+    let holder_client = match holder_index_key {
+        Some(key) => RobinhoodHistoryClient::with_holder_index(
+            http.clone(),
+            rpc_url.to_string(),
+            holder_index_url.to_string(),
+            key.to_string(),
+        ),
+        None => RobinhoodHistoryClient::new(http.clone(), rpc_url.to_string()),
+    };
     let holder_request = async {
         match timeout(
             Duration::from_secs(9),
@@ -23,7 +33,7 @@ pub async fn observe(
         {
             Ok(result) => result,
             Err(_) => Err(
-                "Robinhood wallet-holder reconstruction exceeded the 9s scan budget; market, supply, and chain evidence were returned without waiting longer."
+                "Robinhood indexed wallet-holder lookup exceeded the 9s scan budget; market, supply, and chain evidence were returned without waiting longer."
                     .to_string(),
             ),
         }
@@ -127,7 +137,7 @@ pub async fn observe(
         HolderEvidence {
             top_ten_percentage: concentration,
             total_supply,
-            source: "Robinhood wallet-holder reconstruction".to_string(),
+            source: "Robinhood indexed wallet-holder reconstruction".to_string(),
             detail: format!("{} {}", supply_detail, holder_detail),
         },
     )

@@ -27,6 +27,8 @@ const MIN_HOLDER_BLOCK_WINDOW: u64 = 250;
 pub struct RobinhoodHistoryClient {
     http: reqwest::Client,
     rpc_url: String,
+    holder_index_url: Option<String>,
+    holder_index_key: Option<String>,
     decimals_cache: Arc<Mutex<HashMap<String, u32>>>,
     block_time_cache: Arc<Mutex<HashMap<String, u64>>>,
 }
@@ -44,6 +46,24 @@ impl RobinhoodHistoryClient {
         Self {
             http,
             rpc_url,
+            holder_index_url: None,
+            holder_index_key: None,
+            decimals_cache: Arc::new(Mutex::new(HashMap::new())),
+            block_time_cache: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn with_holder_index(
+        http: reqwest::Client,
+        rpc_url: String,
+        holder_index_url: String,
+        holder_index_key: String,
+    ) -> Self {
+        Self {
+            http,
+            rpc_url,
+            holder_index_url: Some(holder_index_url.trim_end_matches('/').to_string()),
+            holder_index_key: Some(holder_index_key),
             decimals_cache: Arc::new(Mutex::new(HashMap::new())),
             block_time_cache: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -65,7 +85,7 @@ impl RobinhoodHistoryClient {
         target_token: &str,
         limit: usize,
     ) -> Result<RobinhoodWalletHolderSet, String> {
-        let mut rows = self.current_holder_balances(target_token).await?;
+        let mut rows = self.indexed_holder_balances(target_token).await?;
         rows.sort_by(|left, right| right.1.cmp(&left.1));
 
         let all_rows_exhausted = rows.len() <= MAX_HOLDER_CLASSIFICATION_CANDIDATES;
@@ -196,6 +216,130 @@ impl RobinhoodHistoryClient {
 
         biguint_to_decimal(&raw, decimals)
             .ok_or_else(|| "totalSupply exceeded Water's decimal range".to_string())
+    }
+
+    async fn indexed_holder_balances(
+        &self,
+        target_token: &str,
+    ) -> Result<Vec<(String, Decimal)>, String> {
+        let base = self
+            .holder_index_url
+            .as_ref()
+            .ok_or_else(|| {
+                "Robinhood wallet-holder reconstruction needs the indexed holder source; BLOCKSCOUT_API_KEY is not configured."
+                    .to_string()
+            })?;
+        let api_key = self
+            .holder_index_key
+            .as_ref()
+            .ok_or_else(|| "BLOCKSCOUT_API_KEY is not configured.".to_string())?;
+        let decimals = self.token_decimals(target_token).await?;
+
+        let mut url = format!("{base}/tokens/{target_token}/holders");
+        let mut balances = Vec::new();
+        let mut pages = 0usize;
+
+        loop {
+            if pages >= 5 || balances.len() >= MAX_HOLDER_CLASSIFICATION_CANDIDATES {
+                break;
+            }
+
+            let response = self
+                .http
+                .get(&url)
+                .header("Accept", "application/json")
+                .header("User-Agent", "water/0.1")
+                .query(&[("apikey", api_key)])
+                .send()
+                .await
+                .map_err(|error| format!("Blockscout holder index request failed: {error}"))?;
+
+            let status = response.status();
+            let body = response
+                .json::<Value>()
+                .await
+                .map_err(|error| format!("Blockscout holder index returned unreadable JSON: {error}"))?;
+
+            if !status.is_success() {
+                return Err(format!(
+                    "Blockscout holder index returned HTTP {}.",
+                    status.as_u16()
+                ));
+            }
+
+            let payload = body.get("data").unwrap_or(&body);
+            let items = payload
+                .get("items")
+                .and_then(Value::as_array)
+                .or_else(|| body.get("items").and_then(Value::as_array))
+                .ok_or_else(|| {
+                    "Blockscout holder index did not return an items array.".to_string()
+                })?;
+
+            for item in items {
+                if balances.len() >= MAX_HOLDER_CLASSIFICATION_CANDIDATES {
+                    break;
+                }
+
+                let Some(address) = indexed_holder_address(item) else {
+                    continue;
+                };
+                if is_zero_address(&address)
+                    || address.eq_ignore_ascii_case(
+                        "0x000000000000000000000000000000000000dead",
+                    )
+                {
+                    continue;
+                }
+
+                let Some(raw) = indexed_holder_raw_value(item) else {
+                    continue;
+                };
+                let Some(quantity) = scaled_decimal(&raw, decimals) else {
+                    continue;
+                };
+                if quantity > Decimal::ZERO {
+                    balances.push((address, quantity));
+                }
+            }
+
+            pages += 1;
+
+            let next = payload
+                .get("next_page_params")
+                .or_else(|| body.get("next_page_params"));
+            let Some(next) = next.filter(|value| !value.is_null()) else {
+                break;
+            };
+            let Some(params) = next.as_object() else {
+                break;
+            };
+            if params.is_empty() {
+                break;
+            }
+
+            let mut next_url = reqwest::Url::parse(&format!(
+                "{base}/tokens/{target_token}/holders"
+            ))
+            .map_err(|error| format!("Could not build Blockscout pagination URL: {error}"))?;
+            {
+                let mut pairs = next_url.query_pairs_mut();
+                for (key, value) in params {
+                    if let Some(value) = value_as_query_string(value) {
+                        pairs.append_pair(key, &value);
+                    }
+                }
+            }
+            url = next_url.to_string();
+        }
+
+        if balances.is_empty() {
+            return Err(
+                "Blockscout holder index returned no usable ERC-20 holder balances.".to_string(),
+            );
+        }
+
+        Ok(balances)
     }
 
     async fn current_holder_balances(
@@ -869,6 +1013,37 @@ impl LogScan {
 }
 
 
+fn indexed_holder_address(item: &Value) -> Option<String> {
+    item.pointer("/address/hash")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("address_hash").and_then(Value::as_str))
+        .or_else(|| item.get("address").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+}
+
+fn indexed_holder_raw_value(item: &Value) -> Option<String> {
+    item.get("value")
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+        .or_else(|| {
+            item.pointer("/balance/value")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn value_as_query_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
 fn has_contract_code(value: &Value) -> bool {
     value
         .as_str()
@@ -952,6 +1127,23 @@ fn scaled_decimal(raw: &str, decimals: u32) -> Option<Decimal> {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn parses_blockscout_holder_shapes() {
+        let item = json!({
+            "address": {
+                "hash": "0x1111111111111111111111111111111111111111",
+                "is_contract": false
+            },
+            "value": "2500000"
+        });
+
+        assert_eq!(
+            indexed_holder_address(&item).as_deref(),
+            Some("0x1111111111111111111111111111111111111111")
+        );
+        assert_eq!(indexed_holder_raw_value(&item).as_deref(), Some("2500000"));
+    }
 
     #[test]
     fn contract_code_detection_is_strict() {
