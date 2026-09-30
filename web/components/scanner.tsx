@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import {
   AssetLinks,
+  CounterCasePanel,
   DemandPanel,
   EarlyHolderPanel,
   MemoryPanel,
@@ -361,6 +362,8 @@ function ResultView({ result }: { result: ScanResult }) {
       />
 
       <DemandPanel demand={result.demand} />
+
+      <CounterCasePanel result={result} />
 
       <OriginPanel
         key={`origin-${result.chain}-${result.address}`}
