@@ -8,6 +8,7 @@ import {
   History,
   MoveUpRight,
   Save,
+  Scale,
   UsersRound,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -495,6 +496,89 @@ export function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
 }
 
 
+export function CounterCasePanel({ result }: { result: ScanResult }) {
+  const continuation: string[] = [];
+  const fragility: string[] = [];
+
+  if (result.demand.buy_share_h1 !== null) {
+    const buyShare = result.demand.buy_share_h1;
+    const sentence = `${Math.round(buyShare * 100)}% of last-hour top-pool transactions were buys.`;
+    (buyShare >= 0.5 ? continuation : fragility).push(sentence);
+  }
+
+  if (result.demand.buyer_arrival_vs_h24_hourly !== null) {
+    const pace = result.demand.buyer_arrival_vs_h24_hourly;
+    const sentence = `Unique-buyer arrival is ${pace.toFixed(1)}× the token's 24h hourly average.`;
+    (pace >= 1 ? continuation : fragility).push(sentence);
+  }
+
+  if (result.holder_evidence.top_ten_percentage !== null) {
+    fragility.push(
+      `The largest verified wallet holders control ${result.holder_evidence.top_ten_percentage.toFixed(
+        1,
+      )}% of supply.`,
+    );
+  }
+
+  const coverage = result.pressure.components.find(
+    (component) => component.key === "liquidity_coverage",
+  );
+  if (coverage) {
+    fragility.push(
+      `Observed DEX liquidity covers ${coverage.observed} of the valuation reference.`,
+    );
+  }
+
+  return (
+    <article className="countercase-panel">
+      <div className="section-heading compact countercase-heading">
+        <div>
+          <div className="eyebrow">Countercase</div>
+          <h3>Build both sides before you decide.</h3>
+          <p className="section-subcopy">
+            Same evidence, argued in opposite directions. No hidden score.
+          </p>
+        </div>
+        <Scale size={18} strokeWidth={1.5} aria-hidden="true" />
+      </div>
+
+      <div className="countercase-body">
+        <EvidenceCase
+          label="Continuation case"
+          items={continuation}
+          empty="No current buyer-side evidence clears its neutral comparison."
+        />
+        <EvidenceCase
+          label="Fragility case"
+          items={fragility}
+          empty="No current holder/liquidity constraint was available."
+        />
+      </div>
+    </article>
+  );
+}
+
+function EvidenceCase({
+  label,
+  items,
+  empty,
+}: {
+  label: string;
+  items: string[];
+  empty: string;
+}) {
+  return (
+    <div className="evidence-case">
+      <span>{label}</span>
+      {items.length ? (
+        items.slice(0, 3).map((item) => <p key={item}>{item}</p>)
+      ) : (
+        <p className="case-empty">{empty}</p>
+      )}
+    </div>
+  );
+}
+
 type ThesisSnapshot = {
   savedAt: number;
   holderConcentration: number | null;
@@ -832,6 +916,12 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
                 now={current.liquidityUsd}
                 kind="relative"
               />
+              <MemoryDelta
+                label="Top wallets"
+                before={previous.holderConcentration}
+                now={current.holderConcentration}
+                kind="points"
+              />
             </div>
           </div>
         ) : (
@@ -839,6 +929,8 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
             First saved read for this token. The next read creates a comparison.
           </p>
         )}
+
+        <HolderConcentrationPath history={tokenHistory} />
 
         <div className="calibration-strip">
           <div>
@@ -856,6 +948,35 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
         </p>
       </div>
     </article>
+  );
+}
+
+function HolderConcentrationPath({
+  history,
+}: {
+  history: ScanMemory[];
+}) {
+  const points = history
+    .filter((item) => item.holderConcentration !== null)
+    .slice(-5);
+
+  if (points.length < 2) return null;
+
+  return (
+    <div className="holder-path">
+      <span>Top-wallet concentration path</span>
+      <div>
+        {points.map((point, index) => (
+          <span key={`${point.at}-${index}`}>
+            <strong>{point.holderConcentration!.toFixed(1)}%</strong>
+            {index < points.length - 1 ? (
+              <ArrowRight size={11} strokeWidth={1.5} aria-hidden="true" />
+            ) : null}
+          </span>
+        ))}
+      </div>
+      <small>Oldest → newest from your saved reads on this device.</small>
+    </div>
   );
 }
 
