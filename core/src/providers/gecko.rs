@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use thiserror::Error;
+use tokio::time::{sleep, Duration};
 
 const SOL_WRAPPED_NATIVE: &str = "So11111111111111111111111111111111111111112";
 const ROBINHOOD_WRAPPED_NATIVE: &str = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
@@ -241,36 +242,77 @@ impl GeckoClient {
             self.host
         );
 
-        let response = self
-            .http
-            .get(url)
-            .header("Accept", "application/json;version=20230203")
-            .header("User-Agent", "water/0.1")
-            .query(&[
-                ("aggregate", "1".to_string()),
-                ("before_timestamp", before_timestamp.to_string()),
-                ("limit", "1000".to_string()),
-                ("currency", "usd".to_string()),
-                ("token", token.to_string()),
-            ])
-            .send()
-            .await
-            .map_err(|error| GeckoError::Transport(error.to_string()))?;
+        let query = [
+            ("aggregate", "1".to_string()),
+            ("before_timestamp", before_timestamp.to_string()),
+            ("limit", "1000".to_string()),
+            ("currency", "usd".to_string()),
+            ("token", token.to_string()),
+        ];
+        let mut last_error = None;
 
-        parse_response(response).await
+        for attempt in 0..3 {
+            let response = self
+                .http
+                .get(&url)
+                .header("Accept", "application/json;version=20230203")
+                .header("User-Agent", "water/0.1")
+                .query(&query)
+                .send()
+                .await
+                .map_err(|error| GeckoError::Transport(error.to_string()))?;
+
+            let status = response.status();
+            if status.as_u16() == 429 || status.is_server_error() {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(1 + attempt as u64);
+                let body = response.text().await.unwrap_or_default();
+                last_error = Some(GeckoError::Http(status.as_u16(), body));
+                sleep(Duration::from_secs(retry_after.min(4))).await;
+                continue;
+            }
+
+            return parse_response(response).await;
+        }
+
+        Err(last_error.unwrap_or(GeckoError::NoData))
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, GeckoError> {
-        let response = self
-            .http
-            .get(url)
-            .header("Accept", "application/json;version=20230203")
-            .header("User-Agent", "water/0.1")
-            .send()
-            .await
-            .map_err(|error| GeckoError::Transport(error.to_string()))?;
+        let mut last_error = None;
 
-        parse_response(response).await
+        for attempt in 0..3 {
+            let response = self
+                .http
+                .get(url)
+                .header("Accept", "application/json;version=20230203")
+                .header("User-Agent", "water/0.1")
+                .send()
+                .await
+                .map_err(|error| GeckoError::Transport(error.to_string()))?;
+
+            let status = response.status();
+            if status.as_u16() == 429 || status.is_server_error() {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(1 + attempt as u64);
+                let body = response.text().await.unwrap_or_default();
+                last_error = Some(GeckoError::Http(status.as_u16(), body));
+                sleep(Duration::from_secs(retry_after.min(4))).await;
+                continue;
+            }
+
+            return parse_response(response).await;
+        }
+
+        Err(last_error.unwrap_or(GeckoError::NoData))
     }
 }
 
