@@ -69,7 +69,7 @@ pub async fn analyze_holder_cohort(
         }
         Chain::Robinhood => {
             let client =
-                RobinhoodHistoryClient::new(http.clone(), config.robinhood_blockscout_url.clone());
+                RobinhoodHistoryClient::new(http.clone(), config.robinhood_rpc_url.clone());
             let candidates = client.top_current_holders(&token, limit).await?;
             (
                 candidates,
