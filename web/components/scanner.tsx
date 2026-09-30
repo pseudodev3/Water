@@ -9,6 +9,7 @@ import {
   Droplets,
   Fingerprint,
   MoveUpRight,
+  Save,
   ShieldCheck,
   TriangleAlert,
   UsersRound,
@@ -365,6 +366,8 @@ function ResultView({ result }: { result: ScanResult }) {
         chain={result.chain}
         token={result.address}
       />
+
+      <WaterPanel result={result} />
 
       <div className="evidence-grid">
         <article className="evidence-panel">
@@ -750,6 +753,175 @@ function OriginPanel({ chain, token }: { chain: Chain; token: string }) {
       )}
     </article>
   );
+}
+
+
+type ThesisSnapshot = {
+  savedAt: number;
+  holderConcentration: number | null;
+  buyShare: number | null;
+  liquidityUsd: number | null;
+  marketCapUsd: number | null;
+};
+
+function WaterPanel({ result }: { result: ScanResult }) {
+  const storageKey = `water:thesis:${result.chain}:${result.address.toLowerCase()}`;
+  const [saved, setSaved] = useState<ThesisSnapshot | null>(null);
+  const current = thesisSnapshot(result);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      setSaved(raw ? (JSON.parse(raw) as ThesisSnapshot) : null);
+    } catch {
+      setSaved(null);
+    }
+  }, [storageKey]);
+
+  function saveCurrent() {
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(current));
+      setSaved(current);
+    } catch {
+      // Browser storage can be unavailable in private/locked-down contexts.
+    }
+  }
+
+  return (
+    <article className="water-panel">
+      <div className="section-heading compact water-heading">
+        <div>
+          <div className="eyebrow">Water</div>
+          <h3>Remember the world you entered.</h3>
+          <p className="section-subcopy">
+            Save today&apos;s structure. On the next scan, Water shows what
+            changed instead of pretending your old thesis is still current.
+          </p>
+        </div>
+        <Save size={18} strokeWidth={1.5} aria-hidden="true" />
+      </div>
+
+      {saved ? (
+        <div className="water-body">
+          <p className="water-saved-at">
+            Compared with {formatSavedTime(saved.savedAt)}
+          </p>
+          <div className="water-deltas">
+            <ThesisDelta
+              label="Top wallets"
+              before={saved.holderConcentration}
+              now={current.holderConcentration}
+              kind="percent"
+            />
+            <ThesisDelta
+              label="Buy share"
+              before={saved.buyShare}
+              now={current.buyShare}
+              kind="ratio"
+            />
+            <ThesisDelta
+              label="Liquidity"
+              before={saved.liquidityUsd}
+              now={current.liquidityUsd}
+              kind="usd"
+            />
+            <ThesisDelta
+              label="Market cap"
+              before={saved.marketCapUsd}
+              now={current.marketCapUsd}
+              kind="usd"
+            />
+          </div>
+          <button className="quiet-action" type="button" onClick={saveCurrent}>
+            Use current setup as new baseline
+          </button>
+        </div>
+      ) : (
+        <div className="water-empty">
+          <p>No baseline saved for this token yet.</p>
+          <button className="quiet-action" type="button" onClick={saveCurrent}>
+            Save this setup
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function ThesisDelta({
+  label,
+  before,
+  now,
+  kind,
+}: {
+  label: string;
+  before: number | null;
+  now: number | null;
+  kind: "percent" | "ratio" | "usd";
+}) {
+  const beforeText = thesisValue(before, kind);
+  const nowText = thesisValue(now, kind);
+  const delta =
+    before !== null && now !== null
+      ? kind === "usd"
+        ? before === 0
+          ? null
+          : (now - before) / Math.abs(before)
+        : now - before
+      : null;
+
+  return (
+    <div className="water-delta">
+      <span>{label}</span>
+      <div>
+        <small>{beforeText}</small>
+        <ArrowRight size={12} strokeWidth={1.5} aria-hidden="true" />
+        <strong>{nowText}</strong>
+      </div>
+      <em>{formatThesisDelta(delta, kind)}</em>
+    </div>
+  );
+}
+
+function thesisSnapshot(result: ScanResult): ThesisSnapshot {
+  return {
+    savedAt: Date.now(),
+    holderConcentration:
+      result.holder_evidence.top_ten_percentage === null
+        ? null
+        : result.holder_evidence.top_ten_percentage / 100,
+    buyShare: result.demand.buy_share_h1,
+    liquidityUsd: result.token.liquidity_usd,
+    marketCapUsd: result.token.market_cap_usd,
+  };
+}
+
+function thesisValue(value: number | null, kind: "percent" | "ratio" | "usd") {
+  if (value === null || !Number.isFinite(value)) return "—";
+  if (kind === "usd") return formatUsd(value);
+  return formatPercent(value);
+}
+
+function formatThesisDelta(
+  value: number | null,
+  kind: "percent" | "ratio" | "usd",
+) {
+  if (value === null || !Number.isFinite(value)) return "—";
+  if (kind === "usd") {
+    const pct = value * 100;
+    return `${pct >= 0 ? "+" : ""}${pct.toFixed(0)}%`;
+  }
+
+  const points = value * 100;
+  return `${points >= 0 ? "+" : ""}${points.toFixed(1)}pp`;
+}
+
+function formatSavedTime(timestamp: number) {
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return "the setup saved just now";
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
