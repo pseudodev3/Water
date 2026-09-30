@@ -8,6 +8,7 @@ import {
   Database,
   Droplets,
   Fingerprint,
+  History,
   MoveUpRight,
   Save,
   ShieldCheck,
@@ -368,6 +369,8 @@ function ResultView({ result }: { result: ScanResult }) {
       />
 
       <WaterPanel result={result} />
+
+      <MemoryPanel result={result} />
 
       <div className="evidence-grid">
         <article className="evidence-panel">
@@ -922,6 +925,244 @@ function formatSavedTime(timestamp: number) {
   if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h ago`;
   return `${Math.floor(seconds / 86_400)}d ago`;
+}
+
+
+type ScanMemory = {
+  chain: Chain;
+  token: string;
+  at: number;
+  priceUsd: number | null;
+  pressure: number | null;
+  holderConcentration: number | null;
+  liquidityUsd: number | null;
+  buyShare: number | null;
+};
+
+function MemoryPanel({ result }: { result: ScanResult }) {
+  const [history, setHistory] = useState<ScanMemory[]>([]);
+
+  useEffect(() => {
+    const current: ScanMemory = {
+      chain: result.chain,
+      token: result.address.toLowerCase(),
+      at: result.scanned_at_unix,
+      priceUsd: result.token.price_usd,
+      pressure: result.pressure.index,
+      holderConcentration: result.holder_evidence.top_ten_percentage,
+      liquidityUsd: result.token.liquidity_usd,
+      buyShare: result.demand.buy_share_h1,
+    };
+
+    try {
+      const key = "water:scan-memory:v1";
+      const raw = window.localStorage.getItem(key);
+      const parsed = raw ? (JSON.parse(raw) as ScanMemory[]) : [];
+      const clean = parsed.filter(
+        (item) =>
+          item &&
+          typeof item.at === "number" &&
+          typeof item.token === "string" &&
+          (item.chain === "solana" || item.chain === "robinhood"),
+      );
+
+      const last = clean[clean.length - 1];
+      const sameRecent =
+        last &&
+        last.chain === current.chain &&
+        last.token === current.token &&
+        Math.abs(current.at - last.at) < 60;
+
+      const next = sameRecent
+        ? [...clean.slice(0, -1), current]
+        : [...clean, current];
+
+      const bounded = next.slice(-180);
+      window.localStorage.setItem(key, JSON.stringify(bounded));
+      setHistory(bounded);
+    } catch {
+      setHistory([current]);
+    }
+  }, [result]);
+
+  const tokenHistory = history
+    .filter(
+      (item) =>
+        item.chain === result.chain &&
+        item.token === result.address.toLowerCase(),
+    )
+    .sort((left, right) => left.at - right.at);
+
+  const previous =
+    tokenHistory.length >= 2
+      ? tokenHistory[tokenHistory.length - 2]
+      : null;
+  const current = tokenHistory[tokenHistory.length - 1] ?? null;
+  const calibration = localCalibration(history);
+
+  return (
+    <article className="memory-panel">
+      <div className="section-heading compact memory-heading">
+        <div>
+          <div className="eyebrow">Memory</div>
+          <h3>What happened after earlier reads?</h3>
+          <p className="section-subcopy">
+            Water keeps a small evidence history on this device. No account or
+            database required.
+          </p>
+        </div>
+        <History size={18} strokeWidth={1.5} aria-hidden="true" />
+      </div>
+
+      <div className="memory-body">
+        {previous && current ? (
+          <div className="memory-current">
+            <span>Since the previous read</span>
+            <div>
+              <MemoryDelta
+                label="Price"
+                before={previous.priceUsd}
+                now={current.priceUsd}
+                kind="relative"
+              />
+              <MemoryDelta
+                label="Exit pressure"
+                before={previous.pressure}
+                now={current.pressure}
+                kind="points"
+              />
+              <MemoryDelta
+                label="Liquidity"
+                before={previous.liquidityUsd}
+                now={current.liquidityUsd}
+                kind="relative"
+              />
+            </div>
+          </div>
+        ) : (
+          <p className="memory-first">
+            First saved read for this token. The next read creates a comparison.
+          </p>
+        )}
+
+        <div className="calibration-strip">
+          <div>
+            <span>Saved reads</span>
+            <strong>{history.length}</strong>
+          </div>
+          <CalibrationCell label="~1h" sample={calibration.h1} />
+          <CalibrationCell label="~6h" sample={calibration.h6} />
+          <CalibrationCell label="~24h" sample={calibration.h24} />
+        </div>
+
+        <p className="memory-note">
+          Outcome samples use later scans from the same token inside a narrow
+          time window. They are calibration evidence, not a forecast.
+        </p>
+      </div>
+    </article>
+  );
+}
+
+function MemoryDelta({
+  label,
+  before,
+  now,
+  kind,
+}: {
+  label: string;
+  before: number | null;
+  now: number | null;
+  kind: "relative" | "points";
+}) {
+  let delta: number | null = null;
+  if (before !== null && now !== null) {
+    if (kind === "relative") {
+      delta = before === 0 ? null : (now - before) / Math.abs(before);
+    } else {
+      delta = now - before;
+    }
+  }
+
+  return (
+    <div className="memory-delta">
+      <span>{label}</span>
+      <strong>
+        {delta === null
+          ? "—"
+          : kind === "relative"
+            ? `${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(0)}%`
+            : `${delta >= 0 ? "+" : ""}${delta.toFixed(0)}`}
+      </strong>
+    </div>
+  );
+}
+
+function CalibrationCell({
+  label,
+  sample,
+}: {
+  label: string;
+  sample: { count: number; medianReturn: number | null };
+}) {
+  return (
+    <div>
+      <span>{label} outcome</span>
+      <strong>
+        {sample.medianReturn === null
+          ? "—"
+          : `${sample.medianReturn >= 0 ? "+" : ""}${(
+              sample.medianReturn * 100
+            ).toFixed(0)}%`}
+      </strong>
+      <small>{sample.count ? `median · n=${sample.count}` : "needs more reads"}</small>
+    </div>
+  );
+}
+
+function localCalibration(history: ScanMemory[]) {
+  return {
+    h1: calibrationWindow(history, 3_600, 7_200),
+    h6: calibrationWindow(history, 21_600, 32_400),
+    h24: calibrationWindow(history, 86_400, 129_600),
+  };
+}
+
+function calibrationWindow(
+  history: ScanMemory[],
+  minSeconds: number,
+  maxSeconds: number,
+) {
+  const returns: number[] = [];
+
+  for (let index = 0; index < history.length; index += 1) {
+    const start = history[index];
+    if (start.priceUsd === null || start.priceUsd <= 0) continue;
+
+    const later = history.find(
+      (candidate, candidateIndex) =>
+        candidateIndex > index &&
+        candidate.chain === start.chain &&
+        candidate.token === start.token &&
+        candidate.priceUsd !== null &&
+        candidate.at - start.at >= minSeconds &&
+        candidate.at - start.at <= maxSeconds,
+    );
+
+    if (later?.priceUsd !== null && later?.priceUsd !== undefined) {
+      returns.push((later.priceUsd - start.priceUsd) / start.priceUsd);
+    }
+  }
+
+  returns.sort((left, right) => left - right);
+  const middle = Math.floor(returns.length / 2);
+  const medianReturn = returns.length
+    ? returns.length % 2
+      ? returns[middle]
+      : (returns[middle - 1] + returns[middle]) / 2
+    : null;
+
+  return { count: returns.length, medianReturn };
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
