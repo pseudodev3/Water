@@ -10,6 +10,13 @@ use rust_decimal::Decimal;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Clone, Debug, Serialize)]
+pub struct HolderCandidate {
+    pub wallet: String,
+    pub current_quantity: Decimal,
+    pub source_rank: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct RawAssetFlow {
     pub asset_id: String,
