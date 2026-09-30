@@ -40,10 +40,10 @@ pub fn build_scan(
     if let Some(value) = concentration {
         components.push(PressureComponent {
             key: "top_holder_concentration",
-            label: "Top-holder concentration",
+            label: "Wallet-holder concentration",
             observed: format!("{value:.1}%"),
             pressure: (value / 50.0).clamp(0.0, 1.0),
-            detail: "Top-ten ownership divided by current token supply, observed from chain-native holder data.".to_string(),
+            detail: "Top wallet-holder ownership as a share of supply. Program/PDA/contract-controlled balances are excluded from the wallet-holder numerator.".to_string(),
         });
     }
 
@@ -169,7 +169,7 @@ fn opponent_notes(
 
     if let Some(value) = concentration {
         notes.push(format!(
-            "A large holder sees that the top ten addresses control about {value:.1}% of current supply."
+            "A wallet holder sees that the largest verified wallet-controlled holders account for about {value:.1}% of current supply."
         ));
     }
 
