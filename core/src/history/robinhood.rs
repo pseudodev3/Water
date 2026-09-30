@@ -85,84 +85,7 @@ impl RobinhoodHistoryClient {
         target_token: &str,
         limit: usize,
     ) -> Result<RobinhoodWalletHolderSet, String> {
-        let mut rows = self.indexed_holder_balances(target_token).await?;
-        rows.sort_by(|left, right| right.1.cmp(&left.1));
-
-        let all_rows_exhausted = rows.len() <= MAX_HOLDER_CLASSIFICATION_CANDIDATES;
-        rows.truncate(MAX_HOLDER_CLASSIFICATION_CANDIDATES);
-
-        let mut holders = Vec::new();
-        let mut excluded_contracts = 0usize;
-        let mut excluded_contract_quantity = Decimal::ZERO;
-
-        for chunk in rows.chunks(16) {
-            let checks: Vec<(usize, String, Decimal)> = chunk
-                .iter()
-                .enumerate()
-                .map(|(index, (address, quantity))| (index, address.clone(), *quantity))
-                .collect();
-
-            let this = self.clone();
-            let mut classified: Vec<Result<(usize, String, Decimal, bool), String>> =
-                stream::iter(checks.into_iter().map(move |(index, address, quantity)| {
-                    let client = this.clone();
-                    async move {
-                        let code = client
-                            .rpc("eth_getCode", json!([address, "latest"]))
-                            .await?;
-                        let is_contract = code
-                            .as_str()
-                            .map(|value| value != "0x" && value != "0x0")
-                            .unwrap_or(true);
-                        Ok((index, address, quantity, is_contract))
-                    }
-                }))
-                .buffer_unordered(CONCURRENT_CODE_FETCHES)
-                .collect()
-                .await;
-
-            classified.sort_by_key(|result| {
-                result
-                    .as_ref()
-                    .map(|(index, _, _, _)| *index)
-                    .unwrap_or(usize::MAX)
-            });
-
-            for result in classified {
-                let (_, address, quantity, is_contract) = result.map_err(|error| {
-                    format!(
-                        "Could not classify a high-ranked Robinhood holder as wallet or contract: {error}"
-                    )
-                })?;
-
-                if is_contract {
-                    excluded_contracts += 1;
-                    excluded_contract_quantity += quantity;
-                    continue;
-                }
-
-                if holders.len() < limit {
-                    holders.push(HolderCandidate {
-                        wallet: address,
-                        current_quantity: quantity,
-                        source_rank: holders.len() + 1,
-                    });
-                }
-            }
-
-            if holders.len() >= limit {
-                break;
-            }
-        }
-
-        let complete_for_requested = holders.len() >= limit || all_rows_exhausted;
-
-        Ok(RobinhoodWalletHolderSet {
-            holders,
-            excluded_contracts,
-            excluded_contract_quantity,
-            complete_for_requested,
-        })
+        self.indexed_wallet_holders(target_token, limit).await
     }
 
     pub async fn top_holder_concentration(
@@ -218,10 +141,11 @@ impl RobinhoodHistoryClient {
             .ok_or_else(|| "totalSupply exceeded Water's decimal range".to_string())
     }
 
-    async fn indexed_holder_balances(
+    async fn indexed_wallet_holders(
         &self,
         target_token: &str,
-    ) -> Result<Vec<(String, Decimal)>, String> {
+        limit: usize,
+    ) -> Result<RobinhoodWalletHolderSet, String> {
         let base = self
             .holder_index_url
             .as_ref()
@@ -236,14 +160,13 @@ impl RobinhoodHistoryClient {
         let decimals = self.token_decimals(target_token).await?;
 
         let mut url = format!("{base}/tokens/{target_token}/holders");
-        let mut balances = Vec::new();
         let mut pages = 0usize;
+        let mut holders = Vec::new();
+        let mut excluded_contracts = 0usize;
+        let mut excluded_contract_quantity = Decimal::ZERO;
+        let mut exhausted_index = false;
 
-        loop {
-            if pages >= 5 || balances.len() >= MAX_HOLDER_CLASSIFICATION_CANDIDATES {
-                break;
-            }
-
+        while holders.len() < limit && pages < 5 {
             let response = self
                 .http
                 .get(&url)
@@ -258,7 +181,9 @@ impl RobinhoodHistoryClient {
             let body = response
                 .json::<Value>()
                 .await
-                .map_err(|error| format!("Blockscout holder index returned unreadable JSON: {error}"))?;
+                .map_err(|error| {
+                    format!("Blockscout holder index returned unreadable JSON: {error}")
+                })?;
 
             if !status.is_success() {
                 return Err(format!(
@@ -277,10 +202,6 @@ impl RobinhoodHistoryClient {
                 })?;
 
             for item in items {
-                if balances.len() >= MAX_HOLDER_CLASSIFICATION_CANDIDATES {
-                    break;
-                }
-
                 let Some(address) = indexed_holder_address(item) else {
                     continue;
                 };
@@ -298,23 +219,53 @@ impl RobinhoodHistoryClient {
                 let Some(quantity) = scaled_decimal(&raw, decimals) else {
                     continue;
                 };
-                if quantity > Decimal::ZERO {
-                    balances.push((address, quantity));
+                if quantity <= Decimal::ZERO {
+                    continue;
+                }
+
+                let is_contract = indexed_holder_is_contract(item).ok_or_else(|| {
+                    format!(
+                        "Blockscout holder index omitted contract classification for {address}."
+                    )
+                })?;
+
+                if is_contract {
+                    excluded_contracts += 1;
+                    excluded_contract_quantity += quantity;
+                    continue;
+                }
+
+                holders.push(HolderCandidate {
+                    wallet: address,
+                    current_quantity: quantity,
+                    source_rank: holders.len() + 1,
+                });
+
+                if holders.len() >= limit {
+                    break;
                 }
             }
 
             pages += 1;
 
+            if holders.len() >= limit {
+                break;
+            }
+
             let next = payload
                 .get("next_page_params")
                 .or_else(|| body.get("next_page_params"));
+
             let Some(next) = next.filter(|value| !value.is_null()) else {
+                exhausted_index = true;
                 break;
             };
             let Some(params) = next.as_object() else {
+                exhausted_index = true;
                 break;
             };
             if params.is_empty() {
+                exhausted_index = true;
                 break;
             }
 
@@ -333,13 +284,18 @@ impl RobinhoodHistoryClient {
             url = next_url.to_string();
         }
 
-        if balances.is_empty() {
+        if holders.is_empty() && excluded_contracts == 0 {
             return Err(
                 "Blockscout holder index returned no usable ERC-20 holder balances.".to_string(),
             );
         }
 
-        Ok(balances)
+        Ok(RobinhoodWalletHolderSet {
+            complete_for_requested: holders.len() >= limit || exhausted_index,
+            holders,
+            excluded_contracts,
+            excluded_contract_quantity,
+        })
     }
 
     async fn current_holder_balances(
@@ -1035,6 +991,12 @@ fn indexed_holder_raw_value(item: &Value) -> Option<String> {
         })
 }
 
+fn indexed_holder_is_contract(item: &Value) -> Option<bool> {
+    item.pointer("/address/is_contract")
+        .and_then(Value::as_bool)
+        .or_else(|| item.get("is_contract").and_then(Value::as_bool))
+}
+
 fn value_as_query_string(value: &Value) -> Option<String> {
     match value {
         Value::String(value) => Some(value.clone()),
@@ -1143,6 +1105,27 @@ mod tests {
             Some("0x1111111111111111111111111111111111111111")
         );
         assert_eq!(indexed_holder_raw_value(&item).as_deref(), Some("2500000"));
+    }
+
+    #[test]
+    fn parses_blockscout_contract_classification() {
+        let contract = json!({
+            "address": {
+                "hash": "0x1111111111111111111111111111111111111111",
+                "is_contract": true
+            },
+            "value": "1000"
+        });
+        let wallet = json!({
+            "address": {
+                "hash": "0x2222222222222222222222222222222222222222",
+                "is_contract": false
+            },
+            "value": "900"
+        });
+
+        assert_eq!(indexed_holder_is_contract(&contract), Some(true));
+        assert_eq!(indexed_holder_is_contract(&wallet), Some(false));
     }
 
     #[test]
