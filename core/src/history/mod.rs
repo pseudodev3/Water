@@ -49,6 +49,8 @@ pub struct PriceCoverage {
     pub hourly_points: usize,
     pub daily_points: usize,
     pub missing_points: usize,
+    pub fee_points_missing: usize,
+    pub fee_pricing_complete: bool,
     pub notes: Vec<String>,
 }
 
@@ -123,6 +125,7 @@ pub async fn price_history(
     }
 
     let mut missing_points = 0usize;
+    let mut fee_points_missing = 0usize;
     let mut seen_missing: HashSet<(String, u64)> = HashSet::new();
     let mut transactions = Vec::with_capacity(raw.transactions.len());
 
@@ -152,10 +155,15 @@ pub async fn price_history(
             tx.network_fee_asset_id.as_ref(),
             tx.network_fee_quantity,
         ) {
-            (Some(asset), Some(quantity)) => prices
-                .get(&(normalized_asset(asset), tx.timestamp))
-                .map(|(price, _)| quantity * *price)
-                .unwrap_or(Decimal::ZERO),
+            (Some(asset), Some(quantity)) => {
+                match prices.get(&(normalized_asset(asset), tx.timestamp)) {
+                    Some((price, _)) => quantity * *price,
+                    None => {
+                        fee_points_missing += 1;
+                        Decimal::ZERO
+                    }
+                }
+            }
             _ => Decimal::ZERO,
         };
 
@@ -180,6 +188,8 @@ pub async fn price_history(
         hourly_points,
         daily_points,
         missing_points,
+        fee_points_missing,
+        fee_pricing_complete: fee_points_missing == 0,
         notes,
     };
 
