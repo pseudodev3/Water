@@ -61,6 +61,10 @@ pub struct MarketSnapshot {
     pub volume_h24_usd: Option<f64>,
     pub buys_h1: Option<u64>,
     pub sells_h1: Option<u64>,
+    pub buyers_h1: Option<u64>,
+    pub sellers_h1: Option<u64>,
+    pub buyers_h24: Option<u64>,
+    pub sellers_h24: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -113,6 +117,19 @@ pub struct ChainEvidence {
 }
 
 #[derive(Debug, Serialize)]
+pub struct DemandEvidence {
+    pub buys_h1: Option<u64>,
+    pub sells_h1: Option<u64>,
+    pub buy_share_h1: Option<f64>,
+    pub transactions_h1: Option<u64>,
+    pub unique_buyers_h1: Option<u64>,
+    pub unique_sellers_h1: Option<u64>,
+    pub buyer_arrival_vs_h24_hourly: Option<f64>,
+    pub volume_h24_usd: Option<f64>,
+    pub volume_to_liquidity: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ScanResponse {
     pub chain: Chain,
     pub address: String,
@@ -120,6 +137,7 @@ pub struct ScanResponse {
     pub token: TokenSnapshot,
     pub pressure: PressureDiagnostic,
     pub opponent_notes: Vec<String>,
+    pub demand: DemandEvidence,
     pub chain_evidence: ChainEvidence,
     pub holder_evidence: HolderEvidence,
     pub sources: Vec<SourceStatus>,

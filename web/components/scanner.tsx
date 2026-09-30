@@ -18,6 +18,13 @@ import {
   scanToken,
   ScanResult,
 } from "@/lib/api";
+import {
+  DemandPanel,
+  EarlyHolderPanel,
+  MemoryPanel,
+  OriginPanel,
+  WaterPanel,
+} from "@/components/intelligence-panels";
 
 const chains: Array<{ id: Chain; label: string; logoClass: string }> = [
   { id: "solana", label: "Solana", logoClass: "chain-logo-solana" },
@@ -345,6 +352,24 @@ function ResultView({ result }: { result: ScanResult }) {
         </article>
       </div>
 
+      <EarlyHolderPanel
+        key={`early-${result.chain}-${result.address}`}
+        chain={result.chain}
+        token={result.address}
+      />
+
+      <DemandPanel demand={result.demand} />
+
+      <OriginPanel
+        key={`origin-${result.chain}-${result.address}`}
+        chain={result.chain}
+        token={result.address}
+      />
+
+      <WaterPanel result={result} />
+
+      <MemoryPanel result={result} />
+
       <div className="evidence-grid">
         <article className="evidence-panel">
           <div className="section-heading compact">
@@ -395,6 +420,7 @@ function ResultView({ result }: { result: ScanResult }) {
     </section>
   );
 }
+
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
