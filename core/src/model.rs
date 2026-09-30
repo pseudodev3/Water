@@ -66,6 +66,8 @@ pub struct MarketSnapshot {
 #[derive(Clone, Debug, Serialize)]
 pub struct HolderEvidence {
     pub top_ten_percentage: Option<f64>,
+    /// Human-unit token supply when chain-native evidence can prove it.
+    pub total_supply: Option<f64>,
     pub source: String,
     pub detail: String,
 }
