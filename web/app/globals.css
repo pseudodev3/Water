@@ -1002,6 +1002,107 @@ a:focus-visible {
   margin-top: 14px;
   padding-top: 14px;
 }
+
+.water-panel {
+  margin-top: 1px;
+  padding: 28px;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.3fr);
+  gap: 42px;
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.water-body,
+.water-empty {
+  min-width: 0;
+}
+
+.water-empty {
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 13px;
+}
+
+.water-empty p,
+.water-saved-at {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.water-deltas {
+  margin-top: 12px;
+  border-top: 1px solid var(--line-strong);
+}
+
+.water-delta {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: minmax(90px, 0.7fr) minmax(180px, 1fr) 58px;
+  gap: 14px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.water-delta > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.water-delta > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.water-delta small {
+  color: var(--faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.water-delta strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 590;
+  font-variant-numeric: tabular-nums;
+}
+
+.water-delta em {
+  justify-self: end;
+  color: var(--stone);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.quiet-action {
+  min-height: 34px;
+  margin-top: 14px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 590;
+  cursor: pointer;
+  transition:
+    transform 150ms var(--ease-out),
+    border-color 150ms ease,
+    color 150ms ease,
+    background-color 150ms ease;
+}
+
+.quiet-action:active {
+  transform: scale(0.97);
+}
+
 .footer {
   margin-top: 42px;
   padding-top: 18px;
@@ -1044,6 +1145,12 @@ a:focus-visible {
 
   .wordmark:hover {
     opacity: 0.72;
+  }
+
+  .quiet-action:hover {
+    color: var(--text);
+    border-color: rgba(235, 237, 228, 0.2);
+    background: rgba(255, 255, 255, 0.02);
   }
 }
 
@@ -1123,7 +1230,8 @@ a:focus-visible {
   }
 
   .demand-panel,
-  .origin-panel {
+  .origin-panel,
+  .water-panel {
     grid-template-columns: 1fr;
     gap: 24px;
   }
@@ -1195,7 +1303,8 @@ a:focus-visible {
   .evidence-panel,
   .early-panel,
   .demand-panel,
-  .origin-panel {
+  .origin-panel,
+  .water-panel {
     padding: 20px;
   }
 
@@ -1237,6 +1346,11 @@ a:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .water-delta {
+    grid-template-columns: 76px minmax(150px, 1fr) 50px;
+    gap: 8px;
+  }
+
   .demand-facts span {
     font-size: 8px;
   }
@@ -1254,7 +1368,8 @@ a:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .chain-button,
-  .scan-button {
+  .scan-button,
+  .quiet-action {
     transition:
       color 150ms ease,
       background-color 150ms ease,
@@ -1262,7 +1377,8 @@ a:focus-visible {
   }
 
   .chain-button:active,
-  .scan-button:active {
+  .scan-button:active,
+  .quiet-action:active {
     transform: none;
   }
 
