@@ -216,11 +216,29 @@ a:focus-visible {
     background-color 150ms ease;
 }
 
-.chain-button span {
+.chain-label {
   color: inherit;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+.chain-logo {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: block;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.chain-logo-solana {
+  background-image: url("https://solana.com/src/img/branding/solanaLogoMark.svg");
+}
+
+.chain-logo-robinhood {
+  background-image: url("https://robinhood.com/favicon.ico");
 }
 
 .chain-button.active {
