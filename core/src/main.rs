@@ -131,7 +131,7 @@ async fn scan(
                 detail: holder_evidence.detail.clone(),
             });
             sources.push(SourceStatus {
-                source: "Robinhood wallet-holder reconstruction".to_string(),
+                source: "Robinhood indexed wallet holders".to_string(),
                 ok: holder_evidence.top_ten_percentage.is_some(),
                 detail: holder_evidence.detail.clone(),
             });
