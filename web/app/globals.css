@@ -383,6 +383,27 @@ a:focus-visible {
   font-size: 13px;
 }
 
+.asset-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  margin-top: 11px;
+}
+
+.asset-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 570;
+  text-decoration: none;
+}
+
+.asset-links a:active {
+  opacity: 0.68;
+}
+
 .asset-metrics {
   display: grid;
   grid-template-columns: 1.18fr 0.9fr 1fr;
@@ -802,6 +823,18 @@ a:focus-visible {
   background: var(--stone);
 }
 
+.holder-track.unknown {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(162, 146, 120, 0.12) 0 34%,
+      transparent 34% 40%,
+      rgba(162, 146, 120, 0.12) 40% 74%,
+      transparent 74% 80%,
+      rgba(162, 146, 120, 0.12) 80% 100%
+    );
+}
+
 .holder-economics {
   display: grid;
   grid-template-columns: repeat(3, minmax(58px, 1fr));
@@ -840,6 +873,29 @@ a:focus-visible {
 .basis-tag.partial-history {
   color: var(--stone);
   border-color: rgba(162, 146, 120, 0.2);
+}
+
+.basis-tag.unavailable,
+.basis-tag.incomplete {
+  color: var(--faint);
+}
+
+.holder-coverage {
+  justify-self: end;
+  max-width: 180px;
+  text-align: right;
+}
+
+.holder-coverage .basis-tag {
+  display: inline-block;
+}
+
+.holder-coverage small {
+  display: block;
+  margin-top: 6px;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .demand-panel {
@@ -935,6 +991,45 @@ a:focus-visible {
 
 .origin-body {
   min-width: 0;
+}
+
+.launchpad-match {
+  margin-bottom: 14px;
+  padding: 13px 14px;
+  border-top: 1px solid rgba(137, 153, 138, 0.24);
+  border-bottom: 1px solid var(--line);
+  background: rgba(137, 153, 138, 0.035);
+}
+
+.launchpad-match.quiet {
+  border-top-color: var(--line-strong);
+  background: transparent;
+}
+
+.launchpad-match span {
+  display: block;
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.launchpad-match strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 590;
+  letter-spacing: -0.02em;
+}
+
+.launchpad-match small {
+  display: block;
+  margin-top: 4px;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .origin-addresses {
@@ -1286,6 +1381,10 @@ a:focus-visible {
     opacity: 0.72;
   }
 
+  .asset-links a:hover {
+    color: var(--text);
+  }
+
   .quiet-action:hover {
     color: var(--text);
     border-color: rgba(235, 237, 228, 0.2);
@@ -1299,10 +1398,12 @@ a:focus-visible {
     grid-template-columns: minmax(150px, 0.9fr) minmax(170px, 1fr) minmax(190px, 1fr);
   }
 
-  .basis-tag {
+  .holder-coverage {
     grid-column: 1 / -1;
     justify-self: start;
     margin: -10px 0 14px 34px;
+    max-width: 360px;
+    text-align: left;
   }
 }
 
@@ -1362,10 +1463,12 @@ a:focus-visible {
     padding: 18px 0;
   }
 
-  .basis-tag {
+  .holder-coverage {
     grid-column: auto;
     margin: 0;
     justify-self: start;
+    max-width: none;
+    text-align: left;
   }
 
   .demand-panel,
