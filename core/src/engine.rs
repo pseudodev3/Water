@@ -1,37 +1,27 @@
 use crate::model::{
-    ChainEvidence, PressureComponent, PressureDiagnostic, ScanRequest, ScanResponse, SourceStatus,
-    TokenSnapshot,
+    ChainEvidence, HolderEvidence, MarketSnapshot, PressureComponent, PressureDiagnostic,
+    ScanRequest, ScanResponse, SourceStatus, TokenSnapshot,
 };
-use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn build_scan(
     request: &ScanRequest,
-    info: Option<&Value>,
-    pool: Option<&Value>,
-    holders: Option<&Value>,
-    traders: Option<&Value>,
+    market: Option<&MarketSnapshot>,
+    holder_evidence: HolderEvidence,
     chain_evidence: ChainEvidence,
     sources: Vec<SourceStatus>,
 ) -> ScanResponse {
     let token = TokenSnapshot {
-        name: info.and_then(|value| find_string(value, &["name", "token_name"])),
-        symbol: info.and_then(|value| find_string(value, &["symbol", "token_symbol"])),
-        price_usd: info.and_then(|value| find_number(value, &["price", "price_usd", "usd_price"])),
-        liquidity_usd: pool
-            .and_then(|value| find_number(value, &["liquidity", "liquidity_usd", "pool_liquidity"]))
-            .or_else(|| info.and_then(|value| find_number(value, &["liquidity", "liquidity_usd"]))),
-        market_cap_usd: info.and_then(|value| {
-            find_number(
-                value,
-                &["market_cap", "marketcap", "market_cap_usd", "usd_market_cap"],
-            )
-        }),
+        name: market.and_then(|value| value.name.clone()),
+        symbol: market.and_then(|value| value.symbol.clone()),
+        price_usd: market.and_then(|value| value.price_usd),
+        liquidity_usd: market.and_then(|value| value.liquidity_usd),
+        market_cap_usd: market.and_then(|value| value.market_cap_usd),
     };
 
-    let concentration = holders.and_then(top_ten_concentration);
-    let profitable_share = holders.and_then(positive_pnl_share);
-    let sell_dominant_share = traders.and_then(sell_dominant_share);
+    let concentration = holder_evidence.top_ten_percentage;
+    let sell_share = market.and_then(recent_sell_share);
+    let liquidity_coverage = market.and_then(liquidity_coverage);
 
     let mut components = Vec::new();
 
@@ -41,32 +31,32 @@ pub fn build_scan(
             label: "Top-holder concentration",
             observed: format!("{value:.1}%"),
             pressure: (value / 50.0).clamp(0.0, 1.0),
-            detail: "Share held by the first ten observable holder rows returned by GMGN.".to_string(),
+            detail: "Top-ten ownership divided by current token supply, observed from chain-native holder data.".to_string(),
         });
     }
 
-    if let Some(value) = profitable_share {
+    if let Some(value) = sell_share {
         components.push(PressureComponent {
-            key: "profitable_holder_share",
-            label: "Profitable holder share",
+            key: "recent_sell_share",
+            label: "Recent sell share",
             observed: format!("{:.0}%", value * 100.0),
             pressure: value.clamp(0.0, 1.0),
-            detail: "Share of observable top-holder rows with positive recorded realized or unrealized PnL.".to_string(),
+            detail: "Sell transactions divided by buys + sells in the top GeckoTerminal pool over the last hour.".to_string(),
         });
     }
 
-    if let Some(value) = sell_dominant_share {
+    if let Some(value) = liquidity_coverage {
         components.push(PressureComponent {
-            key: "sell_dominant_traders",
-            label: "Sell-dominant traders",
-            observed: format!("{:.0}%", value * 100.0),
-            pressure: value.clamp(0.0, 1.0),
-            detail: "Share of observable top-trader rows where current sell volume is above current buy volume.".to_string(),
+            key: "liquidity_coverage",
+            label: "Liquidity coverage",
+            observed: format!("{:.1}%", value * 100.0),
+            pressure: (1.0 - (value / 0.20)).clamp(0.0, 1.0),
+            detail: "Observed DEX liquidity divided by market cap when verified, otherwise FDV. Thin coverage raises exit fragility.".to_string(),
         });
     }
 
     let index = pressure_index(&components);
-    let opponent_notes = opponent_notes(concentration, profitable_share, sell_dominant_share);
+    let opponent_notes = opponent_notes(market, concentration, sell_share, liquidity_coverage);
 
     ScanResponse {
         chain: request.chain,
@@ -78,13 +68,29 @@ pub fn build_scan(
         token,
         pressure: PressureDiagnostic {
             index,
-            methodology: "Transparent diagnostic built only from available GMGN holder/trader observations. It is not a probability or a buy/sell signal.",
+            methodology: "Transparent diagnostic from chain-native holder concentration and public DEX market structure. It is not a probability, prediction, or buy/sell signal.",
             components,
         },
         opponent_notes,
         chain_evidence,
+        holder_evidence,
         sources,
     }
+}
+
+fn recent_sell_share(market: &MarketSnapshot) -> Option<f64> {
+    let buys = market.buys_h1?;
+    let sells = market.sells_h1?;
+    let total = buys + sells;
+
+    (total > 0).then_some(sells as f64 / total as f64)
+}
+
+fn liquidity_coverage(market: &MarketSnapshot) -> Option<f64> {
+    let liquidity = market.liquidity_usd?;
+    let reference = market.market_cap_usd.or(market.fdv_usd)?;
+
+    (reference > 0.0).then_some((liquidity / reference).max(0.0))
 }
 
 fn pressure_index(components: &[PressureComponent]) -> Option<u8> {
@@ -98,10 +104,11 @@ fn pressure_index(components: &[PressureComponent]) -> Option<u8> {
     for component in components {
         let weight = match component.key {
             "top_holder_concentration" => 0.45,
-            "profitable_holder_share" => 0.25,
-            "sell_dominant_traders" => 0.30,
+            "recent_sell_share" => 0.30,
+            "liquidity_coverage" => 0.25,
             _ => 0.0,
         };
+
         weighted += component.pressure * weight;
         total_weight += weight;
     }
@@ -114,35 +121,49 @@ fn pressure_index(components: &[PressureComponent]) -> Option<u8> {
 }
 
 fn opponent_notes(
+    market: Option<&MarketSnapshot>,
     concentration: Option<f64>,
-    profitable_share: Option<f64>,
-    sell_dominant_share: Option<f64>,
+    sell_share: Option<f64>,
+    coverage: Option<f64>,
 ) -> Vec<String> {
     let mut notes = Vec::new();
 
     if let Some(value) = concentration {
         notes.push(format!(
-            "The first ten observable holder rows control about {value:.1}% of the returned holder balance."
+            "A large holder sees that the top ten addresses control about {value:.1}% of current supply."
         ));
     }
 
-    if let Some(value) = profitable_share {
+    if let (Some(market), Some(value)) = (market, sell_share) {
         notes.push(format!(
-            "{:.0}% of observable top holders with PnL fields are currently recorded above cost.",
+            "A short-term trader sees {:.0}% of the top pool's last-hour transactions on the sell side ({} buys, {} sells).",
+            value * 100.0,
+            market.buys_h1.unwrap_or_default(),
+            market.sells_h1.unwrap_or_default()
+        ));
+    }
+
+    if let Some(value) = coverage {
+        notes.push(format!(
+            "A holder thinking about exiting sees DEX liquidity equal to roughly {:.1}% of the token's market-cap/FDV reference.",
             value * 100.0
         ));
     }
 
-    if let Some(value) = sell_dominant_share {
-        notes.push(format!(
-            "{:.0}% of observable top traders currently show more sell volume than buy volume.",
-            value * 100.0
-        ));
+    if let Some(market) = market {
+        if let (Some(volume), Some(liquidity)) = (market.volume_h24_usd, market.liquidity_usd) {
+            if liquidity > 0.0 {
+                notes.push(format!(
+                    "Twenty-four-hour volume is about {:.1}× current observed liquidity, a useful turnover context rather than a directional signal.",
+                    volume / liquidity
+                ));
+            }
+        }
     }
 
     if notes.is_empty() {
         notes.push(
-            "GMGN did not return enough normalized holder/trader fields for Water to derive opponent pressure without guessing."
+            "Water does not have enough public evidence to construct an opponent view without guessing."
                 .to_string(),
         );
     }
@@ -150,183 +171,30 @@ fn opponent_notes(
     notes
 }
 
-fn top_ten_concentration(value: &Value) -> Option<f64> {
-    let rows = find_wallet_rows(value)?;
-    let values: Vec<f64> = rows
-        .iter()
-        .take(10)
-        .filter_map(|row| {
-            row.as_object().and_then(|object| {
-                number_from_object(
-                    object,
-                    &["amount_percentage", "percentage", "holding_percentage", "percent"],
-                )
-            })
-        })
-        .collect();
-
-    if values.is_empty() {
-        return None;
-    }
-
-    let mut total: f64 = values.iter().sum();
-    if total <= 1.5 {
-        total *= 100.0;
-    }
-
-    Some(total.clamp(0.0, 100.0))
-}
-
-fn positive_pnl_share(value: &Value) -> Option<f64> {
-    let rows = find_wallet_rows(value)?;
-    let mut known = 0_u32;
-    let mut positive = 0_u32;
-
-    for row in rows.iter().take(20) {
-        let Some(object) = row.as_object() else {
-            continue;
-        };
-
-        let realized = number_from_object(object, &["profit", "realized_profit", "realized_pnl"]);
-        let unrealized =
-            number_from_object(object, &["unrealized_profit", "unrealized_pnl", "floating_profit"]);
-
-        if realized.is_some() || unrealized.is_some() {
-            known += 1;
-            if realized.unwrap_or_default() + unrealized.unwrap_or_default() > 0.0 {
-                positive += 1;
-            }
-        }
-    }
-
-    (known > 0).then_some(positive as f64 / known as f64)
-}
-
-fn sell_dominant_share(value: &Value) -> Option<f64> {
-    let rows = find_wallet_rows(value)?;
-    let mut known = 0_u32;
-    let mut sellers = 0_u32;
-
-    for row in rows.iter().take(20) {
-        let Some(object) = row.as_object() else {
-            continue;
-        };
-
-        let buy = number_from_object(
-            object,
-            &["buy_volume_cur", "buy_volume", "buy_amount", "buy_volume_usd"],
-        );
-        let sell = number_from_object(
-            object,
-            &["sell_volume_cur", "sell_volume", "sell_amount", "sell_volume_usd"],
-        );
-
-        if let (Some(buy), Some(sell)) = (buy, sell) {
-            known += 1;
-            if sell > buy {
-                sellers += 1;
-            }
-        }
-    }
-
-    (known > 0).then_some(sellers as f64 / known as f64)
-}
-
-fn find_wallet_rows(value: &Value) -> Option<&Vec<Value>> {
-    match value {
-        Value::Array(rows) => {
-            let looks_like_wallet_rows = rows.iter().any(|row| {
-                row.as_object().is_some_and(|object| {
-                    ["address", "wallet_address", "holder_address", "owner"]
-                        .iter()
-                        .any(|key| object.contains_key(*key))
-                })
-            });
-
-            if looks_like_wallet_rows {
-                return Some(rows);
-            }
-
-            rows.iter().find_map(find_wallet_rows)
-        }
-        Value::Object(object) => object.values().find_map(find_wallet_rows),
-        _ => None,
-    }
-}
-
-fn find_string(value: &Value, keys: &[&str]) -> Option<String> {
-    match value {
-        Value::Object(object) => {
-            for key in keys {
-                if let Some(candidate) = object.get(*key).and_then(Value::as_str) {
-                    if !candidate.trim().is_empty() {
-                        return Some(candidate.to_string());
-                    }
-                }
-            }
-            object.values().find_map(|child| find_string(child, keys))
-        }
-        Value::Array(values) => values.iter().find_map(|child| find_string(child, keys)),
-        _ => None,
-    }
-}
-
-fn find_number(value: &Value, keys: &[&str]) -> Option<f64> {
-    match value {
-        Value::Object(object) => {
-            for key in keys {
-                if let Some(candidate) = object.get(*key).and_then(value_as_f64) {
-                    return Some(candidate);
-                }
-            }
-            object.values().find_map(|child| find_number(child, keys))
-        }
-        Value::Array(values) => values.iter().find_map(|child| find_number(child, keys)),
-        _ => None,
-    }
-}
-
-fn number_from_object(
-    object: &serde_json::Map<String, Value>,
-    keys: &[&str],
-) -> Option<f64> {
-    keys.iter()
-        .find_map(|key| object.get(*key).and_then(value_as_f64))
-}
-
-fn value_as_f64(value: &Value) -> Option<f64> {
-    match value {
-        Value::Number(number) => number.as_f64(),
-        Value::String(value) => value.replace(',', "").parse::<f64>().ok(),
-        _ => None,
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    fn fixture() -> MarketSnapshot {
+        MarketSnapshot {
+            name: Some("Fixture".to_string()),
+            symbol: Some("FIX".to_string()),
+            price_usd: Some(0.1),
+            liquidity_usd: Some(10_000.0),
+            market_cap_usd: Some(100_000.0),
+            fdv_usd: Some(100_000.0),
+            volume_h24_usd: Some(50_000.0),
+            buys_h1: Some(40),
+            sells_h1: Some(60),
+        }
+    }
 
     #[test]
-    fn derives_holder_and_trader_observations() {
-        let holders = json!({
-            "list": [
-                {"address":"a","amount_percentage":"0.20","profit":"10","unrealized_profit":"4"},
-                {"address":"b","amount_percentage":"0.10","profit":"-2","unrealized_profit":"0"},
-                {"address":"c","amount_percentage":"0.05","profit":"1","unrealized_profit":"0"}
-            ]
-        });
-        let traders = json!({
-            "list": [
-                {"address":"a","buy_volume_cur":"100","sell_volume_cur":"200"},
-                {"address":"b","buy_volume_cur":"300","sell_volume_cur":"100"}
-            ]
-        });
+    fn derives_market_structure_components() {
+        let market = fixture();
 
-        assert_eq!(top_ten_concentration(&holders), Some(35.0));
-        assert_eq!(positive_pnl_share(&holders), Some(2.0 / 3.0));
-        assert_eq!(sell_dominant_share(&traders), Some(0.5));
+        assert_eq!(recent_sell_share(&market), Some(0.6));
+        assert_eq!(liquidity_coverage(&market), Some(0.1));
     }
 
     #[test]
