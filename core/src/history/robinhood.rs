@@ -49,8 +49,7 @@ impl RobinhoodHistoryClient {
 
         let decimals = token
             .get("decimals")
-            .and_then(Value::as_str)
-            .and_then(|value| value.parse::<u32>().ok())
+            .and_then(decimal_places)
             .ok_or_else(|| "Blockscout token metadata did not include decimals.".to_string())?;
 
         let rows = holders
@@ -362,8 +361,7 @@ impl RobinhoodHistoryClient {
             let raw = row.get("value")?.as_str()?;
             let decimals = token
                 .get("decimals")
-                .and_then(Value::as_str)
-                .and_then(|value| value.parse::<u32>().ok())?;
+                .and_then(decimal_places)?;
 
             return scaled_decimal(raw, decimals);
         }
@@ -510,16 +508,18 @@ fn transfer_quantity(transfer: &Value) -> Option<Decimal> {
     let raw = total.get("value")?.as_str()?;
     let decimals = total
         .get("decimals")
-        .and_then(Value::as_str)
-        .and_then(|value| value.parse::<u32>().ok())
-        .or_else(|| {
-            transfer
-                .pointer("/token/decimals")
-                .and_then(Value::as_str)
-                .and_then(|value| value.parse::<u32>().ok())
-        })?;
+        .and_then(decimal_places)
+        .or_else(|| transfer.pointer("/token/decimals").and_then(decimal_places))?;
 
     scaled_decimal(raw, decimals)
+}
+
+fn decimal_places(value: &Value) -> Option<u32> {
+    match value {
+        Value::Number(number) => number.as_u64().and_then(|value| u32::try_from(value).ok()),
+        Value::String(value) => value.parse::<u32>().ok(),
+        _ => None,
+    }
 }
 
 fn scaled_decimal(raw: &str, decimals: u32) -> Option<Decimal> {
