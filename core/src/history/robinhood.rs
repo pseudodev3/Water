@@ -16,6 +16,8 @@ const MAX_CANDIDATE_TRANSACTIONS: usize = 250;
 const MAX_LOG_QUERIES: usize = 512;
 const MAX_TRANSFER_LOGS: usize = 100_000;
 const CONCURRENT_TX_FETCHES: usize = 8;
+const CONCURRENT_CODE_FETCHES: usize = 8;
+const MAX_HOLDER_CLASSIFICATION_CANDIDATES: usize = 128;
 
 #[derive(Clone)]
 pub struct RobinhoodHistoryClient {
@@ -23,6 +25,14 @@ pub struct RobinhoodHistoryClient {
     rpc_url: String,
     decimals_cache: Arc<Mutex<HashMap<String, u32>>>,
     block_time_cache: Arc<Mutex<HashMap<String, u64>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RobinhoodWalletHolderSet {
+    pub holders: Vec<HolderCandidate>,
+    pub excluded_contracts: usize,
+    pub excluded_contract_quantity: Decimal,
+    pub complete_for_requested: bool,
 }
 
 impl RobinhoodHistoryClient {
@@ -40,73 +50,37 @@ impl RobinhoodHistoryClient {
         target_token: &str,
         limit: usize,
     ) -> Result<Vec<HolderCandidate>, String> {
-        let ranked = self.ranked_wallet_holders(target_token, limit).await?;
-
-        Ok(ranked
-            .wallets
-            .into_iter()
-            .enumerate()
-            .map(|(index, (wallet, current_quantity))| HolderCandidate {
-                wallet,
-                current_quantity,
-                source_rank: index + 1,
-            })
-            .collect())
+        Ok(self
+            .top_wallet_holders(target_token, limit)
+            .await?
+            .holders)
     }
 
-    pub async fn top_holder_concentration(
-        &self,
-        target_token: &str,
-        top_n: usize,
-    ) -> Result<WalletHolderConcentration, String> {
-        let ranked = self.ranked_wallet_holders(target_token, top_n).await?;
-        if ranked.total_balance <= Decimal::ZERO {
-            return Err(
-                "Robinhood transfer replay produced zero circulating holder balance.".to_string(),
-            );
-        }
-
-        let top = ranked
-            .wallets
-            .iter()
-            .take(top_n)
-            .fold(Decimal::ZERO, |sum, (_, quantity)| sum + *quantity);
-        let percent = decimal_percent(top, ranked.total_balance)?;
-        let excluded_percent =
-            decimal_percent(ranked.excluded_contract_balance, ranked.total_balance)?;
-
-        Ok(WalletHolderConcentration {
-            percentage: percent,
-            wallets_used: ranked.wallets.len().min(top_n),
-            excluded_contract_count: ranked.excluded_contract_count,
-            excluded_contract_percentage: excluded_percent,
-        })
-    }
-
-    async fn ranked_wallet_holders(
+    pub async fn top_wallet_holders(
         &self,
         target_token: &str,
         limit: usize,
-    ) -> Result<RankedWalletHolders, String> {
+    ) -> Result<RobinhoodWalletHolderSet, String> {
         let mut rows = self.current_holder_balances(target_token).await?;
         rows.sort_by(|left, right| right.1.cmp(&left.1));
 
-        let total_balance = rows
-            .iter()
-            .fold(Decimal::ZERO, |sum, (_, quantity)| sum + *quantity);
+        let all_rows_exhausted = rows.len() <= MAX_HOLDER_CLASSIFICATION_CANDIDATES;
+        rows.truncate(MAX_HOLDER_CLASSIFICATION_CANDIDATES);
 
-        let mut wallets = Vec::new();
-        let mut excluded_contract_count = 0usize;
-        let mut excluded_contract_balance = Decimal::ZERO;
+        let mut holders = Vec::new();
+        let mut excluded_contracts = 0usize;
+        let mut excluded_contract_quantity = Decimal::ZERO;
 
-        // Walk ranked balances until enough externally-owned wallets are found.
-        // Contracts are excluded from the wallet-holder numerator; this removes
-        // AMM pools, vaults and most protocol-controlled balances without
-        // pretending every contract is specifically an LP.
-        for chunk in rows.chunks(24) {
+        for chunk in rows.chunks(16) {
+            let checks: Vec<(usize, String, Decimal)> = chunk
+                .iter()
+                .enumerate()
+                .map(|(index, (address, quantity))| (index, address.clone(), *quantity))
+                .collect();
+
             let this = self.clone();
-            let checks: Vec<Result<(String, Decimal, bool), String>> =
-                stream::iter(chunk.iter().cloned().map(move |(address, balance)| {
+            let mut classified: Vec<Result<(usize, String, Decimal, bool), String>> =
+                stream::iter(checks.into_iter().map(move |(index, address, quantity)| {
                     let client = this.clone();
                     async move {
                         let code = client
@@ -115,45 +89,109 @@ impl RobinhoodHistoryClient {
                         let is_contract = code
                             .as_str()
                             .map(|value| value != "0x" && value != "0x0")
-                            .ok_or_else(|| "eth_getCode returned invalid data.".to_string())?;
-                        Ok((address, balance, is_contract))
+                            .unwrap_or(true);
+                        Ok((index, address, quantity, is_contract))
                     }
                 }))
-                .buffered(8)
+                .buffer_unordered(CONCURRENT_CODE_FETCHES)
                 .collect()
                 .await;
 
-            for check in checks {
-                let (address, balance, is_contract) = check?;
+            classified.sort_by_key(|result| {
+                result
+                    .as_ref()
+                    .map(|(index, _, _, _)| *index)
+                    .unwrap_or(usize::MAX)
+            });
+
+            for result in classified {
+                let (_, address, quantity, is_contract) = result.map_err(|error| {
+                    format!(
+                        "Could not classify a high-ranked Robinhood holder as wallet or contract: {error}"
+                    )
+                })?;
+
                 if is_contract {
-                    excluded_contract_count += 1;
-                    excluded_contract_balance += balance;
-                } else {
-                    wallets.push((address, balance));
-                    if wallets.len() >= limit {
-                        break;
-                    }
+                    excluded_contracts += 1;
+                    excluded_contract_quantity += quantity;
+                    continue;
+                }
+
+                if holders.len() < limit {
+                    holders.push(HolderCandidate {
+                        wallet: address,
+                        current_quantity: quantity,
+                        source_rank: holders.len() + 1,
+                    });
                 }
             }
 
-            if wallets.len() >= limit {
+            if holders.len() >= limit {
                 break;
             }
         }
 
-        if wallets.is_empty() {
-            return Err(
-                "No externally-owned wallet holders could be verified from ranked balances."
-                    .to_string(),
-            );
+        let complete_for_requested = holders.len() >= limit || all_rows_exhausted;
+
+        Ok(RobinhoodWalletHolderSet {
+            holders,
+            excluded_contracts,
+            excluded_contract_quantity,
+            complete_for_requested,
+        })
+    }
+
+    pub async fn top_holder_concentration(
+        &self,
+        target_token: &str,
+        top_n: usize,
+    ) -> Result<f64, String> {
+        let set = self.top_wallet_holders(target_token, top_n).await?;
+        if !set.complete_for_requested {
+            return Err(format!(
+                "Could not prove a full top-{top_n} wallet ranking within the holder-classification safety cap."
+            ));
         }
 
-        Ok(RankedWalletHolders {
-            wallets,
-            total_balance,
-            excluded_contract_count,
-            excluded_contract_balance,
-        })
+        let total = self.token_total_supply(target_token).await?;
+        if total <= Decimal::ZERO {
+            return Err("Robinhood ERC-20 totalSupply is zero.".to_string());
+        }
+
+        let top = set
+            .holders
+            .iter()
+            .fold(Decimal::ZERO, |sum, holder| sum + holder.current_quantity);
+        let percent = (top / total) * Decimal::from(100u32);
+
+        percent
+            .to_string()
+            .parse::<f64>()
+            .map(|value| value.clamp(0.0, 100.0))
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn token_total_supply(
+        &self,
+        target_token: &str,
+    ) -> Result<Decimal, String> {
+        let decimals = self.token_decimals(target_token).await?;
+        let value = self
+            .rpc(
+                "eth_call",
+                json!([
+                    {"to": target_token, "data": "0x18160ddd"},
+                    "latest"
+                ]),
+            )
+            .await?;
+        let raw = value
+            .as_str()
+            .and_then(hex_biguint)
+            .ok_or_else(|| "totalSupply returned an invalid uint256".to_string())?;
+
+        biguint_to_decimal(&raw, decimals)
+            .ok_or_else(|| "totalSupply exceeded Water's decimal range".to_string())
     }
 
     async fn current_holder_balances(
@@ -165,12 +203,15 @@ impl RobinhoodHistoryClient {
             .scan_logs(target_token, vec![Value::String(TRANSFER_TOPIC.to_string())])
             .await;
 
-        if scan.logs.is_empty() && !scan.complete {
+        if !scan.complete {
             return Err(scan
                 .notes
                 .first()
                 .cloned()
-                .unwrap_or_else(|| "Robinhood transfer-log scan failed.".to_string()));
+                .unwrap_or_else(|| {
+                    "Robinhood transfer-log scan was incomplete; holder ranking was not published."
+                        .to_string()
+                }));
         }
 
         let mut balances: HashMap<String, Decimal> = HashMap::new();
