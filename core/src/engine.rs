@@ -9,19 +9,31 @@ pub fn build_scan(
     market: Option<&MarketSnapshot>,
     holder_evidence: HolderEvidence,
     chain_evidence: ChainEvidence,
-    sources: Vec<SourceStatus>,
+    mut sources: Vec<SourceStatus>,
 ) -> ScanResponse {
+    let (effective_market_cap, market_cap_derived) =
+        effective_market_cap(market, holder_evidence.total_supply);
+
+    if market_cap_derived {
+        sources.push(SourceStatus {
+            source: "Market cap reconstruction".to_string(),
+            ok: true,
+            detail: "GeckoTerminal did not provide market cap, so Water derived it from current onchain token supply × observed USD price.".to_string(),
+        });
+    }
+
     let token = TokenSnapshot {
         name: market.and_then(|value| value.name.clone()),
         symbol: market.and_then(|value| value.symbol.clone()),
         price_usd: market.and_then(|value| value.price_usd),
         liquidity_usd: market.and_then(|value| value.liquidity_usd),
-        market_cap_usd: market.and_then(|value| value.market_cap_usd),
+        market_cap_usd: effective_market_cap,
     };
 
     let concentration = holder_evidence.top_ten_percentage;
     let sell_share = market.and_then(recent_sell_share);
-    let liquidity_coverage = market.and_then(liquidity_coverage);
+    let liquidity_coverage =
+        market.and_then(|value| liquidity_coverage(value, effective_market_cap));
 
     let mut components = Vec::new();
 
@@ -86,9 +98,36 @@ fn recent_sell_share(market: &MarketSnapshot) -> Option<f64> {
     (total > 0).then_some(sells as f64 / total as f64)
 }
 
-fn liquidity_coverage(market: &MarketSnapshot) -> Option<f64> {
+fn effective_market_cap(
+    market: Option<&MarketSnapshot>,
+    total_supply: Option<f64>,
+) -> (Option<f64>, bool) {
+    let Some(market) = market else {
+        return (None, false);
+    };
+
+    if let Some(value) = market.market_cap_usd {
+        return (Some(value), false);
+    }
+
+    let derived = match (market.price_usd, total_supply) {
+        (Some(price), Some(supply))
+            if price.is_finite() && supply.is_finite() && price >= 0.0 && supply > 0.0 =>
+        {
+            Some(price * supply)
+        }
+        _ => None,
+    };
+
+    (derived, derived.is_some())
+}
+
+fn liquidity_coverage(
+    market: &MarketSnapshot,
+    effective_market_cap: Option<f64>,
+) -> Option<f64> {
     let liquidity = market.liquidity_usd?;
-    let reference = market.market_cap_usd.or(market.fdv_usd)?;
+    let reference = effective_market_cap.or(market.fdv_usd)?;
 
     (reference > 0.0).then_some((liquidity / reference).max(0.0))
 }
@@ -194,7 +233,29 @@ mod tests {
         let market = fixture();
 
         assert_eq!(recent_sell_share(&market), Some(0.6));
-        assert_eq!(liquidity_coverage(&market), Some(0.1));
+        assert_eq!(liquidity_coverage(&market, market.market_cap_usd), Some(0.1));
+    }
+
+    #[test]
+    fn derives_market_cap_from_chain_supply_when_provider_omits_it() {
+        let mut market = fixture();
+        market.market_cap_usd = None;
+        market.price_usd = Some(0.002);
+
+        let (market_cap, derived) = effective_market_cap(Some(&market), Some(500_000_000.0));
+
+        assert_eq!(market_cap, Some(1_000_000.0));
+        assert!(derived);
+    }
+
+    #[test]
+    fn provider_market_cap_wins_over_derived_supply_value() {
+        let market = fixture();
+
+        let (market_cap, derived) = effective_market_cap(Some(&market), Some(999_999_999.0));
+
+        assert_eq!(market_cap, Some(100_000.0));
+        assert!(!derived);
     }
 
     #[test]
