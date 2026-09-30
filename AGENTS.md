@@ -12,7 +12,7 @@ Keep the system boring until measured load requires otherwise.
 - Shared analytics operate on normalized data only.
 - No queues, service mesh, or extra databases without a measured need.
 
-GMGN is the primary market-data provider for Solana and Robinhood Chain. Direct RPC evidence remains separate.
+GeckoTerminal public API is the default market-data provider for Solana and Robinhood Chain. Chain-native RPC/Blockscout evidence remains separate. Paid providers may be added only as optional adapters.
 
 ## UI
 Before substantial UI work, install/read:
