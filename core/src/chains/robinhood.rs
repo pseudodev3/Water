@@ -9,22 +9,18 @@ pub async fn observe(
 ) -> (ChainEvidence, HolderEvidence) {
     let chain_id_request = rpc(http, rpc_url, "eth_chainId", json!([]));
     let code_request = rpc(http, rpc_url, "eth_getCode", json!([address, "latest"]));
-    let token_request = get_json(
-        http,
-        &format!(
-            "{}/api/v2/tokens/{}",
-            blockscout_url.trim_end_matches('/'),
-            address
-        ),
+    let token_url = format!(
+        "{}/api/v2/tokens/{}",
+        blockscout_url.trim_end_matches('/'),
+        address
     );
-    let holders_request = get_json(
-        http,
-        &format!(
-            "{}/api/v2/tokens/{}/holders",
-            blockscout_url.trim_end_matches('/'),
-            address
-        ),
+    let holders_url = format!(
+        "{}/api/v2/tokens/{}/holders",
+        blockscout_url.trim_end_matches('/'),
+        address
     );
+    let token_request = get_json(http, &token_url);
+    let holders_request = get_json(http, &holders_url);
 
     let (chain_id_result, code_result, token_result, holders_result) =
         tokio::join!(chain_id_request, code_request, token_request, holders_request);
