@@ -12,7 +12,7 @@ use axum::{
 };
 use config::Config;
 use model::{ScanRequest, SourceStatus};
-use providers::gmgn::{GmgnClient, GmgnError};
+use providers::gecko::GeckoClient;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -22,7 +22,7 @@ use tracing::info;
 struct AppState {
     config: Config,
     http: reqwest::Client,
-    gmgn: GmgnClient,
+    gecko: GeckoClient,
 }
 
 #[tokio::main]
@@ -39,16 +39,12 @@ async fn main() {
         .timeout(std::time::Duration::from_secs(12))
         .build()
         .expect("HTTP client should initialize");
-    let gmgn = GmgnClient::new(
-        http.clone(),
-        config.gmgn_api_key.clone(),
-        config.gmgn_api_host.clone(),
-    );
+    let gecko = GeckoClient::new(http.clone(), config.gecko_api_host.clone());
 
     let state = Arc::new(AppState {
         config: config.clone(),
         http,
-        gmgn,
+        gecko,
     });
 
     let origin = config
@@ -80,10 +76,11 @@ async fn main() {
         .expect("Water server should run");
 }
 
-async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
+async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
-        "gmgn_configured": state.gmgn.configured(),
+        "market_provider": "GeckoTerminal public API",
+        "requires_market_api_key": false,
         "chains": ["solana", "robinhood"]
     }))
 }
@@ -96,76 +93,53 @@ async fn scan(
         return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))));
     }
 
-    if !state.gmgn.configured() {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "GMGN_API_KEY is not configured on the Water core." })),
-        ));
-    }
-
     let chain = request.chain;
     let address = request.address.trim().to_string();
 
-    let direct_verification =
-        chains::verify_asset(&state.http, &state.config, chain, &address);
-    let info_request = state.gmgn.token_info(chain, &address);
-    let security_request = state.gmgn.token_security(chain, &address);
-    let pool_request = state.gmgn.token_pool(chain, &address);
+    let market_request = state.gecko.market_snapshot(chain, &address);
+    let chain_request = chains::observe_asset(&state.http, &state.config, chain, &address);
+    let (market_result, (chain_evidence, holder_evidence)) =
+        tokio::join!(market_request, chain_request);
 
-    let (chain_evidence, info, security, pool) = tokio::join!(
-        direct_verification,
-        info_request,
-        security_request,
-        pool_request
-    );
-
-    // These endpoints have heavier GMGN weights. Keep them sequential and
-    // let the provider do one bounded retry on a 429.
-    let holders = state.gmgn.top_holders(chain, &address).await;
-    let traders = state.gmgn.top_traders(chain, &address).await;
-
-    let sources = vec![
-        source_status("GMGN token info", &info),
-        source_status("GMGN token security", &security),
-        source_status("GMGN pool info", &pool),
-        source_status("GMGN top holders", &holders),
-        source_status("GMGN top traders", &traders),
+    let mut sources = vec![
+        SourceStatus {
+            source: "Direct chain verification".to_string(),
+            ok: chain_evidence.verified,
+            detail: chain_evidence.detail.clone(),
+        },
+        SourceStatus {
+            source: holder_evidence.source.clone(),
+            ok: holder_evidence.top_ten_percentage.is_some(),
+            detail: holder_evidence.detail.clone(),
+        },
     ];
 
-    if sources.iter().all(|source| !source.ok) {
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            Json(json!({
-                "error": "GMGN did not return usable data for this scan.",
-                "sources": sources
-            })),
-        ));
+    match &market_result {
+        Ok(_) => sources.insert(
+            0,
+            SourceStatus {
+                source: "GeckoTerminal public market data".to_string(),
+                ok: true,
+                detail: "Token and top-pool market data received.".to_string(),
+            },
+        ),
+        Err(error) => sources.insert(
+            0,
+            SourceStatus {
+                source: "GeckoTerminal public market data".to_string(),
+                ok: false,
+                detail: error.to_string(),
+            },
+        ),
     }
 
     Ok(Json(engine::build_scan(
         &request,
-        info.as_ref().ok(),
-        pool.as_ref().ok(),
-        holders.as_ref().ok(),
-        traders.as_ref().ok(),
+        market_result.as_ref().ok(),
+        holder_evidence,
         chain_evidence,
         sources,
     )))
-}
-
-fn source_status(name: &str, result: &Result<Value, GmgnError>) -> SourceStatus {
-    match result {
-        Ok(_) => SourceStatus {
-            source: name.to_string(),
-            ok: true,
-            detail: "Received.".to_string(),
-        },
-        Err(error) => SourceStatus {
-            source: name.to_string(),
-            ok: false,
-            detail: error.to_string(),
-        },
-    }
 }
 
 async fn shutdown_signal() {
