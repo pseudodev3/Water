@@ -1,6 +1,6 @@
 use crate::model::{
-    ChainEvidence, HolderEvidence, MarketSnapshot, PressureComponent, PressureDiagnostic,
-    ScanRequest, ScanResponse, SourceStatus, TokenSnapshot,
+    ChainEvidence, DemandEvidence, HolderEvidence, MarketSnapshot, PressureComponent,
+    PressureDiagnostic, ScanRequest, ScanResponse, SourceStatus, TokenSnapshot,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -69,6 +69,7 @@ pub fn build_scan(
 
     let index = pressure_index(&components);
     let opponent_notes = opponent_notes(market, concentration, sell_share, liquidity_coverage);
+    let demand = demand_evidence(market);
 
     ScanResponse {
         chain: request.chain,
@@ -84,9 +85,42 @@ pub fn build_scan(
             components,
         },
         opponent_notes,
+        demand,
         chain_evidence,
         holder_evidence,
         sources,
+    }
+}
+
+
+fn demand_evidence(market: Option<&MarketSnapshot>) -> DemandEvidence {
+    let buys = market.and_then(|value| value.buys_h1);
+    let sells = market.and_then(|value| value.sells_h1);
+    let transactions = match (buys, sells) {
+        (Some(buys), Some(sells)) => Some(buys + sells),
+        _ => None,
+    };
+    let buy_share = match (buys, transactions) {
+        (Some(buys), Some(total)) if total > 0 => Some(buys as f64 / total as f64),
+        _ => None,
+    };
+
+    let volume_h24_usd = market.and_then(|value| value.volume_h24_usd);
+    let volume_to_liquidity = match (
+        volume_h24_usd,
+        market.and_then(|value| value.liquidity_usd),
+    ) {
+        (Some(volume), Some(liquidity)) if liquidity > 0.0 => Some(volume / liquidity),
+        _ => None,
+    };
+
+    DemandEvidence {
+        buys_h1: buys,
+        sells_h1: sells,
+        buy_share_h1: buy_share,
+        transactions_h1: transactions,
+        volume_h24_usd,
+        volume_to_liquidity,
     }
 }
 
@@ -234,6 +268,10 @@ mod tests {
 
         assert_eq!(recent_sell_share(&market), Some(0.6));
         assert_eq!(liquidity_coverage(&market, market.market_cap_usd), Some(0.1));
+        let demand = demand_evidence(Some(&market));
+        assert_eq!(demand.buy_share_h1, Some(0.4));
+        assert_eq!(demand.transactions_h1, Some(100));
+        assert_eq!(demand.volume_to_liquidity, Some(5.0));
     }
 
     #[test]
