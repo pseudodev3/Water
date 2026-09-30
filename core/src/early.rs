@@ -128,7 +128,11 @@ fn ratio(numerator: Decimal, denominator: Decimal) -> Decimal {
 }
 
 fn nonzero_div(numerator: Decimal, denominator: Decimal) -> Option<Decimal> {
-    (denominator > Decimal::ZERO).then_some(numerator / denominator)
+    if denominator > Decimal::ZERO {
+        Some(numerator / denominator)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
