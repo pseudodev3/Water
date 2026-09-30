@@ -65,6 +65,7 @@ pub async fn observe(
         chain_evidence,
         HolderEvidence {
             top_ten_percentage: concentration,
+            total_supply: None,
             source: "Robinhood JSON-RPC ERC-20 Transfer replay".to_string(),
             detail,
         },
