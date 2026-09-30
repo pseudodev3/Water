@@ -95,3 +95,61 @@ export async function scanToken(
     window.clearTimeout(timer);
   }
 }
+
+export type EarlyHolderMap = {
+  chain: Chain;
+  token: string;
+  observed_at_unix: number;
+  wallets_requested: number;
+  wallets_reconstructed: number;
+  cohort_retained_from_peak: number;
+  cohort_distributed_fraction: number;
+  holders: Array<{
+    rank: number;
+    wallet: string;
+    first_acquired_at: number | null;
+    current_quantity: number;
+    peak_quantity: number;
+    retained_from_peak: number;
+    distributed_fraction: number;
+    basis_coverage: number;
+    average_entry_usd: number | null;
+    current_price_usd: number | null;
+    current_multiple_on_entry: number | null;
+    basis_status: "verified" | "partial_history" | "incomplete";
+  }>;
+  notes: string[];
+};
+
+export async function fetchEarlyHolders(
+  chain: Chain,
+  token: string,
+): Promise<EarlyHolderMap> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 28_000);
+
+  try {
+    const response = await fetch(`${API_URL}/v1/early-holders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chain, token, limit: 3 }),
+      signal: controller.signal,
+    });
+
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(body?.error ?? "Early-holder reconstruction was unavailable.");
+    }
+
+    return body;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Early-holder reconstruction took too long to verify.");
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
