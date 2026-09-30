@@ -2,7 +2,8 @@ export type Chain = "solana" | "robinhood";
 
 export type Health = {
   status: string;
-  gmgn_configured: boolean;
+  market_provider: string;
+  requires_market_api_key: boolean;
   chains: Chain[];
 };
 
@@ -33,6 +34,11 @@ export type ScanResult = {
     source: string;
     verified: boolean;
     chain_id: number | null;
+    detail: string;
+  };
+  holder_evidence: {
+    top_ten_percentage: number | null;
+    source: string;
     detail: string;
   };
   sources: Array<{
