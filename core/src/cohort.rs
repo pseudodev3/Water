@@ -56,7 +56,11 @@ pub async fn analyze_holder_cohort(
 
     let (candidates, candidate_source, mut notes) = match request.chain {
         Chain::Solana => {
-            let client = SolanaHistoryClient::new(http.clone(), config.solana_rpc_url.clone());
+            let client = SolanaHistoryClient::with_fallback(
+                http.clone(),
+                config.solana_rpc_url.clone(),
+                config.solana_fallback_rpc_url.clone(),
+            );
             let candidates = client.top_current_holders(&token, limit).await?;
             (
                 candidates,
