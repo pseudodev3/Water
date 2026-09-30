@@ -97,3 +97,34 @@ pub struct ScanResponse {
     pub chain_evidence: ChainEvidence,
     pub sources: Vec<SourceStatus>,
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_robinhood_hex_contracts() {
+        let good = ScanRequest {
+            chain: Chain::Robinhood,
+            address: "0x1111111111111111111111111111111111111111".to_string(),
+        };
+        let bad = ScanRequest {
+            chain: Chain::Robinhood,
+            address: "0xnot-a-contract".to_string(),
+        };
+
+        assert!(good.validate().is_ok());
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_short_solana_addresses() {
+        let request = ScanRequest {
+            chain: Chain::Solana,
+            address: "short".to_string(),
+        };
+
+        assert!(request.validate().is_err());
+    }
+}
