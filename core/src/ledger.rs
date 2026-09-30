@@ -241,6 +241,12 @@ impl WalletLedger {
 
         let quantity = packet.quantity();
         validate_quantity(quantity)?;
+        let earliest_origin = packet
+            .lots
+            .iter()
+            .map(|lot| lot.acquired_at)
+            .min()
+            .unwrap_or(timestamp);
 
         for carried in packet.lots {
             self.push_lot(Lot {
@@ -253,7 +259,16 @@ impl WalletLedger {
         }
 
         self.transferred_in_quantity += quantity;
-        self.record_acquisition(quantity, timestamp);
+        self.current_quantity += quantity;
+        if self.current_quantity > self.peak_quantity {
+            self.peak_quantity = self.current_quantity;
+        }
+        self.first_acquired_at = Some(
+            self.first_acquired_at
+                .map(|existing| existing.min(earliest_origin))
+                .unwrap_or(earliest_origin),
+        );
+        self.last_activity_at = Some(timestamp);
         Ok(())
     }
 
@@ -575,7 +590,11 @@ fn ratio(numerator: Decimal, denominator: Decimal) -> Decimal {
 }
 
 fn nonzero_div(numerator: Decimal, denominator: Decimal) -> Option<Decimal> {
-    (denominator > Decimal::ZERO).then_some(numerator / denominator)
+    if denominator > Decimal::ZERO {
+        Some(numerator / denominator)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
