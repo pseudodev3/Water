@@ -1103,6 +1103,107 @@ a:focus-visible {
   transform: scale(0.97);
 }
 
+
+.memory-panel {
+  margin-top: 1px;
+  padding: 28px;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.7fr) minmax(0, 1.3fr);
+  gap: 42px;
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.memory-body {
+  min-width: 0;
+}
+
+.memory-current > span {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.memory-current > div {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  margin-top: 10px;
+  background: var(--line);
+}
+
+.memory-delta {
+  padding: 13px 14px;
+  background: var(--surface-1);
+}
+
+.memory-delta span,
+.calibration-strip span {
+  display: block;
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.memory-delta strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 580;
+  font-variant-numeric: tabular-nums;
+}
+
+.memory-first {
+  min-height: 66px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.calibration-strip {
+  display: grid;
+  grid-template-columns: 0.7fr repeat(3, 1fr);
+  gap: 1px;
+  margin-top: 16px;
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+  background: var(--line);
+}
+
+.calibration-strip > div {
+  padding: 12px 13px;
+  background: var(--surface-1);
+}
+
+.calibration-strip strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 590;
+  font-variant-numeric: tabular-nums;
+}
+
+.calibration-strip small {
+  display: block;
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.memory-note {
+  margin: 13px 0 0;
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
 .footer {
   margin-top: 42px;
   padding-top: 18px;
@@ -1231,7 +1332,8 @@ a:focus-visible {
 
   .demand-panel,
   .origin-panel,
-  .water-panel {
+  .water-panel,
+  .memory-panel {
     grid-template-columns: 1fr;
     gap: 24px;
   }
@@ -1304,7 +1406,8 @@ a:focus-visible {
   .early-panel,
   .demand-panel,
   .origin-panel,
-  .water-panel {
+  .water-panel,
+  .memory-panel {
     padding: 20px;
   }
 
@@ -1349,6 +1452,14 @@ a:focus-visible {
   .water-delta {
     grid-template-columns: 76px minmax(150px, 1fr) 50px;
     gap: 8px;
+  }
+
+  .calibration-strip {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .memory-current > div {
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .demand-facts span {
