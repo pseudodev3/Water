@@ -3,17 +3,25 @@ pub mod solana;
 
 use crate::{
     config::Config,
-    model::{Chain, ChainEvidence},
+    model::{Chain, ChainEvidence, HolderEvidence},
 };
 
-pub async fn verify_asset(
+pub async fn observe_asset(
     http: &reqwest::Client,
     config: &Config,
     chain: Chain,
     address: &str,
-) -> ChainEvidence {
+) -> (ChainEvidence, HolderEvidence) {
     match chain {
-        Chain::Solana => solana::verify(http, &config.solana_rpc_url, address).await,
-        Chain::Robinhood => robinhood::verify(http, &config.robinhood_rpc_url, address).await,
+        Chain::Solana => solana::observe(http, &config.solana_rpc_url, address).await,
+        Chain::Robinhood => {
+            robinhood::observe(
+                http,
+                &config.robinhood_rpc_url,
+                &config.robinhood_blockscout_url,
+                address,
+            )
+            .await
+        }
     }
 }
