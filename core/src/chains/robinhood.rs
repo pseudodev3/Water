@@ -49,16 +49,25 @@ pub async fn observe(
     };
 
     let concentration_detail = match concentration_result {
-        Ok(value) => (
-            Some(value),
-            format!(
-                "Top ten positive holder balances reconstructed from ERC-20 Transfer logs own about {value:.1}% of replayed circulating balances."
-            ),
-        ),
+        Ok(value) => {
+            let mut detail = format!(
+                "Top {} externally-owned wallet holders own about {:.1}% of replayed positive balances.",
+                value.wallets_used, value.percentage
+            );
+            if value.excluded_contract_count > 0 {
+                detail.push_str(&format!(
+                    " Excluded {} contract-controlled ranked balance{} totaling at least {:.1}% of replayed balances from the wallet-holder numerator.",
+                    value.excluded_contract_count,
+                    if value.excluded_contract_count == 1 { "" } else { "s" },
+                    value.excluded_contract_percentage
+                ));
+            }
+            (Some(value.percentage), detail)
+        }
         Err(error) => (
             None,
             format!(
-                "Robinhood holder concentration could not be reconstructed from public RPC logs: {error}"
+                "Robinhood wallet-holder concentration could not be reconstructed from public RPC logs: {error}"
             ),
         ),
     };
@@ -79,7 +88,7 @@ pub async fn observe(
         HolderEvidence {
             top_ten_percentage: concentration_detail.0,
             total_supply,
-            source: "Robinhood JSON-RPC ERC-20 evidence".to_string(),
+            source: "Robinhood wallet-holder reconstruction".to_string(),
             detail: format!("{} {}", supply_detail, concentration_detail.1),
         },
     )
