@@ -112,22 +112,26 @@ export type EarlyHolderMap = {
   token: string;
   observed_at_unix: number;
   wallets_requested: number;
+  wallets_listed: number;
   wallets_reconstructed: number;
-  cohort_retained_from_peak: number;
-  cohort_distributed_fraction: number;
+  complete_movement_histories: number;
+  cohort_retained_from_peak: number | null;
+  cohort_distributed_fraction: number | null;
   holders: Array<{
     rank: number;
     wallet: string;
-    first_acquired_at: number | null;
     current_quantity: number;
-    peak_quantity: number;
-    retained_from_peak: number;
-    distributed_fraction: number;
-    basis_coverage: number;
+    first_acquired_at: number | null;
+    peak_quantity: number | null;
+    retained_from_peak: number | null;
+    distributed_fraction: number | null;
+    basis_coverage: number | null;
     average_entry_usd: number | null;
     current_price_usd: number | null;
     current_multiple_on_entry: number | null;
-    basis_status: "verified" | "partial_history" | "incomplete";
+    basis_status: "verified" | "partial_history" | "incomplete" | null;
+    movement_history: "complete" | "partial" | "unavailable";
+    detail: string;
   }>;
   notes: string[];
 };
@@ -173,6 +177,13 @@ export type OriginEvidence = {
   secondary_label: string | null;
   secondary_address: string | null;
   primary_balance_percentage: number | null;
+  creator_label: string | null;
+  launchpad: {
+    name: string;
+    family: string;
+    evidence: string;
+    source: string;
+  } | null;
   active_controls: string[];
   source: string;
   detail: string;
@@ -203,6 +214,49 @@ export async function fetchOrigin(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error("Origin evidence took too long to verify.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export type TokenInfo = {
+  image_url: string | null;
+  websites: string[];
+  twitter_url: string | null;
+  telegram_url: string | null;
+  discord_url: string | null;
+  farcaster_url: string | null;
+  zora_url: string | null;
+  gt_verified: boolean | null;
+};
+
+export async function fetchTokenInfo(
+  chain: Chain,
+  address: string,
+): Promise<TokenInfo> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const response = await fetch(`${API_URL}/v1/token-info`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chain, address }),
+      signal: controller.signal,
+    });
+
+    const body = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(body?.error ?? "Token metadata was unavailable.");
+    }
+
+    return body;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Token metadata took too long to load.");
     }
     throw error;
   } finally {
