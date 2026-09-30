@@ -2,6 +2,7 @@ mod chains;
 mod config;
 mod early;
 mod flow;
+mod history;
 mod engine;
 mod ledger;
 mod model;
