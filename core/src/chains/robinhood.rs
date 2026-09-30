@@ -112,10 +112,10 @@ pub async fn observe(
     (
         chain_evidence,
         HolderEvidence {
-            top_ten_percentage: concentration_detail.0,
+            top_ten_percentage: concentration,
             total_supply,
             source: "Robinhood wallet-holder reconstruction".to_string(),
-            detail: format!("{} {}", supply_detail, concentration_detail.1),
+            detail: format!("{} {}", supply_detail, holder_detail),
         },
     )
 }
