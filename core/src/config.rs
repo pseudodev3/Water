@@ -5,7 +5,6 @@ pub struct Config {
     pub gecko_api_host: String,
     pub solana_rpc_url: String,
     pub robinhood_rpc_url: String,
-    pub robinhood_blockscout_url: String,
 }
 
 impl Config {
@@ -23,8 +22,6 @@ impl Config {
                 .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string()),
             robinhood_rpc_url: std::env::var("ROBINHOOD_RPC_URL")
                 .unwrap_or_else(|_| "https://rpc.mainnet.chain.robinhood.com".to_string()),
-            robinhood_blockscout_url: std::env::var("ROBINHOOD_BLOCKSCOUT_URL")
-                .unwrap_or_else(|_| "https://robinhoodchain.blockscout.com".to_string()),
         }
     }
 }

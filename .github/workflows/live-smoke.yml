@@ -1,0 +1,97 @@
+name: Live provider smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  live-shapes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify public provider shapes
+        shell: python
+        run: |
+          import json
+          import time
+          import urllib.request
+          import urllib.parse
+
+          UA = {"User-Agent": "water-live-smoke/0.1", "Accept": "application/json"}
+          WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+          WSOL = "So11111111111111111111111111111111111111112"
+          KNOWN_RH_TX = "0x86cb71309e4b5aa175267153c28ddb2d77660d345eb7c7833917625845dd239a"
+
+          def request_json(url, data=None, headers=None, attempts=3):
+              last = None
+              all_headers = dict(UA)
+              if headers:
+                  all_headers.update(headers)
+              for attempt in range(attempts):
+                  try:
+                      req = urllib.request.Request(
+                          url,
+                          data=json.dumps(data).encode() if data is not None else None,
+                          headers={**all_headers, **({"Content-Type": "application/json"} if data is not None else {})},
+                          method="POST" if data is not None else "GET",
+                      )
+                      with urllib.request.urlopen(req, timeout=20) as response:
+                          return json.loads(response.read().decode())
+                  except Exception as exc:
+                      last = exc
+                      time.sleep(1 + attempt)
+              raise RuntimeError(f"{url} failed after {attempts} attempts: {last}")
+
+          # Robinhood public RPC: chain ID + real contract bytecode.
+          rh_rpc = "https://rpc.mainnet.chain.robinhood.com"
+          chain = request_json(rh_rpc, {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]})
+          assert int(chain["result"], 16) == 4663, chain
+          code = request_json(rh_rpc, {"jsonrpc":"2.0","id":2,"method":"eth_getCode","params":[WETH,"latest"]})
+          assert isinstance(code.get("result"), str) and code["result"] not in ("0x", "0x0"), code
+
+          # Robinhood history no longer depends on Blockscout. Verify the
+          # standard JSON-RPC primitives Water uses for history reconstruction.
+          tx = request_json(rh_rpc, {"jsonrpc":"2.0","id":3,"method":"eth_getTransactionByHash","params":[KNOWN_RH_TX]})
+          assert tx.get("result", {}).get("from"), tx
+          receipt = request_json(rh_rpc, {"jsonrpc":"2.0","id":4,"method":"eth_getTransactionReceipt","params":[KNOWN_RH_TX]})
+          receipt_result = receipt.get("result", {})
+          assert receipt_result.get("blockNumber"), receipt
+          assert isinstance(receipt_result.get("logs", []), list), receipt
+
+          head = request_json(rh_rpc, {"jsonrpc":"2.0","id":5,"method":"eth_blockNumber","params":[]})
+          head_n = int(head["result"], 16)
+          transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+          logs = request_json(rh_rpc, {
+              "jsonrpc":"2.0","id":6,"method":"eth_getLogs",
+              "params":[{
+                  "fromBlock": hex(max(0, head_n - 1000)),
+                  "toBlock": hex(head_n),
+                  "address": WETH,
+                  "topics":[transfer_topic]
+              }]
+          })
+          assert isinstance(logs.get("result"), list), logs
+
+          # GeckoTerminal network/token-pool shape used for market + historical-price discovery.
+          gecko = f"https://api.geckoterminal.com/api/v2/networks/robinhood/tokens/{WETH}/pools"
+          pools = request_json(gecko, headers={"Accept": "application/json;version=20230203"})
+          assert isinstance(pools.get("data"), list) and pools["data"], pools
+          attrs = pools["data"][0].get("attributes", {})
+          assert attrs.get("address"), attrs
+
+          # Solana's public RPC can throttle datacenter runners. A 429 is an
+          # infrastructure limitation, not a schema failure, so report it as
+          # inconclusive while keeping parser/unit CI authoritative.
+          sol_rpc = "https://api.mainnet-beta.solana.com"
+          try:
+              supply = request_json(sol_rpc, {"jsonrpc":"2.0","id":1,"method":"getTokenSupply","params":[WSOL]})
+              assert supply.get("result", {}).get("value", {}).get("amount") is not None, supply
+              time.sleep(1)
+              largest = request_json(sol_rpc, {"jsonrpc":"2.0","id":2,"method":"getTokenLargestAccounts","params":[WSOL]})
+              assert isinstance(largest.get("result", {}).get("value"), list), largest
+          except RuntimeError as exc:
+              if "429" not in str(exc):
+                  raise
+              print(f"Solana public RPC throttled live smoke: {exc}")
+
+          print("Live provider shapes verified or provider-throttle inconclusive.")
