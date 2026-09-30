@@ -301,3 +301,44 @@ fn value_as_f64(value: &Value) -> Option<f64> {
         _ => None,
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn derives_holder_and_trader_observations() {
+        let holders = json!({
+            "list": [
+                {"address":"a","amount_percentage":"0.20","profit":"10","unrealized_profit":"4"},
+                {"address":"b","amount_percentage":"0.10","profit":"-2","unrealized_profit":"0"},
+                {"address":"c","amount_percentage":"0.05","profit":"1","unrealized_profit":"0"}
+            ]
+        });
+        let traders = json!({
+            "list": [
+                {"address":"a","buy_volume_cur":"100","sell_volume_cur":"200"},
+                {"address":"b","buy_volume_cur":"300","sell_volume_cur":"100"}
+            ]
+        });
+
+        assert_eq!(top_ten_concentration(&holders), Some(35.0));
+        assert_eq!(positive_pnl_share(&holders), Some(2.0 / 3.0));
+        assert_eq!(sell_dominant_share(&traders), Some(0.5));
+    }
+
+    #[test]
+    fn requires_multiple_components_before_scoring() {
+        let component = PressureComponent {
+            key: "top_holder_concentration",
+            label: "Top-holder concentration",
+            observed: "20%".to_string(),
+            pressure: 0.4,
+            detail: "fixture".to_string(),
+        };
+
+        assert_eq!(pressure_index(&[component]), None);
+    }
+}
