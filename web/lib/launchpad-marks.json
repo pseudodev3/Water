@@ -1,0 +1,96 @@
+{
+  "pumpfun": {
+    "path": "/launchpads/pumpfun.svg",
+    "source": "https://github.com/metasal1/solana-icons",
+    "license": "MIT; trademarks retained"
+  },
+  "stonkfun": {
+    "path": "/launchpads/stonkfun.svg",
+    "source": "https://github.com/metasal1/solana-icons",
+    "license": "MIT; trademarks retained"
+  },
+  "pons": {
+    "path": "/launchpads/pons.png",
+    "source": "https://www.ponsfamily.com/pons.png",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "hoodfun": {
+    "path": "/launchpads/hoodfun.png",
+    "source": "https://hood.fun/hood-mark.png",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "noxa": {
+    "path": "/launchpads/noxa.png",
+    "source": "https://fun.noxa.eth.limo/favicon.png",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "stonkbrokers": {
+    "path": "/launchpads/stonkbrokers.png",
+    "source": "https://www.stonkbrokers.cash/icon-192.png",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "hookr": {
+    "path": "/launchpads/hookr.svg",
+    "source": "https://hookr.fun/icon.svg",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "froth": {
+    "path": "/launchpads/froth.png",
+    "source": "https://froth.meme/favicon/apple-touch-icon.png",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "pyre": {
+    "path": "/launchpads/pyre.svg",
+    "source": "https://pyre.fun/favicon.svg",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "pairyard": {
+    "path": "/launchpads/pairyard.svg",
+    "source": "https://pairyard.com/icon.svg",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "merryforge": {
+    "path": "/launchpads/merryforge.svg",
+    "source": "https://www.merryforge.app/merryforge-logo.svg",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "raisehood": {
+    "path": "/launchpads/raisehood.svg",
+    "source": "https://www.raisehood.xyz/favicon.svg",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "perpshood": {
+    "path": "/launchpads/perpshood.png",
+    "source": "https://perpshood.fun/assets/perps-hood-logo-DVlKzCf0.png",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "ponzu": {
+    "path": "/launchpads/ponzu.svg",
+    "source": "https://ponzu.app/lemon-logo-big-face.svg",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "v4fun": {
+    "path": "/launchpads/v4fun.png",
+    "source": "https://v4.fun/icon.png",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  },
+  "peeps": {
+    "path": "/launchpads/peeps.webp",
+    "source": "https://peeps.wtf/logo-launchpad.webp",
+    "license": "First-party brand asset; no redistribution license stated; trademarks retained",
+    "retrieved": "2026-10-01"
+  }
+}
