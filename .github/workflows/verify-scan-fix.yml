@@ -43,7 +43,10 @@ jobs:
               ("noxa", "0xD9eC2db5f3D1b236843925949fe5bd8a3836FCcB", 61688),
               ("pons", "0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB", 8991118),
           ]:
-              logs = rpc("eth_getLogs", [{"address":factory,"fromBlock":hex(block),"toBlock":hex(block+2000),"topics":[v1_topic]}])
+              logs = []
+              for offset in range(0, 100000, 2000):
+                  logs = rpc("eth_getLogs", [{"address":factory,"fromBlock":hex(block+offset),"toBlock":hex(block+offset+1999),"topics":[v1_topic]}])
+                  if logs: break
               assert logs, (label, "no launch sample in reference window")
               sample = "0x" + logs[0]["topics"][1][-40:]
               result = request("http://127.0.0.1:8080/v1/origin", {"chain":"robinhood","token":sample})
@@ -53,7 +56,7 @@ jobs:
           v2_factory = "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e"
           v2_topic = "0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607"
           logs = []
-          for offset in range(0, 20000, 2000):
+          for offset in range(0, 100000, 2000):
               logs = rpc("eth_getLogs", [{"address":v2_factory,"fromBlock":hex(max(0,head-offset-1999)),"toBlock":hex(head-offset),"topics":[v2_topic]}])
               if logs: break
           assert logs, "No recent Pons v2 launch sample found"
