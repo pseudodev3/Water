@@ -876,3 +876,29 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   Temporary push-only verification workflow removed before opening the PR.
 - Existing WSOL native-mint supply may be zero by SPL semantics; that does not
   imply zero valuation and is not used to invent holder concentration.
+
+
+## Readability / hero pass in progress (2026-10-01)
+
+Branch: `fix/readability-and-hero`. No UI PR opened yet.
+
+- Scan reliability PR #17 merged as `1d26cd5`; Railway and Vercel green.
+  Production Pons legacy/v1/v2 and NOXA origin checks passed; WETH stayed
+  unrecognized. Subsequent production SOL/RH scans returned current market
+  data and the new valuation-basis field.
+- UI changes: brighter charcoal surfaces/text, minimum 12px data labels,
+  16px address input, visible input label and associated error, split hero
+  with scanner, compact results heading, clear loading status, and an
+  explanatory empty state. Existing scan and result components retained.
+- Build passed. Static color checks: faint text ranges from 5.13:1 to 7.08:1
+  across the four surface tokens. This is not a full accessibility audit.
+- Visual QA still blocked: cloud browser rejects localhost; the Vercel
+  branch preview requires sign-in. Automatic approval review rejected
+  initiating sign-in because explicit user authentication permission is
+  required. Ask for that permission before trying authentication again.
+- Protected preview: https://web-p30hsroyi-ghostts-projects-0d589912.vercel.app
+  Contains a temporary `/__layout-check.html` with 390px and 320px frames.
+  Check mobile/desktop, empty/error/loading/result states, both chains,
+  and overflow. Remove this temporary file before opening the finished PR.
+- Keep the existing requirement: finish visual/functional verification,
+  then open PR; merge only after green CI and verify deployment.

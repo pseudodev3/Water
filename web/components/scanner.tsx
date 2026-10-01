@@ -100,7 +100,7 @@ export function Scanner() {
             <Droplets size={14} strokeWidth={1.5} aria-hidden="true" />
             See beneath the price
           </div>
-          <h1 id="water-title">Read the<br /><span>other side.</span></h1>
+          <h1 id="water-title">Read the<br /> <span>other side.</span></h1>
           <p>
             Who holds the supply. How deep the liquidity goes.
             Where control began. One token, a clearer picture.
