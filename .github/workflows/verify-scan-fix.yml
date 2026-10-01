@@ -33,6 +33,34 @@ jobs:
           print("Pons origin", json.dumps(pons))
           assert pons.get("launchpad", {}).get("slug") == "pons", pons
           assert pons["launchpad"]["source"] == "Robinhood verified factory registry", pons
+          rpc_url = "https://rpc.mainnet.chain.robinhood.com"
+          def rpc(method, params):
+              result = request(rpc_url, {"jsonrpc":"2.0","id":1,"method":method,"params":params})
+              assert "error" not in result, result
+              return result["result"]
+          v1_topic = "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a"
+          for label, factory, block in [
+              ("noxa", "0xD9eC2db5f3D1b236843925949fe5bd8a3836FCcB", 61688),
+              ("pons", "0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB", 8991118),
+          ]:
+              logs = rpc("eth_getLogs", [{"address":factory,"fromBlock":hex(block),"toBlock":hex(block+2000),"topics":[v1_topic]}])
+              assert logs, (label, "no launch sample in reference window")
+              sample = "0x" + logs[0]["topics"][1][-40:]
+              result = request("http://127.0.0.1:8080/v1/origin", {"chain":"robinhood","token":sample})
+              print("FACTORY SAMPLE", label, sample, json.dumps(result))
+              assert result.get("launchpad", {}).get("slug") == label, result
+          head = int(rpc("eth_blockNumber", []), 16)
+          v2_factory = "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e"
+          v2_topic = "0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607"
+          logs = []
+          for offset in range(0, 20000, 2000):
+              logs = rpc("eth_getLogs", [{"address":v2_factory,"fromBlock":hex(max(0,head-offset-1999)),"toBlock":hex(head-offset),"topics":[v2_topic]}])
+              if logs: break
+          assert logs, "No recent Pons v2 launch sample found"
+          sample = "0x" + logs[0]["topics"][1][-40:]
+          result = request("http://127.0.0.1:8080/v1/origin", {"chain":"robinhood","token":sample})
+          print("FACTORY SAMPLE pons v2", sample, json.dumps(result))
+          assert result.get("launchpad", {}).get("slug") == "pons", result
           weth = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
           negative = request("http://127.0.0.1:8080/v1/origin", {"chain":"robinhood","token":weth})
           assert negative["launchpad"] is None, negative
