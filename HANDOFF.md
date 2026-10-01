@@ -294,8 +294,11 @@ price × onchain total supply
 
 This is supply-implied valuation and may differ from true circulating market cap if tokens are locked/noncirculating.
 
-UI currently still calls this “Market cap.”
-A future refinement could expose `valuation_basis` or say “supply-implied MC.”
+The API now exposes `token.market_cap_basis` (`provider`, `supply_implied`,
+`unavailable`). The UI labels the derived value “Supply value”. Provider zero,
+negative, and non-finite market caps are treated as unavailable; a finite positive
+price × onchain supply can still reconstruct the valuation. Pool-level market
+cap/FDV is not borrowed because it can describe the other asset in the pair.
 
 ---
 
@@ -526,7 +529,12 @@ Robinhood origin path:
 5. creator token share
 6. creator EOA/contract classification via RH JSON-RPC
 
-Current Robinhood launchpad recognition is label-based from Blockscout creator/factory metadata.
+Robinhood launchpad recognition first checks exact factory membership for Pons
+v2, current/legacy Pons v1, and NOXA Fun. This path uses public RPC and does not
+require Blockscout labels or an API key. See `docs/robinhood-launchpads.md` for
+addresses, ABI layouts, sources, and coverage limits. Other launchpads retain
+the explicit Blockscout creator/factory label fallback; arbitrary substrings no
+longer count. Factory verification runs independently of optional origin indexing.
 
 Recognized names in the current registry include:
 - Pons
@@ -843,3 +851,28 @@ was changed in this branding pass.
 
 Next technical work remains optional RH execution tracing. The branding gap is
 reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
+
+## Scan reliability follow-up (2026-10-01)
+
+- `/v1/scan`: market lookup has a 12s deadline. SOL account/supply/holder reads
+  run concurrently; each primary/fallback basic RPC has a 4s budget, and deep
+  holder enumeration has a 9s budget. RH basic RPC calls have an 8s budget and
+  retain the existing 9s indexed-holder budget. Available evidence survives a
+  slow independent source. The frontend's 20s stop remains unchanged.
+- Solana null `getAccountInfo.value` no longer counts as successful verification.
+- Valuation: provider zeroes no longer suppress the supply × price fallback.
+  Non-finite products remain unavailable, never zero. Zero transaction volume
+  remains legitimate and is not filtered out.
+- Origin: exact factory membership precedes strict label matching; failed
+  optional explorer/creator reads no longer discard verified factory evidence.
+  Factory records cannot be inferred from token names or vanity suffixes.
+- Regression suite: 54 tests passed, including stalled-provider integration
+  tests (available market/supply preserved; all-stalled scan returns within 12s).
+- Before-PR candidate live checks: documented PONS reference recognized as
+  Pons legacy v1, Pons v1/v2 and NOXA samples all recognized without a
+  Blockscout key; WETH correctly unrecognized; live SOL WSOL scan returned
+  in 9.0s with market data; live RH PONS scan in 0.32s. Sample addresses and
+  the successful live run are recorded in `docs/robinhood-launchpads.md`.
+  Temporary push-only verification workflow removed before opening the PR.
+- Existing WSOL native-mint supply may be zero by SPL semantics; that does not
+  imply zero valuation and is not used to invent holder concentration.

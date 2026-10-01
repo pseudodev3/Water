@@ -183,6 +183,7 @@ fn hex_biguint(value: &str) -> Option<BigUint> {
 
 fn scaled_biguint_to_f64(value: &BigUint, decimals: u32) -> Option<f64> {
     let raw = value.to_string();
+    if decimals > 255 { return None; }
     let decimals = decimals as usize;
     let normalized = if decimals == 0 {
         raw
@@ -209,6 +210,17 @@ fn format_compact(value: f64) -> String {
 }
 
 async fn rpc(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    timeout(Duration::from_secs(8), rpc_with_retries(http, rpc_url, method, params))
+        .await
+        .unwrap_or_else(|_| Err(format!("{method} exceeded the 8s scan budget")))
+}
+
+async fn rpc_with_retries(
     http: &reqwest::Client,
     rpc_url: &str,
     method: &str,

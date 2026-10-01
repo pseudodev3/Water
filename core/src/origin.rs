@@ -166,6 +166,46 @@ async fn inspect_robinhood(
     config: &Config,
     token: &str,
 ) -> Result<OriginResponse, String> {
+    let indexed = async {
+        tokio::time::timeout(std::time::Duration::from_secs(7), inspect_robinhood_indexed(http, config, token))
+            .await.unwrap_or_else(|_| Err("Explorer origin lookup exceeded its 7s budget.".to_string()))
+    };
+    let (factory_match, indexed) = tokio::join!(
+        crate::robinhood_launchpads::detect(http, &config.robinhood_rpc_url, token),
+        indexed,
+    );
+    let mut response = indexed.unwrap_or_else(|error| OriginResponse {
+        chain: Chain::Robinhood,
+        token: token.to_string(),
+        primary_label: "Contract creator".to_string(),
+        primary_address: None,
+        secondary_label: None,
+        secondary_address: None,
+        primary_balance_percentage: None,
+        creator_label: None,
+        launchpad: None,
+        active_controls: vec![],
+        source: "Robinhood JSON-RPC; explorer evidence unavailable".to_string(),
+        detail: format!("{error} Unavailable creator controls remain unknown."),
+    });
+    if let Some(found) = factory_match {
+        // The factory's launch creator may differ from the contract that executed CREATE.
+        // Preserve indexed creator/control semantics; use the launch creator only if absent.
+        if response.primary_address.is_none() {
+            response.primary_label = "Launch creator".to_string();
+            response.primary_address = Some(found.creator);
+        }
+        response.launchpad = Some(found.evidence);
+        response.source = "Robinhood factory membership + available indexed origin evidence".to_string();
+    }
+    Ok(response)
+}
+
+async fn inspect_robinhood_indexed(
+    http: &Client,
+    config: &Config,
+    token: &str,
+) -> Result<OriginResponse, String> {
     let key = config
         .blockscout_api_key
         .as_ref()
@@ -178,18 +218,19 @@ async fn inspect_robinhood(
     );
     let response = http
         .get(url)
+        .timeout(std::time::Duration::from_secs(3))
         .header("Accept", "application/json")
         .header("User-Agent", "water/0.1")
         .query(&[("apikey", key)])
         .send()
         .await
-        .map_err(|error| format!("Blockscout origin lookup failed: {error}"))?;
+        .map_err(|error| format!("Blockscout origin lookup failed: {}", error.without_url()))?;
 
     let status = response.status();
     let body = response
         .json::<Value>()
         .await
-        .map_err(|error| format!("Blockscout origin lookup returned unreadable JSON: {error}"))?;
+        .map_err(|error| format!("Blockscout origin lookup returned unreadable JSON: {}", error.without_url()))?;
 
     if !status.is_success() {
         return Err(format!(
@@ -211,10 +252,19 @@ async fn inspect_robinhood(
         .get("implementation_address")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
-    let creator_metadata = match creator.as_deref() {
+    let creator_metadata_request = async { match creator.as_deref() {
         Some(address) => blockscout_address(http, config, address).await.ok(),
         None => None,
-    };
+    }};
+    let creator_balance_request = async { match creator.as_deref() {
+        Some(address) => erc20_balance_percentage(http, &config.robinhood_rpc_url, token, address).await.ok(),
+        None => None,
+    }};
+    let creator_code_request = async { match creator.as_deref() {
+        Some(address) => evm_rpc(http, &config.robinhood_rpc_url, "eth_getCode", json!([address,"latest"])).await.ok(),
+        None => None,
+    }};
+    let (creator_metadata, creator_balance_percentage, creator_code) = tokio::join!(creator_metadata_request, creator_balance_request, creator_code_request);
     let creator_label = creator_metadata
         .as_ref()
         .and_then(blockscout_best_label);
@@ -222,32 +272,12 @@ async fn inspect_robinhood(
         .as_ref()
         .and_then(|metadata| recognize_robinhood_launchpad(metadata, creator.as_deref()));
 
-    let creator_balance_percentage = match creator.as_deref() {
-        Some(address) => erc20_balance_percentage(http, &config.robinhood_rpc_url, token, address)
-            .await
-            .ok(),
-        None => None,
-    };
-
     let mut active_controls = Vec::new();
-    if let Some(address) = creator.as_deref() {
-        match evm_rpc(
-            http,
-            &config.robinhood_rpc_url,
-            "eth_getCode",
-            json!([address, "latest"]),
-        )
-        .await
-        {
-            Ok(code)
-                if code
-                    .as_str()
-                    .is_some_and(|value| value != "0x" && value != "0x0") =>
-            {
-                active_controls.push("Creator address is a contract".to_string());
-            }
-            Ok(_) => active_controls.push("Creator address is an EOA wallet".to_string()),
-            Err(_) => {}
+    if let Some(code) = creator_code.as_ref().and_then(Value::as_str) {
+        if code != "0x" && code != "0x0" {
+            active_controls.push("Creator address is a contract".to_string());
+        } else {
+            active_controls.push("Creator address is an EOA wallet".to_string());
         }
     }
     if implementation.is_some() {
@@ -522,18 +552,19 @@ async fn blockscout_address(
 
     let response = http
         .get(url)
+        .timeout(std::time::Duration::from_secs(3))
         .header("Accept", "application/json")
         .header("User-Agent", "water/0.1")
         .query(&[("apikey", key)])
         .send()
         .await
-        .map_err(|error| format!("Blockscout creator metadata failed: {error}"))?;
+        .map_err(|error| format!("Blockscout creator metadata failed: {}", error.without_url()))?;
 
     let status = response.status();
     let body = response
         .json::<Value>()
         .await
-        .map_err(|error| format!("Blockscout creator metadata returned unreadable JSON: {error}"))?;
+        .map_err(|error| format!("Blockscout creator metadata returned unreadable JSON: {}", error.without_url()))?;
 
     if !status.is_success() {
         return Err(format!(
@@ -572,7 +603,7 @@ fn recognize_robinhood_launchpad(
 ) -> Option<LaunchpadEvidence> {
     let mut labels = Vec::new();
     collect_label_strings(metadata, &mut labels);
-    let joined = labels.join(" ").to_ascii_lowercase();
+    let labels: Vec<_> = labels.iter().map(|label| label.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()).collect();
 
     const PATTERNS: &[(&[&str], &str)] = &[
         (&["pons"], "Pons"),
@@ -603,7 +634,13 @@ fn recognize_robinhood_launchpad(
     PATTERNS.iter().find_map(|(patterns, name)| {
         patterns
             .iter()
-            .any(|pattern| joined.contains(pattern))
+            .any(|pattern| {
+                let pattern: String = pattern.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                labels.iter().any(|label| {
+                    label == &pattern || ["factory", "tokenfactory", "launchfactory", "launcher", "launchdeployer"]
+                        .iter().any(|suffix| label == &format!("{pattern}{suffix}"))
+                })
+            })
             .then(|| LaunchpadEvidence {
                 slug: robinhood_launchpad_slug(name).to_string(),
                 name: (*name).to_string(),
@@ -772,6 +809,7 @@ async fn json_rpc(
 ) -> Result<Value, String> {
     let response = http
         .post(rpc_url)
+        .timeout(std::time::Duration::from_secs(if label == "Robinhood" { 3 } else { 12 }))
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -808,6 +846,14 @@ fn hex_biguint(value: &str) -> Option<BigUint> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unrelated_substrings_do_not_become_launchpad_labels() {
+        for name in ["ResponseFactory", "SponsoredToken", "NotPonsTokenFactory", "FrothyToken", "Pons Impersonator"] {
+            assert!(recognize_robinhood_launchpad(&json!({"name":name}), None).is_none(), "{name}");
+        }
+        assert_eq!(recognize_robinhood_launchpad(&json!({"name":"Pons: Token Factory"}), None).unwrap().slug, "pons");
+    }
 
     #[test]
     fn recognizes_robinhood_launchpad_from_creator_label() {

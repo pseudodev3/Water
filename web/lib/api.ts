@@ -17,6 +17,7 @@ export type ScanResult = {
     price_usd: number | null;
     liquidity_usd: number | null;
     market_cap_usd: number | null;
+    market_cap_basis?: "provider" | "supply_implied" | "unavailable";
   };
   pressure: {
     index: number | null;
