@@ -444,13 +444,11 @@ fn market_snapshot_from_payload(payload: &Value) -> Result<MarketSnapshot, Gecko
     Ok(MarketSnapshot {
         name: string_field(attributes.get("name")),
         symbol: string_field(attributes.get("symbol")),
-        price_usd: number_field(attributes.get("price_usd")),
+        price_usd: positive_number_field(attributes.get("price_usd")),
         liquidity_usd: number_field(attributes.get("total_reserve_in_usd"))
             .or_else(|| first_pool.and_then(|pool| number_path(pool, &["reserve_in_usd"]))),
-        market_cap_usd: number_field(attributes.get("market_cap_usd"))
-            .or_else(|| first_pool.and_then(|pool| number_path(pool, &["market_cap_usd"]))),
-        fdv_usd: number_field(attributes.get("fdv_usd"))
-            .or_else(|| first_pool.and_then(|pool| number_path(pool, &["fdv_usd"]))),
+        market_cap_usd: positive_number_field(attributes.get("market_cap_usd")),
+        fdv_usd: positive_number_field(attributes.get("fdv_usd")),
         volume_h24_usd: attributes
             .get("volume_usd")
             .and_then(|value| number_path(value, &["h24"]))
@@ -523,6 +521,10 @@ fn string_field(value: Option<&Value>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn positive_number_field(value: Option<&Value>) -> Option<f64> {
+    number_field(value).filter(|value| value.is_finite() && *value > 0.0)
+}
+
 fn number_field(value: Option<&Value>) -> Option<f64> {
     value.and_then(value_as_f64)
 }
@@ -556,6 +558,18 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+
+    #[test]
+    fn zero_token_valuation_does_not_use_an_unrelated_pool_valuation() {
+        let payload = serde_json::json!({
+            "data":{"attributes":{"price_usd":"0.002","market_cap_usd":"0","fdv_usd":"NaN","volume_usd":{"h24":"0"}}},
+            "included":[{"type":"pool","attributes":{"market_cap_usd":"999999999","fdv_usd":"999999999"}}]
+        });
+        let market = market_snapshot_from_payload(&payload).unwrap();
+        assert!(market.market_cap_usd.is_none());
+        assert!(market.fdv_usd.is_none());
+        assert_eq!(market.volume_h24_usd, Some(0.0));
+    }
 
     #[test]
     fn token_payload_with_included_top_pool_builds_complete_market_snapshot() {

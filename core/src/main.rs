@@ -9,6 +9,7 @@ mod engine;
 mod ledger;
 mod model;
 mod origin;
+mod robinhood_launchpads;
 mod providers;
 mod position;
 mod reconstruct;
@@ -106,7 +107,13 @@ async fn scan(
     let chain = request.chain;
     let address = request.address.trim().to_string();
 
-    let market_request = state.gecko.market_snapshot(chain, &address);
+    let market_request = async {
+        timeout(Duration::from_secs(12), state.gecko.market_snapshot(chain, &address))
+            .await
+            .unwrap_or_else(|_| Err(providers::gecko::GeckoError::Transport(
+                "Market lookup exceeded the 12s scan budget; available chain evidence is still returned.".to_string()
+            )))
+    };
     let chain_request = chains::observe_asset(&state.http, &state.config, chain, &address);
     let (market_result, (chain_evidence, holder_evidence)) =
         tokio::join!(market_request, chain_request);
@@ -288,4 +295,65 @@ async fn token_info(
 
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod scan_regression_tests {
+    use super::*;
+    use std::time::Instant;
+
+    async fn mock_state(stall_market: bool, stall_all_rpc: bool) -> (Arc<AppState>, tokio::task::JoinHandle<()>) {
+        let rpc = move |Json(body): Json<Value>| async move {
+            let method = body["method"].as_str().unwrap_or_default();
+            if stall_all_rpc || method == "getProgramAccounts" {
+                std::future::pending::<()>().await;
+            }
+            let value = match method {
+                "getAccountInfo" => json!({"value":{"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","data":["", "base64"]}}),
+                "getTokenSupply" => json!({"value":{"uiAmountString":"1000000000","amount":"1000000000000000","decimals":6}}),
+                _ => Value::Null,
+            };
+            Json(json!({"jsonrpc":"2.0","id":1,"result":value}))
+        };
+        let market = move || async move {
+            if stall_market { std::future::pending::<()>().await; }
+            Json(json!({"data":{"attributes":{"name":"Regression fixture","price_usd":"0.002","market_cap_usd":"0","total_reserve_in_usd":"50000"}}}))
+        };
+        let app = Router::new().route("/", post(rpc)).route("/networks/solana/tokens/{token}", get(market));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = Config { port:0, gecko_api_host:url.clone(), solana_rpc_url:url.clone(), solana_fallback_rpc_url:url.clone(), robinhood_rpc_url:url.clone(), blockscout_api_url:url.clone(), blockscout_api_key:None };
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
+        (Arc::new(AppState { gecko:GeckoClient::new(http.clone(), url), http, config }), task)
+    }
+
+    #[tokio::test]
+    async fn slow_holders_preserve_market_supply_and_chain_evidence() {
+        let (state, task) = mock_state(false, false).await;
+        let started = Instant::now();
+        let Json(result) = scan(State(state), Json(ScanRequest {chain:Chain::Solana,address:"So11111111111111111111111111111111111111112".to_string()})).await.unwrap();
+        task.abort();
+        assert!(started.elapsed() < Duration::from_secs(11));
+        assert_eq!(result.token.market_cap_usd, Some(2_000_000.0));
+        assert_eq!(result.token.market_cap_basis, "supply_implied");
+        assert_eq!(result.holder_evidence.total_supply, Some(1_000_000_000.0));
+        assert!(result.chain_evidence.verified);
+        assert!(result.holder_evidence.top_ten_percentage.is_none());
+        assert!(result.holder_evidence.detail.contains("9s scan budget"));
+    }
+
+    #[tokio::test]
+    async fn stalled_providers_finish_before_frontend_deadline_without_fake_zeroes() {
+        let (state, task) = mock_state(true, true).await;
+        let started = Instant::now();
+        let Json(result) = scan(State(state), Json(ScanRequest {chain:Chain::Solana,address:"So11111111111111111111111111111111111111112".to_string()})).await.unwrap();
+        task.abort();
+        assert!(started.elapsed() < Duration::from_secs(14));
+        assert!(result.token.price_usd.is_none());
+        assert!(result.token.market_cap_usd.is_none());
+        assert_eq!(result.token.market_cap_basis, "unavailable");
+        assert!(!result.chain_evidence.verified);
+        assert!(result.sources.iter().any(|s| s.detail.contains("12s scan budget")));
+    }
 }

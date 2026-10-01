@@ -1,0 +1,47 @@
+name: Verify scan fixes before PR
+on:
+  push:
+    branches: [fix/scan-evidence-reliability]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace
+      - run: cargo build --workspace
+      - name: Start candidate backend
+        run: |
+          target/debug/water-core > /tmp/water-core.log 2>&1 &
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8080/health; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Verify real factory membership and bounded scans
+        shell: python
+        run: |
+          import json, urllib.request, time
+          def request(url, payload):
+              req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+              with urllib.request.urlopen(req, timeout=18) as r: return json.load(r)
+          token = "0x39dBED3a2bd333467115dE45665cC57F813C4571"
+          pons = request("http://127.0.0.1:8080/v1/origin", {"chain":"robinhood","token":token})
+          print("Pons origin", json.dumps(pons))
+          assert pons.get("launchpad", {}).get("slug") == "pons", pons
+          assert pons["launchpad"]["source"] == "Robinhood verified factory registry", pons
+          weth = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+          negative = request("http://127.0.0.1:8080/v1/origin", {"chain":"robinhood","token":weth})
+          assert negative["launchpad"] is None, negative
+          for chain, address in [("robinhood",token),("solana","So11111111111111111111111111111111111111112")]:
+              start = time.monotonic()
+              result = request("http://127.0.0.1:8080/v1/scan", {"chain":chain,"address":address})
+              elapsed = time.monotonic() - start
+              print("SCAN",chain,round(elapsed,2),json.dumps(result))
+              assert elapsed < 16, elapsed
+              cap = result["token"]["market_cap_usd"]
+              assert cap is None or cap > 0, result
+              assert result["token"]["price_usd"] is not None, result

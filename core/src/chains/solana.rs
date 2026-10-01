@@ -4,7 +4,7 @@ use crate::{
 };
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 
 pub async fn observe(
     http: &reqwest::Client,
@@ -12,35 +12,40 @@ pub async fn observe(
     fallback_rpc_url: &str,
     address: &str,
 ) -> (ChainEvidence, HolderEvidence) {
-    let account = rpc_with_fallback(
+    let account_request = rpc_with_fallback(
         http,
         rpc_url,
         fallback_rpc_url,
         "getAccountInfo",
         json!([address, {"encoding": "base64"}]),
-    )
-    .await;
+    );
 
-    let supply = rpc_with_fallback(
+    let supply_request = rpc_with_fallback(
         http,
         rpc_url,
         fallback_rpc_url,
         "getTokenSupply",
         json!([address]),
-    )
-    .await;
+    );
 
     let holder_client = SolanaHistoryClient::with_fallback(
         http.clone(),
         rpc_url.to_string(),
         fallback_rpc_url.to_string(),
     );
-    let holder_set = holder_client.top_wallet_holders(address, 10).await;
+    // Deep enumeration must not hold the market/supply response hostage.
+    let holder_request = async {
+        timeout(Duration::from_secs(9), holder_client.top_wallet_holders(address, 10))
+            .await
+            .unwrap_or_else(|_| Err("Wallet-holder lookup exceeded the 9s scan budget; concentration remains unknown.".to_string()))
+    };
+    let (account, supply, holder_set) =
+        tokio::join!(account_request, supply_request, holder_request);
 
     let verified = account
         .as_ref()
         .ok()
-        .map(|value| !value.is_null())
+        .map(|value| value.get("value").is_some_and(|account| !account.is_null()))
         .unwrap_or(false);
 
     let chain_evidence = ChainEvidence {
@@ -166,10 +171,10 @@ async fn rpc_with_fallback(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    match rpc(http, rpc_url, method, params.clone()).await {
+    match scan_rpc(http, rpc_url, method, params.clone()).await {
         Ok(value) => Ok(value),
         Err(primary_error) if fallback_rpc_url != rpc_url => {
-            rpc(http, fallback_rpc_url, method, params)
+            scan_rpc(http, fallback_rpc_url, method, params)
                 .await
                 .map_err(|fallback_error| {
                     format!(
@@ -179,6 +184,13 @@ async fn rpc_with_fallback(
         }
         Err(error) => Err(error),
     }
+}
+
+async fn scan_rpc(http: &reqwest::Client, url: &str, method: &str, params: Value) -> Result<Value, String> {
+    // Leave time for the fallback provider inside the overall scan deadline.
+    timeout(Duration::from_secs(4), rpc(http, url, method, params))
+        .await
+        .unwrap_or_else(|_| Err(format!("{method} exceeded the 4s provider budget")))
 }
 
 async fn rpc(

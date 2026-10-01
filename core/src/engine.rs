@@ -18,7 +18,7 @@ pub fn build_scan(
         sources.push(SourceStatus {
             source: "Market cap reconstruction".to_string(),
             ok: true,
-            detail: "GeckoTerminal did not provide market cap, so Water derived it from current onchain token supply × observed USD price.".to_string(),
+            detail: "GeckoTerminal did not provide a positive market cap, so Water derived supply-implied valuation from current onchain total supply × observed USD price. This is not verified circulating market cap.".to_string(),
         });
     }
 
@@ -28,6 +28,7 @@ pub fn build_scan(
         price_usd: market.and_then(|value| value.price_usd),
         liquidity_usd: market.and_then(|value| value.liquidity_usd),
         market_cap_usd: effective_market_cap,
+        market_cap_basis: if market_cap_derived { "supply_implied" } else if effective_market_cap.is_some() { "provider" } else { "unavailable" },
     };
 
     let concentration = holder_evidence.top_ten_percentage;
@@ -155,15 +156,16 @@ fn effective_market_cap(
         return (None, false);
     };
 
-    if let Some(value) = market.market_cap_usd {
+    if let Some(value) = market.market_cap_usd.filter(|value| value.is_finite() && *value > 0.0) {
         return (Some(value), false);
     }
 
     let derived = match (market.price_usd, total_supply) {
         (Some(price), Some(supply))
-            if price.is_finite() && supply.is_finite() && price >= 0.0 && supply > 0.0 =>
+            if price.is_finite() && supply.is_finite() && price > 0.0 && supply > 0.0 =>
         {
-            Some(price * supply)
+            let value = price * supply;
+            (value.is_finite() && value > 0.0).then_some(value)
         }
         _ => None,
     };
@@ -279,6 +281,21 @@ mod tests {
             buyers_h24: Some(336),
             sellers_h24: Some(300),
         }
+    }
+
+    #[test]
+    fn zero_invalid_and_overflowing_valuations_do_not_mask_supply_fallback() {
+        for cap in [Some(0.0), Some(-1.0), Some(f64::NAN), Some(f64::INFINITY), None] {
+            let market = MarketSnapshot { price_usd: Some(0.002), market_cap_usd: cap, ..Default::default() };
+            assert_eq!(effective_market_cap(Some(&market), Some(1_000_000_000.0)), (Some(2_000_000.0), true));
+            assert_eq!(effective_market_cap(Some(&market), None), (None, false));
+        }
+        let market = MarketSnapshot { price_usd: Some(f64::MAX), ..Default::default() };
+        assert_eq!(effective_market_cap(Some(&market), Some(2.0)), (None, false));
+        let market = MarketSnapshot { price_usd: Some(0.0), ..Default::default() };
+        assert_eq!(effective_market_cap(Some(&market), Some(1e9)), (None, false));
+        let market = MarketSnapshot { market_cap_usd: Some(123.0), price_usd:Some(1.0), ..Default::default() };
+        assert_eq!(effective_market_cap(Some(&market), Some(1e9)), (Some(123.0), false));
     }
 
     #[test]

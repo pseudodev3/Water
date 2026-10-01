@@ -83,6 +83,7 @@ pub struct TokenSnapshot {
     pub price_usd: Option<f64>,
     pub liquidity_usd: Option<f64>,
     pub market_cap_usd: Option<f64>,
+    pub market_cap_basis: &'static str,
 }
 
 #[derive(Debug, Serialize)]

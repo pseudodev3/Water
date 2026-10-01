@@ -285,7 +285,7 @@ function ResultView({ result }: { result: ScanResult }) {
             value={formatUsd(result.token.liquidity_usd)}
           />
           <Metric
-            label="Market cap"
+            label={result.token.market_cap_basis === "supply_implied" ? "Supply valuation" : "Market cap"}
             value={formatUsd(result.token.market_cap_usd)}
           />
         </div>
