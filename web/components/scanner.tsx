@@ -9,6 +9,8 @@ import {
   Droplets,
   ShieldCheck,
   TriangleAlert,
+  Users,
+  Fingerprint,
 } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import {
@@ -91,23 +93,27 @@ export function Scanner() {
 
   return (
     <>
+      <div className={result ? "scan-intro has-results" : "scan-intro"}>
       <section className="hero" aria-labelledby="water-title">
         <div className="hero-copy">
           <div className="eyebrow">
             <Droplets size={14} strokeWidth={1.5} aria-hidden="true" />
-            Multi-chain opponent mapping
+            See beneath the price
           </div>
-          <h1 id="water-title">Read the other side.</h1>
+          <h1 id="water-title">Read the<br /> <span>other side.</span></h1>
           <p>
-            Water reconstructs who is positioned around a token, what pressure
-            they carry, and which conclusions are supported by actual evidence.
+            Who holds the supply. How deep the liquidity goes.
+            Where control began. One token, a clearer picture.
           </p>
+          <div className="hero-footnote">Solana &amp; Robinhood Chain</div>
         </div>
-
-        <SystemState health={health} healthError={healthError} />
       </section>
 
       <section className="scan-section" aria-label="Token scanner">
+        <div className="scan-heading">
+          <h2>Start with a token.</h2>
+          <p>Choose a chain and paste its contract address.</p>
+        </div>
         <form className="scan-form" onSubmit={submit}>
           <div className="chain-switch" aria-label="Choose chain">
             {chains.map((item) => (
@@ -134,7 +140,7 @@ export function Scanner() {
           </div>
 
           <label className="address-field">
-            <span className="sr-only">Token contract address</span>
+            <span className="field-label">Token contract address</span>
             <input
               value={address}
               onChange={(event) => setAddress(event.target.value)}
@@ -146,6 +152,8 @@ export function Scanner() {
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? "scan-error" : undefined}
             />
           </label>
 
@@ -169,14 +177,21 @@ export function Scanner() {
         </form>
 
         {error ? (
-          <div className="error-line" role="alert">
+          <div className="error-line" id="scan-error" role="alert">
             <TriangleAlert size={15} strokeWidth={1.5} />
             {error}
           </div>
         ) : null}
+        <SystemState health={health} healthError={healthError} />
       </section>
+      </div>
 
-      {loading ? null : result ? <ResultView result={result} /> : <EmptyState />}
+      {loading ? (
+        <div className="scan-progress" role="status">
+          <Activity className="spin" size={18} aria-hidden="true" />
+          Reading market data and chain evidence…
+        </div>
+      ) : result ? <ResultView result={result} /> : <EmptyState />}
     </>
   );
 }
@@ -198,19 +213,7 @@ function SystemState({
         ok={apiOnline}
         pending={!health && !healthError}
       />
-      <StatusRow
-        label="Market data"
-        ok={marketReady}
-        pending={!health && !healthError}
-        detail={healthError ? "offline" : "public"}
-      />
-      <div className="status-row">
-        <span className="status-icon neutral">
-          <CircleDot size={12} strokeWidth={1.5} />
-        </span>
-        <span>Chains</span>
-        <strong>SOL · RHC</strong>
-      </div>
+      <span className="system-note">{marketReady ? "Public market data" : "Source availability varies"}</span>
     </div>
   );
 }
@@ -245,18 +248,18 @@ function StatusRow({
 
 function EmptyState() {
   return (
-    <section className="empty-state">
-      <div className="empty-mark" aria-hidden="true">
-        <span />
-        <span />
-        <span />
+    <section className="empty-state" aria-label="What a scan reveals">
+      <div className="scan-guide">
+        <Users size={20} strokeWidth={1.5} aria-hidden="true" />
+        <div><h2>Follow the holders</h2><p>Ownership, concentration, and the wallets around a token.</p></div>
       </div>
-      <div>
-        <p className="empty-title">Nothing invented.</p>
-        <p>
-          Paste a contract. This space stays quiet until Water has real provider
-          data and direct chain evidence to show you.
-        </p>
+      <div className="scan-guide">
+        <Droplets size={20} strokeWidth={1.5} aria-hidden="true" />
+        <div><h2>Read the pressure</h2><p>Liquidity and trading activity, with the evidence behind each signal.</p></div>
+      </div>
+      <div className="scan-guide">
+        <Fingerprint size={20} strokeWidth={1.5} aria-hidden="true" />
+        <div><h2>Trace the origin</h2><p>Launchpad and creator evidence. Unverified details stay unknown.</p></div>
       </div>
     </section>
   );

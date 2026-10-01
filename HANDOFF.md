@@ -876,3 +876,24 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   Temporary push-only verification workflow removed before opening the PR.
 - Existing WSOL native-mint supply may be zero by SPL semantics; that does not
   imply zero valuation and is not used to invent holder concentration.
+
+
+## Readability / hero pass (2026-10-01)
+
+- Scan reliability PR #17 merged as `1d26cd5`; Railway and Vercel green.
+  Production Pons legacy/v1/v2 and NOXA origin checks passed; WETH stayed
+  unrecognized. Production SOL/RH scans return current market data.
+- UI: brighter surfaces/text, minimum 12px labels, 16px address input,
+  visible label and associated errors, split hero with scanner, compact
+  results heading, explicit loading status, and explanatory empty state.
+- Next production build passed. Faint-text contrast is 5.13:1–7.08:1
+  across the four surfaces. Desktop and 390px/320px framed layouts reviewed
+  in the authenticated Vercel preview. Narrow-body minimum reduced to 280px
+  to accommodate non-overlay scrollbars at a 320px viewport.
+- Preview has no backend environment configured and reports offline;
+  production has the configured backend. Verify live scan interactions
+  after deployment. Temporary mobile layout-check page removed before PR.
+- RH coverage is not complete: direct factory verification currently covers
+  Pons legacy/v1/v2 and NOXA. Other brands retain explorer-label matching.
+  Next priority is verified Long.xyz evidence and other relevant factories,
+  before optional RH tracing, persistent snapshots, watchlists and alerts.
