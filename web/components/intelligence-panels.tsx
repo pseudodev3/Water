@@ -12,6 +12,7 @@ import {
   UsersRound,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import launchpadMarks from "@/lib/launchpad-marks.json";
 import {
   Chain,
   EarlyHolderMap,
@@ -389,18 +390,25 @@ export function AssetLinks({
   );
 }
 
-const launchpadLogos: Record<string, string> = {
-  pumpfun: "/launchpads/pumpfun.svg",
-  stonkfun: "/launchpads/stonkfun.svg",
-};
+// Only verified, locally vendored marks belong here. Unknown slugs keep initials.
+const launchpadLogos: Readonly<Record<string, { path: string }>> = launchpadMarks;
 
 function LaunchpadBrand({ slug, name }: { slug: string; name: string }) {
-  const logo = launchpadLogos[slug];
+  const logo = Object.hasOwn(launchpadLogos, slug) ? launchpadLogos[slug].path : undefined;
+  const [failedLogo, setFailedLogo] = useState<string | undefined>();
 
   return (
     <div className="launchpad-brand">
-      {logo ? (
-        <img className="launchpad-logo" src={logo} alt="" aria-hidden="true" />
+      {logo && failedLogo !== logo ? (
+        <img
+          className="launchpad-logo"
+          src={logo}
+          width={34}
+          height={34}
+          alt=""
+          aria-hidden="true"
+          onError={() => setFailedLogo(logo)}
+        />
       ) : (
         <span className="launchpad-logo-fallback" aria-hidden="true">
           {name.slice(0, 1).toUpperCase()}

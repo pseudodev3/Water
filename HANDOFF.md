@@ -824,3 +824,22 @@ Recommended next order:
 
 Before touching any of those, verify the current production SOL + RH scan still works end-to-end.
 
+
+## 2026-10-01 branding follow-up
+
+Branch: `feat/robinhood-launchpad-branding`.
+
+Added 14 first-party Robinhood launchpad marks: Pons, hood.fun, NOXA Fun,
+StonkBrokers, hookr.fun, v4.fun, RaiseHood, PerpsHood, PairYard, Ponzu,
+MerryForge, Pyre, Froth, and Peeps. Stable slug mapping and source URLs live in
+`web/lib/launchpad-marks.json`; attribution and the eight unresolved brands are
+in `web/public/launchpads/README.md`. Existing Pump.fun and StonkFun assets remain.
+Unverified/ambiguous brands and failed image loads retain the initial fallback.
+
+Validation: 48 Rust tests and Next production build passed locally. Production
+health and RH WETH scan returned HTTP 200 before the changes; the SOL WSOL scan
+timed out, so full production SOL health remains unverified. No backend behavior
+was changed in this branding pass.
+
+Next technical work remains optional RH execution tracing. The branding gap is
+reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
