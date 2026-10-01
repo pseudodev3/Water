@@ -869,7 +869,10 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
 - Regression suite: 54 tests passed, including stalled-provider integration
   tests (available market/supply preserved; all-stalled scan returns within 12s).
 - Before-PR candidate live checks: documented PONS reference recognized as
-  Pons legacy v1 without Blockscout key; WETH correctly unrecognized; live SOL
-  WSOL scan returned in 9.0s with market data; live RH PONS scan in 0.35s.
+  Pons legacy v1, Pons v1/v2 and NOXA samples all recognized without a
+  Blockscout key; WETH correctly unrecognized; live SOL WSOL scan returned
+  in 9.0s with market data; live RH PONS scan in 0.32s. Sample addresses and
+  the successful live run are recorded in `docs/robinhood-launchpads.md`.
+  Temporary push-only verification workflow removed before opening the PR.
 - Existing WSOL native-mint supply may be zero by SPL semantics; that does not
   imply zero valuation and is not used to invent holder concentration.

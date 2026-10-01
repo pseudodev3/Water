@@ -34,3 +34,13 @@ when only the factory record supplies the person who launched the token.
 Adding a factory requires a first-party source, its precise return schema, a
 positive real-token check, and negative tests. Unsupported or unverifiable
 launches remain unknown.
+
+Live validation samples (2026-10-01):
+
+- Pons legacy v1: `0x39dBED3a2bd333467115dE45665cC57F813C4571`.
+- Pons v1: `0x055650555be80649397084cd3f8a09b4350e8612`.
+- Pons v2: `0x376981c2c9c36545e06f6538979c7844836f7755`.
+- NOXA Fun: `0x6399e2bd8af62c0ac13f55613c3469b67332a6fd`, discovered from the factory’s `TokenLaunched` event and then independently verified through the origin endpoint.
+- Negative control: RH WETH `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` remains unrecognized.
+
+All four positive samples passed the candidate origin endpoint without an explorer API key. Validation run: https://github.com/pseudodev3/Water/actions/runs/36852543612.
