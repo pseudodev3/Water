@@ -224,13 +224,13 @@ async fn inspect_robinhood_indexed(
         .query(&[("apikey", key)])
         .send()
         .await
-        .map_err(|error| format!("Blockscout origin lookup failed: {error}"))?;
+        .map_err(|error| format!("Blockscout origin lookup failed: {}", error.without_url()))?;
 
     let status = response.status();
     let body = response
         .json::<Value>()
         .await
-        .map_err(|error| format!("Blockscout origin lookup returned unreadable JSON: {error}"))?;
+        .map_err(|error| format!("Blockscout origin lookup returned unreadable JSON: {}", error.without_url()))?;
 
     if !status.is_success() {
         return Err(format!(
@@ -558,13 +558,13 @@ async fn blockscout_address(
         .query(&[("apikey", key)])
         .send()
         .await
-        .map_err(|error| format!("Blockscout creator metadata failed: {error}"))?;
+        .map_err(|error| format!("Blockscout creator metadata failed: {}", error.without_url()))?;
 
     let status = response.status();
     let body = response
         .json::<Value>()
         .await
-        .map_err(|error| format!("Blockscout creator metadata returned unreadable JSON: {error}"))?;
+        .map_err(|error| format!("Blockscout creator metadata returned unreadable JSON: {}", error.without_url()))?;
 
     if !status.is_success() {
         return Err(format!(

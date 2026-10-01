@@ -26,7 +26,7 @@ jobs:
         run: |
           import json, urllib.request, time
           def request(url, payload):
-              req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json"})
+              req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json","User-Agent":"water-live-smoke/0.1","Accept":"application/json"})
               with urllib.request.urlopen(req, timeout=18) as r: return json.load(r)
           token = "0x39dBED3a2bd333467115dE45665cC57F813C4571"
           pons = request("http://127.0.0.1:8080/v1/origin", {"chain":"robinhood","token":token})
