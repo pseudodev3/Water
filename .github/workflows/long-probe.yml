@@ -1,32 +1,46 @@
-name: Long evidence probe
+name: Long candidate validation
 on:
   push:
     branches: [feat/rh-launchpad-coverage]
 permissions:
   contents: read
 jobs:
-  probe:
+  candidate:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 10
     steps:
-      - shell: python
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --workspace && cargo build --workspace
+      - name: Verify real origin responses
+        shell: python
         run: |
-          import json, urllib.request, time
-          RPC="https://rpc.mainnet.chain.robinhood.com"
-          def rpc(method,params):
-              req=urllib.request.Request(RPC,data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode(),headers={"Content-Type":"application/json","User-Agent":"water-live-smoke/0.1"})
-              with urllib.request.urlopen(req,timeout=15) as r: return json.load(r)
-          launcher="0x22e99278308b393ea1260859b181ad7e78f5eeed"
-          topic="0xadc6f1f726f7c710f77ec06adc75f3bb964e5be19581b072c67f7b9b4039267b"
-          import concurrent.futures
-          head=int(rpc("eth_blockNumber",[])["result"],16)
-          token="0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18"
-          print("code",json.dumps(rpc("eth_getCode",[token,"latest"])),flush=True)
-          def chunk(start):
-              before=time.monotonic()
-              try:
-                  result=rpc("eth_getLogs",[{"address":launcher,"fromBlock":hex(start),"toBlock":hex(min(head,start+9999999)),"topics":[topic,None,"0x"+token[2:].lower().zfill(64)]}])
-                  print("chunk",start,round(time.monotonic()-before,2),json.dumps(result),flush=True)
-              except Exception as e: print("chunk",start,str(e),flush=True)
-          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool: list(pool.map(chunk,range(8636038,head+1,10000000)))
-          
+          import json, subprocess, time, urllib.request
+          process = subprocess.Popen(['target/debug/water-core'], stdout=subprocess.DEVNULL)
+          try:
+              for _ in range(30):
+                  try:
+                      urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=1)
+                      break
+                  except Exception:
+                      time.sleep(0.2)
+              samples = [
+                  ('0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18', 'longxyz'),
+                  ('0x5d6EF090a1461B11c9427aC319260122D1C61e18', 'longxyz'),
+                  ('0x39dBED3a2bd333467115dE45665cC57F813C4571', 'pons'),
+                  ('0x055650555be80649397084cd3f8a09b4350e8612', 'pons'),
+                  ('0x376981c2c9c36545e06f6538979c7844836f7755', 'pons'),
+                  ('0x6399e2bd8af62c0ac13f55613c3469b67332a6fd', 'noxa'),
+                  ('0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73', None),
+              ]
+              for token, expected in samples:
+                  started = time.monotonic()
+                  req = urllib.request.Request('http://127.0.0.1:8080/v1/origin', data=json.dumps({'chain':'robinhood','token':token}).encode(), headers={'Content-Type':'application/json'})
+                  with urllib.request.urlopen(req, timeout=10) as r: result = json.load(r)
+                  elapsed = time.monotonic() - started
+                  print(token, round(elapsed, 2), json.dumps(result), flush=True)
+                  assert (result.get('launchpad') or {}).get('slug') == expected
+                  assert elapsed < 8
+                  time.sleep(0.5)
+          finally:
+              process.terminate()
