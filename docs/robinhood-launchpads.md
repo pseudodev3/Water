@@ -35,6 +35,55 @@ Adding a factory requires a first-party source, its precise return schema, a
 positive real-token check, and negative tests. Unsupported or unverifiable
 launches remain unknown.
 
+## Long.xyz launcher (2026-10-02)
+
+The Long site was inaccessible to the research browser. Sourcify provides the
+deployer's verified `src/LongLauncher.sol` and ABI independently:
+https://sourcify.dev/server/v2/contract/4663/0x22e99278308b393ea1260859b181ad7e78f5eeed?fields=all
+
+Sourcify reports exact creation/runtime matches, verified 2026-07-14, deployment
+block 8,636,038, and source copyright `long.xyz`, author `@natan_benish`.
+The launcher is `0x22e99278308b393ea1260859b181ad7e78f5eeed`.
+Bitquery's integration docs independently identify the same launcher:
+https://docs.bitquery.io/docs/blockchain/robinhood/robinhood-meme-coin-launches/
+
+Recognition reads `LaunchCreated(address,address,address,address,address,bytes32,uint48,uint48,string)`:
+topic 1 is poolOrHook, **topic 2 is the launched asset**, topic 3 is the quote.
+The non-indexed second word is the caller who launched it. The implementation
+checks the emitter, signature, exact asset, non-removed log, requested block
+range, address padding, six-word head, 24-hour reservation interval, and bounded
+uppercase ticker tail. A quote asset, shared Airlock, copied hook/integrator,
+token name, or vanity suffix is not proof. The evidence describes use of the
+onchain launcher; it does not claim a particular website submitted the call.
+
+Do not use `getTickerRecord(symbol)` as historical membership: a later launch
+with the same ticker overwrites that record. Live AI/ICOIN/AAPLCAT reads proved
+the overwrite. The permanent event still identifies the original token.
+
+The known 44-byte minimal-proxy shape is only a cheap candidate prefilter; it
+does not recognize a launchpad. Other layouts remain unknown. Events are queried
+in windows of at most 10,000,000 blocks (the public RPC limit), four concurrent,
+up to 24 windows alternating oldest/newest. The entire optional Long lookup has
+a 4.5s budget and runs beside the existing factory calls. Code and head reads
+run concurrently; each RPC still has a 2.5s deadline. An incomplete search
+returns unknown; it must never erase a completed Pons/NOXA match or extend the
+existing 7s origin evidence budget (2.5s chain ID plus 4.5s Long). As history grows beyond 24
+windows, middle history needs an indexed/archival adapter; do not imply complete
+historical coverage. Direct Airlock launches without this event remain unknown.
+
+Committed fixture: `core/fixtures/long-launch-created.json`, read from the public
+RPC in https://github.com/pseudodev3/Water/actions/runs/36974651035.
+AI token: `0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18`, block 9,721,433,
+transaction `0x7632524cd4cec7cabc574b58c54095a2ca33a2a1b037b1486e8b88b79bd3bf1b`.
+The matching historical window answered in 1.51s. WETH is the negative control.
+
+Candidate endpoint validation passed before PR creation:
+https://github.com/pseudodev3/Water/actions/runs/36975447525.
+AI matched in 1.18s; ICOIN (`0x5d6EF090a1461B11c9427aC319260122D1C61e18`)
+matched in 2.24s, event block 16,449,441. All four existing Pons/NOXA samples
+still matched (1.77–2.24s); WETH remained unrecognized (2.04s). No Blockscout key
+was configured. The temporary branch-only verification workflow was removed.
+
 Live validation samples (2026-10-01):
 
 - Pons legacy v1: `0x39dBED3a2bd333467115dE45665cC57F813C4571`.

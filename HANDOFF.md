@@ -897,3 +897,33 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   Pons legacy/v1/v2 and NOXA. Other brands retain explorer-label matching.
   Next priority is verified Long.xyz evidence and other relevant factories,
   before optional RH tracing, persistent snapshots, watchlists and alerts.
+
+## Long.xyz recognition follow-up (2026-10-02)
+
+- User manually merged UI PR #18 (`cee7f53`); Railway/Vercel were green and
+  the deployed UI completed a PONS scan with correct launchpad and nonzero cap.
+- Long's website blocked the research browser. Sourcify's exact-match verified
+  source/ABI and public chain events supplied the required evidence independently.
+  Source URLs, schema, fixture, and limitations are in `docs/robinhood-launchpads.md`.
+- LongLauncher `0x22e99278308b393ea1260859b181ad7e78f5eeed` emits a permanent
+  `LaunchCreated` event with the asset at topic 2 and launch caller in data word 1.
+  Recognition verifies that event; generic Doppler/integrator/hook/suffix matches
+  are deliberately insufficient. This proves launcher use, not the website used.
+- Do not use the launcher's ticker registry for older tokens: reused tickers
+  overwrite it. AI and ICOIN both demonstrate this case.
+- Requests are bounded: 4.5s total Long lookup, 2.5s per RPC, four log windows
+  concurrently, 24 windows maximum. Code/head reads run together. With the
+  existing chain-ID check this fits the 7s origin budget. The first 2.5s-total
+  candidate missed a real token; it was fixed before opening a PR.
+- Main scan valuation and Solana paths are unchanged. 58 Rust tests and the
+  Next production build passed locally, including spoofed/removed/wrong-asset
+  events and a stalled Long history lookup preserving existing Pons evidence.
+- Coverage remains bounded: other proxy layouts, direct Airlock launches without
+  a LongLauncher event, and history outside the searched windows remain unknown.
+  More RH brands still need independently verified membership adapters. Never
+  present this change as complete RH launchpad coverage.
+- Before-PR live candidate run passed:
+  https://github.com/pseudodev3/Water/actions/runs/36975447525.
+  AI/ICOIN recognized in 1.18s/2.24s; all four Pons/NOXA samples retained;
+  WETH unrecognized. No Blockscout API key. Temporary verification workflow
+  removed before PR. After merging, verify these samples on Railway again.
