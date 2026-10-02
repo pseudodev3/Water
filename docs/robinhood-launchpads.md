@@ -77,6 +77,13 @@ AI token: `0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18`, block 9,721,433,
 transaction `0x7632524cd4cec7cabc574b58c54095a2ca33a2a1b037b1486e8b88b79bd3bf1b`.
 The matching historical window answered in 1.51s. WETH is the negative control.
 
+Candidate endpoint validation passed before PR creation:
+https://github.com/pseudodev3/Water/actions/runs/36975447525.
+AI matched in 1.18s; ICOIN (`0x5d6EF090a1461B11c9427aC319260122D1C61e18`)
+matched in 2.24s, event block 16,449,441. All four existing Pons/NOXA samples
+still matched (1.77–2.24s); WETH remained unrecognized (2.04s). No Blockscout key
+was configured. The temporary branch-only verification workflow was removed.
+
 Live validation samples (2026-10-01):
 
 - Pons legacy v1: `0x39dBED3a2bd333467115dE45665cC57F813C4571`.
