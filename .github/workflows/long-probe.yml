@@ -1,0 +1,28 @@
+name: Long evidence probe
+on:
+  push:
+    branches: [feat/rh-launchpad-coverage]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - shell: python
+        run: |
+          import json, urllib.request, time
+          RPC="https://rpc.mainnet.chain.robinhood.com"
+          def rpc(method,params):
+              req=urllib.request.Request(RPC,data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode(),headers={"Content-Type":"application/json","User-Agent":"water-live-smoke/0.1"})
+              with urllib.request.urlopen(req,timeout=15) as r: return json.load(r)
+          launcher="0x22e99278308b393ea1260859b181ad7e78f5eeed"
+          topic="0xadc6f1f726f7c710f77ec06adc75f3bb964e5be19581b072c67f7b9b4039267b"
+          for token in ["0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18","0x5d6EF090a1461B11c9427aC319260122D1C61e18","0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"]:
+              start=time.monotonic()
+              try:
+                  result=rpc("eth_getLogs",[{"address":launcher,"fromBlock":hex(8636038),"toBlock":"latest","topics":[topic,None,"0x"+token[2:].lower().zfill(64)]}])
+                  print(token,round(time.monotonic()-start,2),json.dumps(result),flush=True)
+              except Exception as e: print(token,str(e),flush=True)
+              time.sleep(1)
+          
