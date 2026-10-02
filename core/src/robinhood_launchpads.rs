@@ -95,7 +95,7 @@ pub async fn detect(http: &Client, rpc_url: &str, token: &str) -> Option<Factory
     let (results, long) = tokio::join!(
         factories,
         timeout(
-            Duration::from_millis(2500),
+            Duration::from_millis(4500),
             detect_long(http, rpc_url, token)
         )
     );
@@ -120,13 +120,14 @@ const LOG_WINDOW: u64 = 10_000_000;
 async fn detect_long(http: &Client, url: &str, token: &str) -> Option<FactoryMatch> {
     // This is only a request-saving prefilter, never launchpad evidence. Long's
     // trusted token factory currently deploys this minimal-proxy layout.
-    let code = rpc(http, url, "eth_getCode", json!([token, "latest"]))
-        .await
-        .ok()?;
-    if !is_long_candidate(code.as_str()?) {
+    let (code, head) = tokio::join!(
+        rpc(http, url, "eth_getCode", json!([token, "latest"])),
+        rpc(http, url, "eth_blockNumber", json!([])),
+    );
+    if !is_long_candidate(code.ok()?.as_str()?) {
         return None;
     }
-    let head = rpc(http, url, "eth_blockNumber", json!([])).await.ok()?;
+    let head = head.ok()?;
     let head = hex_u64(head.as_str()?)?;
     let topic = format!(
         "0x{:0>64}",
@@ -177,7 +178,7 @@ fn long_windows(head: u64) -> Vec<(u64, u64)> {
         return vec![];
     }
     let count = (head - LONG_DEPLOYMENT) / LOG_WINDOW + 1;
-    // At most 24 windows, interleaved oldest/newest, four in flight, 2.5s total.
+    // At most 24 windows, interleaved oldest/newest, four in flight, 4.5s total.
     // An incomplete search is unknown, never evidence of a different launchpad.
     (0..count.min(24))
         .map(|i| {
@@ -373,9 +374,11 @@ mod tests {
             post(|Json(body): Json<Value>| async move {
                 let result = match body["method"].as_str().unwrap() {
                     "eth_chainId" => json!("0x1237"),
-                    "eth_getCode" => {
+                    "eth_getCode" => json!(CLONE),
+                    "eth_blockNumber" => json!("0x4a6c100"),
+                    "eth_getLogs" => {
                         tokio::time::sleep(Duration::from_secs(6)).await;
-                        json!(CLONE)
+                        json!([])
                     }
                     "eth_call" if body["params"][0]["to"] == FACTORIES[0].address => {
                         json!(record(&FACTORIES[0], true))
@@ -393,7 +396,7 @@ mod tests {
         let start = std::time::Instant::now();
         let found = detect(&Client::new(), &url, TOKEN).await.unwrap();
         assert_eq!(found.evidence.slug, "pons");
-        assert!(start.elapsed() < Duration::from_millis(3500));
+        assert!(start.elapsed() < Duration::from_millis(5500));
         task.abort();
     }
     const TOKEN: &str = "0x39dBED3a2bd333467115dE45665cC57F813C4571";

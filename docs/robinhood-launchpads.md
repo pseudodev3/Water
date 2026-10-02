@@ -64,9 +64,10 @@ The known 44-byte minimal-proxy shape is only a cheap candidate prefilter; it
 does not recognize a launchpad. Other layouts remain unknown. Events are queried
 in windows of at most 10,000,000 blocks (the public RPC limit), four concurrent,
 up to 24 windows alternating oldest/newest. The entire optional Long lookup has
-a 2.5s budget and runs beside the existing factory calls. An incomplete search
+a 4.5s budget and runs beside the existing factory calls. Code and head reads
+run concurrently; each RPC still has a 2.5s deadline. An incomplete search
 returns unknown; it must never erase a completed Pons/NOXA match or extend the
-existing maximum 5s chain-ID-plus-factory path. As history grows beyond 24
+existing 7s origin evidence budget (2.5s chain ID plus 4.5s Long). As history grows beyond 24
 windows, middle history needs an indexed/archival adapter; do not imply complete
 historical coverage. Direct Airlock launches without this event remain unknown.
 
