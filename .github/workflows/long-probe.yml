@@ -18,17 +18,15 @@ jobs:
               with urllib.request.urlopen(req,timeout=15) as r: return json.load(r)
           launcher="0x22e99278308b393ea1260859b181ad7e78f5eeed"
           topic="0xadc6f1f726f7c710f77ec06adc75f3bb964e5be19581b072c67f7b9b4039267b"
-          for token in ["0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18","0x5d6EF090a1461B11c9427aC319260122D1C61e18","0x73a9999f6e9db138e1ae4595fde049a401161e18","0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"]:
-              start=time.monotonic()
+          import concurrent.futures
+          head=int(rpc("eth_blockNumber",[])["result"],16)
+          token="0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18"
+          print("code",json.dumps(rpc("eth_getCode",[token,"latest"])),flush=True)
+          def chunk(start):
+              before=time.monotonic()
               try:
-                  result=rpc("eth_call",[{"to":token,"data":"0x95d89b41"},"latest"])
-                  print("symbol",token,json.dumps(result),flush=True)
-                  raw=bytes.fromhex(result["result"][2:])
-                  offset=int.from_bytes(raw[:32],"big"); n=int.from_bytes(raw[offset:offset+32],"big")
-                  symbol=raw[offset+32:offset+32+n]
-                  data="0xe07511a0"+(32).to_bytes(32,"big").hex()+len(symbol).to_bytes(32,"big").hex()+symbol.hex().ljust(64,"0")
-                  result=rpc("eth_call",[{"to":launcher,"data":data},"latest"])
-                  print("record",token,round(time.monotonic()-start,2),json.dumps(result),flush=True)
-              except Exception as e: print(token,str(e),flush=True)
-              time.sleep(1)
+                  result=rpc("eth_getLogs",[{"address":launcher,"fromBlock":hex(start),"toBlock":hex(min(head,start+9999999)),"topics":[topic,None,"0x"+token[2:].lower().zfill(64)]}])
+                  print("chunk",start,round(time.monotonic()-before,2),json.dumps(result),flush=True)
+              except Exception as e: print("chunk",start,str(e),flush=True)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool: list(pool.map(chunk,range(8636038,head+1,10000000)))
           
