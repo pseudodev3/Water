@@ -18,11 +18,12 @@ pub fn build_scan(
         sources.push(SourceStatus {
             source: "Market cap reconstruction".to_string(),
             ok: true,
-            detail: "GeckoTerminal did not provide a positive market cap, so Water derived supply-implied valuation from current onchain total supply × observed USD price. This is not verified circulating market cap.".to_string(),
+            detail: "The market provider did not provide a positive market cap, so Water derived supply-implied valuation from current onchain total supply × observed USD price. This is not verified circulating market cap.".to_string(),
         });
     }
 
     let token = TokenSnapshot {
+        market_data_basis: market.and_then(|value| value.basis.clone()),
         name: market.and_then(|value| value.name.clone()),
         symbol: market.and_then(|value| value.symbol.clone()),
         price_usd: market.and_then(|value| value.price_usd),
@@ -54,7 +55,7 @@ pub fn build_scan(
             label: "Recent sell share",
             observed: format!("{:.0}%", value * 100.0),
             pressure: value.clamp(0.0, 1.0),
-            detail: "Sell transactions divided by buys + sells in the top GeckoTerminal pool over the last hour.".to_string(),
+            detail: "Sell transactions divided by buys + sells in the selected public market-data pool over the last hour.".to_string(),
         });
     }
 
@@ -267,6 +268,7 @@ mod tests {
 
     fn fixture() -> MarketSnapshot {
         MarketSnapshot {
+            basis: Some("geckoterminal:aggregate".to_string()),
             name: Some("Fixture".to_string()),
             symbol: Some("FIX".to_string()),
             price_usd: Some(0.1),

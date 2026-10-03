@@ -424,6 +424,7 @@ mod tests {
         let config = Config {
             port: 0,
             gecko_api_host: url.clone(),
+            dexscreener_api_host: url.clone(),
             solana_rpc_url: url.clone(),
             solana_fallback_rpc_url: url.clone(),
             robinhood_rpc_url: url.clone(),

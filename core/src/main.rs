@@ -34,6 +34,7 @@ struct AppState {
     config: Config,
     http: reqwest::Client,
     gecko: GeckoClient,
+    market: providers::market::MarketClient,
 }
 
 #[tokio::main]
@@ -52,11 +53,8 @@ async fn main() {
         .expect("HTTP client should initialize");
     let gecko = GeckoClient::new(http.clone(), config.gecko_api_host.clone());
 
-    let state = Arc::new(AppState {
-        config: config.clone(),
-        http,
-        gecko,
-    });
+    let market = providers::market::MarketClient::new(http.clone(), gecko.clone(), config.dexscreener_api_host.clone());
+    let state = Arc::new(AppState { config: config.clone(), http, gecko, market });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -91,6 +89,7 @@ async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "market_provider": "GeckoTerminal public API",
+        "market_fallback": "Dexscreener public API",
         "requires_market_api_key": false,
         "chains": ["solana", "robinhood"]
     }))
@@ -108,21 +107,25 @@ async fn scan(
     let address = request.address.trim().to_string();
 
     let market_request = async {
-        timeout(Duration::from_secs(12), state.gecko.market_snapshot(chain, &address))
-            .await
-            .unwrap_or_else(|_| Err(providers::gecko::GeckoError::Transport(
-                "Market lookup exceeded the 12s scan budget; available chain evidence is still returned.".to_string()
-            )))
+        timeout(Duration::from_secs(12), state.market.snapshot(chain, &address)).await
+            .unwrap_or_else(|_| providers::market::MarketRead {
+                snapshot: None,
+                sources: vec![SourceStatus {
+                    source: "Public market data".to_string(), ok: false,
+                    detail: "Market providers exceeded the 12s scan budget; available chain evidence is still returned.".to_string(),
+                }],
+            })
     };
     let chain_request = chains::observe_asset(&state.http, &state.config, chain, &address);
-    let (market_result, (chain_evidence, holder_evidence)) =
+    let (market_read, (chain_evidence, holder_evidence)) =
         tokio::join!(market_request, chain_request);
 
-    let mut sources = vec![SourceStatus {
+    let mut sources = market_read.sources;
+    sources.push(SourceStatus {
         source: "Direct chain verification".to_string(),
         ok: chain_evidence.verified,
         detail: chain_evidence.detail.clone(),
-    }];
+    });
 
     match chain {
         Chain::Solana => {
@@ -151,28 +154,9 @@ async fn scan(
         }
     }
 
-    match &market_result {
-        Ok(_) => sources.insert(
-            0,
-            SourceStatus {
-                source: "GeckoTerminal public market data".to_string(),
-                ok: true,
-                detail: "Token and top-pool market data received.".to_string(),
-            },
-        ),
-        Err(error) => sources.insert(
-            0,
-            SourceStatus {
-                source: "GeckoTerminal public market data".to_string(),
-                ok: false,
-                detail: error.to_string(),
-            },
-        ),
-    }
-
     Ok(Json(engine::build_scan(
         &request,
-        market_result.as_ref().ok(),
+        market_read.snapshot.as_ref(),
         holder_evidence,
         chain_evidence,
         sources,
@@ -323,9 +307,11 @@ mod scan_regression_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let config = Config { port:0, gecko_api_host:url.clone(), solana_rpc_url:url.clone(), solana_fallback_rpc_url:url.clone(), robinhood_rpc_url:url.clone(), blockscout_api_url:url.clone(), blockscout_api_key:None };
+        let config = Config { port:0, gecko_api_host:url.clone(), dexscreener_api_host:url.clone(), solana_rpc_url:url.clone(), solana_fallback_rpc_url:url.clone(), robinhood_rpc_url:url.clone(), blockscout_api_url:url.clone(), blockscout_api_key:None };
         let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
-        (Arc::new(AppState { gecko:GeckoClient::new(http.clone(), url), http, config }), task)
+        let gecko = GeckoClient::new(http.clone(), url.clone());
+        let market = providers::market::MarketClient::new(http.clone(), gecko.clone(), url);
+        (Arc::new(AppState { gecko, market, http, config }), task)
     }
 
     #[tokio::test]
@@ -354,6 +340,7 @@ mod scan_regression_tests {
         assert!(result.token.market_cap_usd.is_none());
         assert_eq!(result.token.market_cap_basis, "unavailable");
         assert!(!result.chain_evidence.verified);
-        assert!(result.sources.iter().any(|s| s.detail.contains("12s scan budget")));
+        assert!(result.sources.iter().all(|s| !s.ok));
+        assert!(result.sources.iter().any(|s| s.source.contains("Dexscreener")));
     }
 }

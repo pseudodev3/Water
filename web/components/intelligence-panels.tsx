@@ -622,6 +622,7 @@ function EvidenceCase({
 }
 
 type ThesisSnapshot = {
+  marketBasis?: string | null;
   savedAt: number;
   holderConcentration: number | null;
   buyShare: number | null;
@@ -634,6 +635,7 @@ export function WaterPanel({ result }: { result: ScanResult }) {
   const [saved, setSaved] = useState<ThesisSnapshot | null>(null);
   const [saveError, setSaveError] = useState("");
   const current = thesisSnapshot(result);
+  const comparableMarket = saved ? sameMarketBasis(saved.marketBasis, current.marketBasis) : false;
   const changeFlags = saved ? thesisChangeFlags(saved, current) : [];
 
   useEffect(() => {
@@ -675,6 +677,9 @@ export function WaterPanel({ result }: { result: ScanResult }) {
           <p className="water-saved-at">
             Compared with {formatSavedTime(saved.savedAt)}
           </p>
+          {!comparableMarket && current.marketBasis ? (
+            <p className="method-note">Market source or pool changed. Market deltas are unavailable until both reads use the same basis.</p>
+          ) : null}
           {changeFlags.length ? (
             <div className="water-alerts">
               <span>Change flags</span>
@@ -698,19 +703,19 @@ export function WaterPanel({ result }: { result: ScanResult }) {
             />
             <ThesisDelta
               label="Buy share"
-              before={saved.buyShare}
+              before={comparableMarket ? saved.buyShare : null}
               now={current.buyShare}
               kind="ratio"
             />
             <ThesisDelta
               label="Liquidity"
-              before={saved.liquidityUsd}
+              before={comparableMarket ? saved.liquidityUsd : null}
               now={current.liquidityUsd}
               kind="usd"
             />
             <ThesisDelta
               label="Market cap"
-              before={saved.marketCapUsd}
+              before={comparableMarket ? saved.marketCapUsd : null}
               now={current.marketCapUsd}
               kind="usd"
             />
@@ -767,8 +772,19 @@ function ThesisDelta({
   );
 }
 
+function marketBasis(result: ScanResult): string | null {
+  return result.token.market_data_basis ?? (result.sources.some(source => source.ok && source.source === "GeckoTerminal public market data") ? "geckoterminal:aggregate" : null);
+}
+
+function sameMarketBasis(before: string | null | undefined, now: string | null | undefined) {
+  // Reads saved before fallback support all used GeckoTerminal.
+  const normalize = (value: string | null | undefined) => value === undefined ? "geckoterminal:aggregate" : value;
+  return normalize(before) !== null && normalize(before) === normalize(now);
+}
+
 function thesisSnapshot(result: ScanResult): ThesisSnapshot {
   return {
+    marketBasis: marketBasis(result),
     savedAt: Date.now(),
     holderConcentration:
       result.holder_evidence.top_ten_percentage === null
@@ -818,6 +834,8 @@ function thesisChangeFlags(before: ThesisSnapshot, now: ThesisSnapshot) {
     }
   }
 
+  if (!sameMarketBasis(before.marketBasis, now.marketBasis)) return flags;
+
   if (before.buyShare !== null && now.buyShare !== null) {
     const delta = now.buyShare - before.buyShare;
     if (Math.abs(delta) >= 0.1) {
@@ -854,6 +872,7 @@ function formatSavedTime(timestamp: number) {
 
 
 type ScanMemory = {
+  marketBasis?: string | null;
   chain: Chain;
   token: string;
   at: number;
@@ -869,6 +888,7 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
 
   useEffect(() => {
     const current: ScanMemory = {
+      marketBasis: marketBasis(result),
       chain: result.chain,
       token: result.address.toLowerCase(),
       at: result.scanned_at_unix,
@@ -923,7 +943,8 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
       ? tokenHistory[tokenHistory.length - 2]
       : null;
   const current = tokenHistory[tokenHistory.length - 1] ?? null;
-  const calibration = localCalibration(history, result.pressure.index);
+  const comparableMarket = previous && current ? sameMarketBasis(previous.marketBasis, current.marketBasis) : false;
+  const calibration = localCalibration(history.filter(item => sameMarketBasis(item.marketBasis, marketBasis(result))), result.pressure.index);
 
   return (
     <article className="memory-panel">
@@ -946,19 +967,19 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
             <div>
               <MemoryDelta
                 label="Price"
-                before={previous.priceUsd}
+                before={comparableMarket ? previous.priceUsd : null}
                 now={current.priceUsd}
                 kind="relative"
               />
               <MemoryDelta
                 label="Exit pressure"
-                before={previous.pressure}
+                before={comparableMarket ? previous.pressure : null}
                 now={current.pressure}
                 kind="points"
               />
               <MemoryDelta
                 label="Liquidity"
-                before={previous.liquidityUsd}
+                before={comparableMarket ? previous.liquidityUsd : null}
                 now={current.liquidityUsd}
                 kind="relative"
               />
@@ -991,7 +1012,7 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
 
         <p className="memory-note">
           Outcome samples compare later reads from the same token and the same
-          25-point Exit Pressure band. They are calibration evidence, not a
+          market basis and 25-point Exit Pressure band. They are calibration evidence, not a
           forecast.
         </p>
       </div>
@@ -1089,7 +1110,7 @@ function localCalibration(
   currentPressure: number | null,
 ) {
   const band = pressureBand(currentPressure);
-  const starts = history.filter((item) => pressureBand(item.pressure) === band);
+  const starts = history.filter((item) => samePressureBand(item.pressure, band));
 
   return {
     label:
