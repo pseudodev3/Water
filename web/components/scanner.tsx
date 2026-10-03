@@ -12,7 +12,7 @@ import {
   Users,
   Fingerprint,
 } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   Chain,
   getHealth,
@@ -45,11 +45,15 @@ export function Scanner() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState(false);
+  const [healthCheck, setHealthCheck] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const pendingScan = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let active = true;
+    setHealth(null);
+    setHealthError(false);
 
     getHealth()
       .then((value) => {
@@ -62,10 +66,22 @@ export function Scanner() {
     return () => {
       active = false;
     };
+  }, [healthCheck]);
+
+  useEffect(() => () => {
+    pendingScan.current?.abort();
+    pendingScan.current = null;
   }, []);
+
+  function cancelScan() {
+    pendingScan.current?.abort();
+    pendingScan.current = null;
+    setLoading(false);
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (pendingScan.current) return;
     const cleanAddress = address.trim();
 
     if (!cleanAddress) {
@@ -73,13 +89,18 @@ export function Scanner() {
       return;
     }
 
+    const controller = new AbortController();
+    pendingScan.current = controller;
     setLoading(true);
     setError("");
+    setHealthCheck((value) => value + 1);
 
     try {
-      const next = await scanToken(chain, cleanAddress);
+      const next = await scanToken(chain, cleanAddress, controller.signal);
+      if (pendingScan.current !== controller) return;
       setResult(next);
     } catch (caught) {
+      if (pendingScan.current !== controller || controller.signal.aborted) return;
       setResult(null);
       setError(
         caught instanceof Error
@@ -87,7 +108,10 @@ export function Scanner() {
           : "Water could not complete this scan.",
       );
     } finally {
-      setLoading(false);
+      if (pendingScan.current === controller) {
+        pendingScan.current = null;
+        setLoading(false);
+      }
     }
   }
 
@@ -125,6 +149,8 @@ export function Scanner() {
                 key={item.id}
                 aria-pressed={chain === item.id}
                 onClick={() => {
+                  if (chain === item.id) return;
+                  cancelScan();
                   setChain(item.id);
                   setResult(null);
                   setError("");
@@ -143,7 +169,14 @@ export function Scanner() {
             <span className="field-label">Token contract address</span>
             <input
               value={address}
-              onChange={(event) => setAddress(event.target.value)}
+              onChange={(event) => {
+                if (pendingScan.current) {
+                  cancelScan();
+                  setResult(null);
+                }
+                setAddress(event.target.value);
+                setError("");
+              }}
               placeholder={
                 chain === "solana"
                   ? "Paste Solana token address"
@@ -160,7 +193,7 @@ export function Scanner() {
           <button
             className="scan-button"
             type="submit"
-            disabled={loading || healthError}
+            disabled={loading}
           >
             {loading ? (
               <>
@@ -183,6 +216,9 @@ export function Scanner() {
           </div>
         ) : null}
         <SystemState health={health} healthError={healthError} />
+        {healthError ? (
+          <p className="health-note" role="status">Connection check failed. You can still try a scan.</p>
+        ) : null}
       </section>
       </div>
 
@@ -212,6 +248,7 @@ function SystemState({
         label="Water core"
         ok={apiOnline}
         pending={!health && !healthError}
+        detail="unavailable"
       />
       <span className="system-note">{marketReady ? "Public market data" : "Source availability varies"}</span>
     </div>

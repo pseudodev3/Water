@@ -3,7 +3,9 @@ use crate::{
     config::Config,
     history::HolderCandidate,
     model::Chain,
-    position::{analyze_wallet_position, BasisStatus, WalletPositionRequest, WalletPositionResponse},
+    position::{
+        analyze_wallet_position, BasisStatus, WalletPositionRequest, WalletPositionResponse,
+    },
     providers::gecko::GeckoClient,
 };
 use futures::{stream, StreamExt};
@@ -11,6 +13,7 @@ use reqwest::Client;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::{timeout_at, Duration, Instant};
 
 const DEFAULT_LIMIT: usize = 3;
 const MAX_LIMIT: usize = 3;
@@ -71,16 +74,39 @@ pub async fn analyze_early_holder_map(
     gecko: &GeckoClient,
     request: EarlyHolderMapRequest,
 ) -> Result<EarlyHolderMapResponse, String> {
+    // Leave room to assemble the response before the endpoint's 24s hard stop.
+    analyze_with_budget(http, config, gecko, request, Duration::from_secs(22)).await
+}
+
+async fn analyze_with_budget(
+    http: Client,
+    config: &Config,
+    gecko: &GeckoClient,
+    request: EarlyHolderMapRequest,
+    budget: Duration,
+) -> Result<EarlyHolderMapResponse, String> {
+    let started = Instant::now();
+    let evidence_deadline = started + budget.min(Duration::from_secs(12));
+    let history_deadline = started + budget;
     let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let token = request.token.trim().to_string();
 
-    let market_future = gecko.market_snapshot(request.chain, &token);
-    let candidate_future =
-        holder_candidates(http.clone(), config, request.chain, &token, limit);
+    let market_future = timeout_at(
+        evidence_deadline,
+        gecko.market_snapshot(request.chain, &token),
+    );
+    let candidate_future = timeout_at(
+        evidence_deadline,
+        holder_candidates(http.clone(), config, request.chain, &token, limit),
+    );
 
     let (market_result, candidate_result) = tokio::join!(market_future, candidate_future);
-    let (candidates, _candidate_source, mut notes) = candidate_result?;
-    let current_price_usd = market_result.ok().and_then(|market| market.price_usd);
+    let (candidates, _candidate_source, mut notes) = candidate_result
+        .map_err(|_| "Current holder lookup exceeded Water's verification budget.".to_string())??;
+    let current_price_usd = market_result
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|market| market.price_usd);
 
     // Each wallet history is independent, but cold historical pricing can make
     // several Gecko requests. Keep concurrency at two so one slow wallet does not
@@ -89,15 +115,14 @@ pub async fn analyze_early_holder_map(
         let http = http.clone();
         let token = token.clone();
         async move {
-            let result = analyze_candidate(
-                http,
-                config,
-                gecko,
-                request.chain,
-                token,
-                candidate.clone(),
+            let result = timeout_at(
+                history_deadline,
+                analyze_candidate(http, config, gecko, request.chain, token, candidate.clone()),
             )
-            .await;
+            .await
+            .unwrap_or_else(|_| {
+                Err("Wallet history exceeded Water's verification budget.".to_string())
+            });
             (candidate, result)
         }
     }))
@@ -219,9 +244,8 @@ fn view_from_analysis(
         current_quantity: decimal_to_f64(candidate.current_quantity),
         first_acquired_at: behavior.first_acquired_at,
         peak_quantity: movement_complete.then(|| decimal_to_f64(behavior.peak_quantity)),
-        retained_from_peak: movement_complete.then(|| {
-            decimal_to_f64(behavior.retained_from_peak).clamp(0.0, 1.0)
-        }),
+        retained_from_peak: movement_complete
+            .then(|| decimal_to_f64(behavior.retained_from_peak).clamp(0.0, 1.0)),
         distributed_fraction: movement_complete.then(|| {
             decimal_to_f64(behavior.distributed_fraction_of_gross_acquired).clamp(0.0, 1.0)
         }),
@@ -297,8 +321,9 @@ fn summarize_complete_positions(
         current += position.current_quantity;
         peak += position.peak_quantity;
 
-        let gross_acquired =
-            position.bought_quantity + position.transferred_in_quantity + position.airdropped_quantity;
+        let gross_acquired = position.bought_quantity
+            + position.transferred_in_quantity
+            + position.airdropped_quantity;
         acquired += gross_acquired;
         distributed += position.sold_quantity + position.transferred_out_quantity;
     }
@@ -333,6 +358,172 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        routing::{get, post},
+        Json, Router,
+    };
+    use serde_json::{json, Value};
+
+    const TOKEN: &str = "0x1111111111111111111111111111111111111111";
+
+    async fn mock_sources(
+        stall_market: bool,
+        stall_holders: bool,
+        fast_first_history: bool,
+    ) -> (Client, Config, GeckoClient, tokio::task::JoinHandle<()>) {
+        let rpc = move |Json(body): Json<Value>| async move {
+            let method = body["method"].as_str().unwrap_or_default();
+            let first_wallet = body["params"][0]["topics"]
+                .to_string()
+                .contains("0000000000000000000000000000000000000000000000000000000000000001");
+            if method == "eth_getLogs" && !(fast_first_history && first_wallet) {
+                std::future::pending::<()>().await;
+            }
+            let result = match method {
+                "eth_blockNumber" => json!("0x1"),
+                "eth_getCode" => json!("0x6000"),
+                "eth_getLogs" => json!([]),
+                // No reconstructed transfers: a nonzero observed balance must
+                // remain partial, even for the wallet whose reads complete.
+                "eth_call"
+                    if body["params"][0]["data"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .starts_with("0x70a08231") =>
+                {
+                    json!("0x12c")
+                }
+                _ => json!("0x0"),
+            };
+            Json(json!({"jsonrpc":"2.0", "id":1, "result":result}))
+        };
+        let market = move || async move {
+            if stall_market {
+                std::future::pending::<()>().await;
+            }
+            Json(json!({"data":{"attributes":{"price_usd":"0.25"}}}))
+        };
+        let holders = move || async move {
+            if stall_holders {
+                std::future::pending::<()>().await;
+            }
+            Json(json!({"items": [
+                {"address":{"hash":"0x0000000000000000000000000000000000000001", "is_contract":false}, "value":"300"},
+                {"address":{"hash":"0x0000000000000000000000000000000000000002", "is_contract":false}, "value":"200"},
+                {"address":{"hash":"0x0000000000000000000000000000000000000003", "is_contract":false}, "value":"100"}
+            ]}))
+        };
+        let app = Router::new()
+            .route("/", post(rpc))
+            .route("/networks/robinhood/tokens/{token}", get(market))
+            .route("/tokens/{token}/holders", get(holders));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = Client::new();
+        let config = Config {
+            port: 0,
+            gecko_api_host: url.clone(),
+            solana_rpc_url: url.clone(),
+            solana_fallback_rpc_url: url.clone(),
+            robinhood_rpc_url: url.clone(),
+            blockscout_api_url: url.clone(),
+            blockscout_api_key: Some("test-fixture".into()),
+        };
+        let gecko = GeckoClient::new(http.clone(), url);
+        (http, config, gecko, task)
+    }
+
+    fn request() -> EarlyHolderMapRequest {
+        EarlyHolderMapRequest {
+            chain: Chain::Robinhood,
+            token: TOKEN.into(),
+            limit: Some(3),
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_history_keeps_all_current_holders_and_unknown_economics() {
+        let (http, config, gecko, task) = mock_sources(false, false, false).await;
+        let started = Instant::now();
+        let result =
+            analyze_with_budget(http, &config, &gecko, request(), Duration::from_millis(400))
+                .await
+                .unwrap();
+        task.abort();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(result.wallets_listed, 3);
+        assert_eq!(result.wallets_reconstructed, 0);
+        assert_eq!(
+            result
+                .holders
+                .iter()
+                .map(|h| h.current_quantity)
+                .collect::<Vec<_>>(),
+            vec![300.0, 200.0, 100.0]
+        );
+        for holder in &result.holders {
+            assert_eq!(holder.current_price_usd, Some(0.25));
+            assert!(matches!(
+                holder.movement_history,
+                MovementHistoryStatus::Unavailable
+            ));
+            assert!(holder.peak_quantity.is_none());
+            assert!(holder.distributed_fraction.is_none());
+            assert!(holder.average_entry_usd.is_none());
+            assert!(holder.detail.contains("verification budget"));
+        }
+        assert!(result.cohort_retained_from_peak.is_none());
+        assert!(result.cohort_distributed_fraction.is_none());
+    }
+
+    #[tokio::test]
+    async fn completed_history_survives_other_stalled_wallets() {
+        let (http, config, gecko, task) = mock_sources(false, false, true).await;
+        let result =
+            analyze_with_budget(http, &config, &gecko, request(), Duration::from_millis(400))
+                .await
+                .unwrap();
+        task.abort();
+        assert_eq!(result.wallets_listed, 3);
+        assert_eq!(result.wallets_reconstructed, 1);
+        assert!(matches!(
+            result.holders[0].movement_history,
+            MovementHistoryStatus::Partial
+        ));
+        assert!(result.holders[0].peak_quantity.is_none());
+        assert!(matches!(
+            result.holders[1].movement_history,
+            MovementHistoryStatus::Unavailable
+        ));
+        assert!(result.cohort_distributed_fraction.is_none());
+    }
+
+    #[tokio::test]
+    async fn stalled_market_keeps_holders_without_inventing_price() {
+        let (http, config, gecko, task) = mock_sources(true, false, false).await;
+        let result =
+            analyze_with_budget(http, &config, &gecko, request(), Duration::from_millis(400))
+                .await
+                .unwrap();
+        task.abort();
+        assert_eq!(result.wallets_listed, 3);
+        assert!(result
+            .holders
+            .iter()
+            .all(|holder| holder.current_price_usd.is_none()));
+    }
+
+    #[tokio::test]
+    async fn stalled_candidate_source_cannot_create_verified_holders() {
+        let (http, config, gecko, task) = mock_sources(false, true, false).await;
+        let result =
+            analyze_with_budget(http, &config, &gecko, request(), Duration::from_millis(400)).await;
+        task.abort();
+        assert!(result
+            .unwrap_err()
+            .contains("Current holder lookup exceeded"));
+    }
 
     #[test]
     fn decimal_conversion_is_lossy_but_stable_for_ui_values() {

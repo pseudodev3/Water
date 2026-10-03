@@ -361,6 +361,18 @@ a:focus-visible {
   font-size: 13px;
 }
 
+.health-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.water-panel > .error-line {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .empty-state {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1145,6 +1157,7 @@ a:focus-visible {
 
 .launchpad-match small {
   display: block;
+  overflow-wrap: anywhere;
   margin-top: 4px;
   color: var(--faint);
   font-size: 12px;
