@@ -925,3 +925,30 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   not a full accessibility certification or physical-device test.
 - Next feature priority remains verified Long.xyz/other Robinhood factories,
   followed by optional execution tracing and persistent snapshots.
+
+## Long.xyz verified launch evidence (2026-10-03)
+
+- Recognizes the Long.xyz-authored LongLauncher at
+  `0x22e99278308b393ea1260859b181ad7e78f5eeed` through its exact `LaunchCreated`
+  event. Sourcify has exact creation/runtime matches and the source identifies
+  long.xyz as author. Contract provenance, precise ABI and real reference
+  transaction are documented in `docs/robinhood-launchpads.md`.
+- Proves launcher use; which frontend submitted the transaction remains unknown.
+  Generic Doppler / Uniswap infrastructure, token names and suffixes do not match.
+  Newer launchers remain unsupported. No unverified logo was added.
+- Chain 4663 required. Complete deployment-to-head log search uses non-overlapping
+  10-million-block ranges, at most 16 requests, and a 4.5s Long-specific budget.
+  Missing/partial/malformed/conflicting history remains unknown. Existing Pons /
+  NOXA factory checks run independently and survive stalled Long history.
+- Launch creator is read from the event; indexed contract-creator semantics stay
+  intact. Evidence includes the originating transaction hash.
+- Validation: 62 Rust tests and Next production build passed. Candidate origin
+  endpoint verified two real Long launches, all four existing Pons/NOXA samples,
+  and three negatives (WETH, Airlock, a Clanker-launched AI token) using live
+  TLS-verified public RPC requests without an explorer key. Reference transaction
+  receipt independently confirmed successful and contained the recorded event.
+  One fast-burst Pons check returned unknown; a spaced validation run passed all
+  nine controls. Public provider failures still produce unknown evidence.
+- Next technical priority: optional Robinhood execution tracing, then persistent
+  snapshots / backtesting. Other factory additions need the same first-party
+  evidence and real positive/negative validation.

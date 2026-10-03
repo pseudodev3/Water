@@ -196,7 +196,7 @@ async fn inspect_robinhood(
             response.primary_address = Some(found.creator);
         }
         response.launchpad = Some(found.evidence);
-        response.source = "Robinhood factory membership + available indexed origin evidence".to_string();
+        response.source = "Robinhood verified launch evidence + available indexed origin evidence".to_string();
     }
     Ok(response)
 }

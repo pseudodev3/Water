@@ -44,3 +44,44 @@ Live validation samples (2026-10-01):
 - Negative control: RH WETH `0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73` remains unrecognized.
 
 All four positive samples passed the candidate origin endpoint without an explorer API key. Validation run: https://github.com/pseudodev3/Water/actions/runs/36852543612.
+
+## Long.xyz LongLauncher (2026-10-03)
+
+Exact-match deployed source is the first-party contract evidence:
+https://sourcify.dev/server/v2/contract/4663/0x22e99278308b393ea1260859b181ad7e78f5eeed?fields=all
+(`src/LongLauncher.sol:LongLauncher`, creation and runtime both `exact_match`).
+The source begins `Copyright (c) 2026 long.xyz. All rights reserved.` Deployment
+transaction `0x717af93c071b39247b5cec72930b990b917439143f6621d08797090732947cf9`
+is at block 8,636,038. The source is referenced, not copied into Water.
+
+Recognition requires the `LaunchCreated` event from that exact launcher,
+with the requested token in indexed `asset` (topic 2). Event signature:
+`LaunchCreated(address,address,address,address,address,bytes32,uint48,uint48,string)`;
+topic 0 is `0xadc6f1f726f7c710f77ec06adc75f3bb964e5be19581b072c67f7b9b4039267b`.
+The ABI has four topics; data contains poolInitializer, launcher, tickerKey,
+deployedAt, reservedUntil and a dynamic normalizedTicker (1–15 uppercase ASCII
+letters). The string offset is 192 bytes; total data is 256 bytes. The source
+requires reservedUntil = deployedAt + 86,400. The event's launcher is the launch
+creator, kept distinct from an indexed contract creator.
+
+Only non-removed logs with canonical address padding, a valid transaction/block
+hash and a block inside the requested history are accepted. All queried ranges
+must succeed, and exactly one launch record must match. Duplicate/conflicting
+records, malformed logs, partial history, wrong chain and timeouts stay unknown.
+The public RPC allows at most 10 million blocks per query. Water searches from
+deployment to a captured head in non-overlapping parallel ranges, capped at 16
+requests and a 4.5s total Long lookup budget. Beyond this coverage cap recognition
+stays unknown until the lookup strategy is expanded. Existing factory checks run
+independently and survive a failed or slow Long lookup.
+
+This proves use of the Long.xyz-authored launcher. It does not prove which web
+frontend submitted a transaction; the launcher is publicly callable. Shared
+Doppler Airlock / hooks, trading routers, names and address suffixes never count
+as Long evidence. Newer launcher addresses are outside this verified registry.
+`app.long.xyz` currently returns HTTP 403 to this environment, so no unverified
+frontend configuration or brand asset was added.
+
+Positive reference: VIBE `0x782a6a4653896be2ff3fd885d50895d7e19a1e18`,
+transaction `0x76b87af28d7faacec8b645824fe337d4cf0a61e2d958fc39909f6dd41f1782e6`,
+block 51,337,219, launch creator `0xa99c430efbdf4d2d4110d32978a2eceee21ce79a`.
+Its raw RPC event is retained in `core/tests/fixtures/long-launch-created.json`.
