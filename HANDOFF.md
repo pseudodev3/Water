@@ -1,6 +1,6 @@
 # Water — Project Handoff
 
-_Last updated: 2026-10-01_
+_Last updated: 2026-10-03_
 
 This file is the canonical pickup point for a new ChatGPT/Codex session.
 
@@ -897,3 +897,31 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   Pons legacy/v1/v2 and NOXA. Other brands retain explorer-label matching.
   Next priority is verified Long.xyz evidence and other relevant factories,
   before optional RH tracing, persistent snapshots, watchlists and alerts.
+
+## Scan recovery / smoothness pass (2026-10-03)
+
+- Audited live desktop/mobile entry, validation, scans, origin and local baseline
+  flows. Production PONS and WSOL main scans returned HTTP 200 in about 2.4s
+  and 9.3s, respectively, with no browser JavaScript errors. Both large-holder
+  requests hit the old 24s outer deadline; optional Blockscout creator evidence
+  was unavailable while verified Pons factory evidence remained visible.
+- Changing chain or editing an address now cancels the pending scan. Late
+  responses cannot replace a newer result or end its loading state. Clicking
+  the already selected chain preserves the current scan/result.
+- Health probes stop after 5s and refresh on a scan. A failed probe reports
+  unavailable and leaves scanning usable. The existing 20s scan stop remains.
+- Failed browser baseline writes now show an error; a successful retry clears
+  it. Validation errors clear when the address is edited.
+- Robinhood factory evidence wraps long addresses at narrow widths.
+- Holder-map current evidence has a 12s budget. Wallet histories share a 22s
+  deadline, preserving verified candidate identities/balances and completed
+  analyses before the endpoint's existing 24s hard stop. Unproven economics
+  remain unknown. If candidate lookup itself fails, no holders are invented.
+- Candidate validation: 58 Rust tests and the Next production build passed
+  (four new stalled-source/history regressions); 12 browser recovery checks
+  passed against the production build. Layouts at 320/390/768/1440px,
+  keyboard focus, reduced motion and baseline persistence checked. Automated
+  accessibility scan found no violations in the tested result screen; this is
+  not a full accessibility certification or physical-device test.
+- Next feature priority remains verified Long.xyz/other Robinhood factories,
+  followed by optional execution tracing and persistent snapshots.

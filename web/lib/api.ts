@@ -64,7 +64,10 @@ const API_URL =
   process.env.NEXT_PUBLIC_WATER_API_URL ?? "http://localhost:8080";
 
 export async function getHealth(): Promise<Health> {
-  const response = await fetch(`${API_URL}/health`, { cache: "no-store" });
+  const response = await fetch(`${API_URL}/health`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(5_000),
+  });
 
   if (!response.ok) {
     throw new Error("Water core is offline.");
@@ -76,8 +79,12 @@ export async function getHealth(): Promise<Health> {
 export async function scanToken(
   chain: Chain,
   address: string,
+  signal?: AbortSignal,
 ): Promise<ScanResult> {
   const controller = new AbortController();
+  const cancel = () => controller.abort();
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
   const timer = window.setTimeout(() => controller.abort(), 20_000);
 
   try {
@@ -96,7 +103,7 @@ export async function scanToken(
 
     return body;
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
+    if (!signal?.aborted && error instanceof DOMException && error.name === "AbortError") {
       throw new Error(
         "Water stopped waiting after 20 seconds. The public chain provider did not answer in time.",
       );
@@ -105,6 +112,7 @@ export async function scanToken(
     throw error;
   } finally {
     window.clearTimeout(timer);
+    signal?.removeEventListener("abort", cancel);
   }
 }
 

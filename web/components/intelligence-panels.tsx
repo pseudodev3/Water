@@ -632,10 +632,12 @@ type ThesisSnapshot = {
 export function WaterPanel({ result }: { result: ScanResult }) {
   const storageKey = `water:thesis:${result.chain}:${result.address.toLowerCase()}`;
   const [saved, setSaved] = useState<ThesisSnapshot | null>(null);
+  const [saveError, setSaveError] = useState("");
   const current = thesisSnapshot(result);
   const changeFlags = saved ? thesisChangeFlags(saved, current) : [];
 
   useEffect(() => {
+    setSaveError("");
     try {
       const raw = window.localStorage.getItem(storageKey);
       setSaved(raw ? (JSON.parse(raw) as ThesisSnapshot) : null);
@@ -648,8 +650,9 @@ export function WaterPanel({ result }: { result: ScanResult }) {
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(current));
       setSaved(current);
+      setSaveError("");
     } catch {
-      // Browser storage can be unavailable in private/locked-down contexts.
+      setSaveError("This browser could not save the baseline. Check storage permissions and try again.");
     }
   }
 
@@ -724,6 +727,7 @@ export function WaterPanel({ result }: { result: ScanResult }) {
           </button>
         </div>
       )}
+      {saveError ? <p className="error-line" role="alert">{saveError}</p> : null}
     </article>
   );
 }
