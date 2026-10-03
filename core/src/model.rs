@@ -52,6 +52,7 @@ impl ScanRequest {
 
 #[derive(Clone, Debug, Default)]
 pub struct MarketSnapshot {
+    pub basis: Option<String>,
     pub name: Option<String>,
     pub symbol: Option<String>,
     pub price_usd: Option<f64>,
@@ -78,6 +79,7 @@ pub struct HolderEvidence {
 
 #[derive(Debug, Serialize)]
 pub struct TokenSnapshot {
+    pub market_data_basis: Option<String>,
     pub name: Option<String>,
     pub symbol: Option<String>,
     pub price_usd: Option<f64>,
@@ -102,7 +104,7 @@ pub struct PressureDiagnostic {
     pub components: Vec<PressureComponent>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SourceStatus {
     pub source: String,
     pub ok: bool,

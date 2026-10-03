@@ -12,6 +12,7 @@ export type ScanResult = {
   address: string;
   scanned_at_unix: number;
   token: {
+    market_data_basis?: string | null;
     name: string | null;
     symbol: string | null;
     price_usd: number | null;

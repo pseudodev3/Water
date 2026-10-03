@@ -451,12 +451,15 @@ function ResultView({ result }: { result: ScanResult }) {
 
           <div className="source-list">
             {result.sources.map((source) => (
-              <div className="source-row" key={source.source}>
-                <span
-                  className={source.ok ? "source-state ok" : "source-state"}
-                />
-                <span>{source.source}</span>
-                <strong>{source.ok ? "received" : "missing"}</strong>
+              <div className="source-entry" key={source.source}>
+                <div className="source-row">
+                  <span className={source.ok ? "source-state ok" : "source-state"} />
+                  <span>{source.source}</span>
+                  <strong>{source.ok ? "received" : "missing"}</strong>
+                </div>
+                {(!source.ok || source.source.includes("fallback")) && (
+                  <p className="source-detail">{source.detail}</p>
+                )}
               </div>
             ))}
           </div>

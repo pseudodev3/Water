@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     str::FromStr,
     sync::{Arc, Mutex},
     time::{Duration as StdDuration, Instant},
@@ -22,6 +22,7 @@ pub struct GeckoClient {
     candle_cache: Arc<Mutex<HashMap<String, HashMap<u64, Decimal>>>>,
     market_cache: Arc<Mutex<HashMap<String, (Instant, MarketSnapshot)>>>,
     info_cache: Arc<Mutex<HashMap<String, (Instant, TokenInfoSnapshot)>>>,
+    request_budget: Arc<Mutex<RequestBudget>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -49,8 +50,48 @@ pub struct HistoricalPrice {
     pub granularity: PriceGranularity,
 }
 
+#[derive(Default)]
+struct RequestBudget {
+    starts: VecDeque<Instant>,
+    cooldown_until: Option<Instant>,
+}
+
+impl RequestBudget {
+    fn admit(&mut self, market: bool) -> Result<(), GeckoError> {
+        let now = Instant::now();
+        while self
+            .starts
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= StdDuration::from_secs(60))
+        {
+            self.starts.pop_front();
+        }
+        if let Some(until) = self.cooldown_until.filter(|until| *until > now) {
+            return Err(GeckoError::RateLimited(
+                until.duration_since(now).as_secs().max(1),
+            ));
+        }
+        // Reserve six requests for main scans; optional history must not spend
+        // the whole public allowance. Cache hits never consume this budget.
+        if self.starts.len() >= if market { 24 } else { 18 } {
+            let remaining = self
+                .starts
+                .front()
+                .map(|at| 60u64.saturating_sub(at.elapsed().as_secs()))
+                .unwrap_or(60);
+            return Err(GeckoError::RateLimited(remaining.max(1)));
+        }
+        self.starts.push_back(now);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum GeckoError {
+    #[error(
+        "GeckoTerminal is rate-limited; retry in about {0}s. Chain evidence is still available."
+    )]
+    RateLimited(u64),
     #[error("GeckoTerminal request failed: {0}")]
     Transport(String),
     #[error("GeckoTerminal returned HTTP {0}: {1}")]
@@ -70,6 +111,7 @@ impl GeckoClient {
             candle_cache: Arc::new(Mutex::new(HashMap::new())),
             market_cache: Arc::new(Mutex::new(HashMap::new())),
             info_cache: Arc::new(Mutex::new(HashMap::new())),
+            request_budget: Arc::new(Mutex::new(RequestBudget::default())),
         }
     }
 
@@ -79,7 +121,7 @@ impl GeckoClient {
         address: &str,
     ) -> Result<MarketSnapshot, GeckoError> {
         let network = chain.market_network();
-        let cache_key = format!("{network}:{}", address.to_ascii_lowercase());
+        let cache_key = super::market::asset_key(chain, address);
 
         if let Some(snapshot) = self
             .market_cache
@@ -97,14 +139,16 @@ impl GeckoClient {
         // price/liquidity/volume and include=top_pools supplies the top-pool
         // transaction counts. This keeps scans well inside the public rate budget.
         let token_url = format!("{}/networks/{network}/tokens/{address}", self.host);
-        let payload = send_json_with_retry(
-            self.http
-                .get(token_url)
-                .header("Accept", "application/json;version=20230203")
-                .header("User-Agent", "water/0.1")
-                .query(&[("include", "top_pools")]),
-        )
-        .await?;
+        let payload = self
+            .send_json(
+                self.http
+                    .get(token_url)
+                    .header("Accept", "application/json;version=20230203")
+                    .header("User-Agent", "water/0.1")
+                    .query(&[("include", "top_pools")]),
+                true,
+            )
+            .await?;
 
         let snapshot = market_snapshot_from_payload(&payload)?;
 
@@ -121,7 +165,7 @@ impl GeckoClient {
         address: &str,
     ) -> Result<TokenInfoSnapshot, GeckoError> {
         let network = chain.market_network();
-        let cache_key = format!("{network}:{}", address.to_ascii_lowercase());
+        let cache_key = super::market::asset_key(chain, address);
 
         if let Some(info) = self
             .info_cache
@@ -135,10 +179,7 @@ impl GeckoClient {
             return Ok(info);
         }
 
-        let url = format!(
-            "{}/networks/{network}/tokens/{address}/info",
-            self.host
-        );
+        let url = format!("{}/networks/{network}/tokens/{address}/info", self.host);
         let payload = self.get_json(&url).await?;
         let info = token_info_from_payload(&payload)?;
 
@@ -166,7 +207,7 @@ impl GeckoClient {
 
         let token = market_asset_id(chain, asset_id);
         let network = chain.market_network();
-        let asset_key = format!("{network}:{}", token.to_ascii_lowercase());
+        let asset_key = super::market::asset_key(chain, token);
 
         let pool_address = if let Some(cached) = self
             .pool_cache
@@ -246,7 +287,10 @@ impl GeckoClient {
             }
         }
 
-        let cache = self.candle_cache.lock().map_err(|_| GeckoError::InvalidResponse)?;
+        let cache = self
+            .candle_cache
+            .lock()
+            .map_err(|_| GeckoError::InvalidResponse)?;
         let hourly_prices = cache.get(&hourly_key);
         let daily_prices = cache.get(&daily_key);
         let mut resolved = HashMap::new();
@@ -290,7 +334,7 @@ impl GeckoClient {
             self.host
         );
 
-        send_json_with_retry(
+        self.send_json(
             self.http
                 .get(url)
                 .header("Accept", "application/json;version=20230203")
@@ -302,69 +346,85 @@ impl GeckoClient {
                     ("currency", "usd".to_string()),
                     ("token", token.to_string()),
                 ]),
+            false,
         )
         .await
     }
 
     async fn get_json(&self, url: &str) -> Result<Value, GeckoError> {
-        send_json_with_retry(
+        self.send_json(
             self.http
                 .get(url)
                 .header("Accept", "application/json;version=20230203")
                 .header("User-Agent", "water/0.1"),
+            false,
         )
         .await
     }
-}
 
-async fn send_json_with_retry(
-    request: reqwest::RequestBuilder,
-) -> Result<Value, GeckoError> {
-    let mut last_error = None;
-
-    for attempt in 0..4u64 {
-        let Some(request) = request.try_clone() else {
-            return Err(GeckoError::InvalidResponse);
-        };
-
-        match request.send().await {
-            Ok(response) => {
-                let status = response.status();
-                let retry_after = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(1 + attempt);
-
-                let body = response
-                    .text()
-                    .await
-                    .map_err(|error| GeckoError::Transport(error.to_string()))?;
-
-                if status.as_u16() == 429 || status.is_server_error() {
-                    last_error = Some(GeckoError::Http(status.as_u16(), body));
-                    sleep(Duration::from_secs(retry_after.min(5))).await;
-                    continue;
+    async fn send_json(
+        &self,
+        request: reqwest::RequestBuilder,
+        market: bool,
+    ) -> Result<Value, GeckoError> {
+        let mut last_error = None;
+        for attempt in 0..2u64 {
+            self.request_budget
+                .lock()
+                .map_err(|_| GeckoError::InvalidResponse)?
+                .admit(market)?;
+            let request = request
+                .try_clone()
+                .ok_or(GeckoError::InvalidResponse)?
+                .timeout(StdDuration::from_secs(3));
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.as_u16() == 429 {
+                        let retry_after = response
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .unwrap_or(60)
+                            .clamp(1, 300);
+                        if let Ok(mut budget) = self.request_budget.lock() {
+                            budget.cooldown_until =
+                                Some(Instant::now() + StdDuration::from_secs(retry_after));
+                        }
+                        // Repeated requests from the same IP do not repair a 429.
+                        return Err(GeckoError::RateLimited(retry_after));
+                    }
+                    if !status.is_success() {
+                        let detail = if status.as_u16() == 404 {
+                            "No indexed listing for this token."
+                        } else {
+                            status.canonical_reason().unwrap_or("Provider unavailable")
+                        };
+                        last_error = Some(GeckoError::Http(status.as_u16(), detail.to_string()));
+                        if !status.is_server_error() {
+                            return Err(last_error.unwrap());
+                        }
+                    } else {
+                        let body = response
+                            .text()
+                            .await
+                            .map_err(|e| GeckoError::Transport(e.without_url().to_string()))?;
+                        return serde_json::from_str(&body)
+                            .map_err(|_| GeckoError::InvalidResponse);
+                    }
                 }
-
-                if !status.is_success() {
-                    return Err(GeckoError::Http(status.as_u16(), body));
+                Err(error) => {
+                    last_error = Some(GeckoError::Transport(error.without_url().to_string()))
                 }
-
-                return serde_json::from_str(&body)
-                    .map_err(|_| GeckoError::InvalidResponse);
             }
-            Err(error) => {
-                last_error = Some(GeckoError::Transport(error.to_string()));
-                sleep(Duration::from_millis(350 * (attempt + 1))).await;
+            if attempt == 0 {
+                sleep(Duration::from_millis(250)).await;
             }
         }
+        Err(last_error.unwrap_or(GeckoError::NoData))
     }
-
-    Err(last_error.unwrap_or(GeckoError::NoData))
 }
-
 
 fn token_info_from_payload(payload: &Value) -> Result<TokenInfoSnapshot, GeckoError> {
     let attributes = payload
@@ -391,7 +451,8 @@ fn token_info_from_payload(payload: &Value) -> Result<TokenInfoSnapshot, GeckoEr
         .and_then(|value| normalize_social_handle(&value, "https://t.me/"));
 
     Ok(TokenInfoSnapshot {
-        image_url: string_field(attributes.get("image_url")).and_then(|value| safe_external_url(&value)),
+        image_url: string_field(attributes.get("image_url"))
+            .and_then(|value| safe_external_url(&value)),
         websites,
         twitter_url,
         telegram_url,
@@ -436,12 +497,14 @@ fn market_snapshot_from_payload(payload: &Value) -> Result<MarketSnapshot, Gecko
     let first_pool = payload
         .get("included")
         .and_then(Value::as_array)
-        .and_then(|rows| rows.iter().find(|row| {
-            row.get("type").and_then(Value::as_str) == Some("pool")
-        }))
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.get("type").and_then(Value::as_str) == Some("pool"))
+        })
         .and_then(|row| row.get("attributes"));
 
     Ok(MarketSnapshot {
+        basis: Some("geckoterminal:aggregate".to_string()),
         name: string_field(attributes.get("name")),
         symbol: string_field(attributes.get("symbol")),
         price_usd: positive_number_field(attributes.get("price_usd")),
@@ -453,10 +516,8 @@ fn market_snapshot_from_payload(payload: &Value) -> Result<MarketSnapshot, Gecko
             .get("volume_usd")
             .and_then(|value| number_path(value, &["h24"]))
             .or_else(|| first_pool.and_then(|pool| number_path(pool, &["volume_usd", "h24"]))),
-        buys_h1: first_pool
-            .and_then(|pool| integer_path(pool, &["transactions", "h1", "buys"])),
-        sells_h1: first_pool
-            .and_then(|pool| integer_path(pool, &["transactions", "h1", "sells"])),
+        buys_h1: first_pool.and_then(|pool| integer_path(pool, &["transactions", "h1", "buys"])),
+        sells_h1: first_pool.and_then(|pool| integer_path(pool, &["transactions", "h1", "sells"])),
         buyers_h1: first_pool
             .and_then(|pool| integer_path(pool, &["transactions", "h1", "buyers"])),
         sellers_h1: first_pool
@@ -558,6 +619,32 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn optional_history_reserves_market_budget_and_cooldown_expires() {
+        let mut budget = RequestBudget::default();
+        for _ in 0..18 {
+            budget.admit(false).unwrap();
+        }
+        assert!(matches!(
+            budget.admit(false),
+            Err(GeckoError::RateLimited(_))
+        ));
+        for _ in 0..6 {
+            budget.admit(true).unwrap();
+        }
+        assert!(matches!(
+            budget.admit(true),
+            Err(GeckoError::RateLimited(_))
+        ));
+        budget.starts.clear();
+        budget.cooldown_until = Some(Instant::now() + StdDuration::from_secs(60));
+        assert!(matches!(
+            budget.admit(true),
+            Err(GeckoError::RateLimited(_))
+        ));
+        budget.cooldown_until = Some(Instant::now() - StdDuration::from_secs(1));
+        budget.admit(true).unwrap();
+    }
 
     #[test]
     fn zero_token_valuation_does_not_use_an_unrelated_pool_valuation() {
@@ -633,8 +720,14 @@ mod tests {
 
         let info = token_info_from_payload(&payload).unwrap();
         assert_eq!(info.websites.len(), 1);
-        assert_eq!(info.twitter_url.as_deref(), Some("https://x.com/example_token"));
-        assert_eq!(info.telegram_url.as_deref(), Some("https://t.me/example_chat"));
+        assert_eq!(
+            info.twitter_url.as_deref(),
+            Some("https://x.com/example_token")
+        );
+        assert_eq!(
+            info.telegram_url.as_deref(),
+            Some("https://t.me/example_chat")
+        );
         assert_eq!(info.gt_verified, Some(true));
     }
 
@@ -656,10 +749,7 @@ mod tests {
 
     #[test]
     fn native_assets_map_to_wrapped_market_assets() {
-        assert_eq!(
-            market_asset_id(Chain::Solana, "SOL"),
-            SOL_WRAPPED_NATIVE
-        );
+        assert_eq!(market_asset_id(Chain::Solana, "SOL"), SOL_WRAPPED_NATIVE);
         assert_eq!(
             market_asset_id(Chain::Robinhood, "ETH"),
             ROBINHOOD_WRAPPED_NATIVE

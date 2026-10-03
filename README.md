@@ -15,6 +15,7 @@ web/  Next.js phone-first UI
 core/ Rust + Axum
   |
   +-- GeckoTerminal public API   price / liquidity / volume / pool flow
+  +-- Dexscreener public API     labelled current-market fallback
   +-- Solana JSON-RPC            mint + supply + largest token accounts
   +-- Robinhood JSON-RPC         contract verification
   +-- Robinhood JSON-RPC         contracts / ERC-20 execution history
@@ -23,6 +24,12 @@ core/ Rust + Axum
 ```
 
 Water does not invent missing data and does not issue buy/sell instructions. Every pressure component is derived from visible source values.
+
+GeckoTerminal remains the primary provider. A failed or throttled read can use
+Dexscreener's deepest exact-token pool, with the source and pool scope shown in
+the ledger. Historical wallet pricing remains GeckoTerminal-backed. Request
+limits, deadlines and comparison semantics are documented in
+[market-data.md](docs/market-data.md).
 
 ### Current pressure inputs
 

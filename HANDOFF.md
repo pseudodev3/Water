@@ -952,3 +952,27 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
 - Next technical priority: optional Robinhood execution tracing, then persistent
   snapshots / backtesting. Other factory additions need the same first-party
   evidence and real positive/negative validation.
+
+## GeckoTerminal rate-limit recovery (2026-10-03)
+
+- Reproduced Todd `7uNUAogctSAby1pZUAt2QmBpe2bradWeep78adZmpump`: production
+  GeckoTerminal returned HTTP 429 while direct chain evidence remained available.
+  The token had real market data; this was a provider failure.
+- Shared 24/min Gecko start budget reserves six requests for main scans;
+  optional metadata/history stop at 18. HTTP 429 triggers a shared cooldown
+  instead of four repeated requests. Transport/5xx retries are bounded.
+- Main reads coalesce concurrent requests and cache successes for 45s. Solana
+  provider keys retain base58 case. A failed Gecko read can use the free
+  Dexscreener exact-chain/base-token deepest-pool feed within the existing scan
+  deadline. Both sources failing still means unknown.
+- Source ledger now exposes failure causes and labels fallback receipt/scope.
+  Unique wallet counts remain unknown on fallback; historical wallet cost basis
+  never substitutes current Dexscreener prices for historical evidence.
+- `token.market_data_basis` records provider/pool scope. Baseline market changes,
+  memory deltas and calibration are compared only within the same basis, while
+  holder concentration remains comparable independently. Legacy saved reads are
+  Gecko-based. Scored calibration starting-read counts now compare band values.
+- Validation: 67 Rust tests, Next build, healthy Todd live-provider scan, reproduced
+  429 with live fallback/RPC data, and production-build browser checks at
+  320/390/768/1440px passed. Baseline/memory provider-change guards and baseline
+  reset checked; no browser errors or overflow. Details: docs/market-data.md.
