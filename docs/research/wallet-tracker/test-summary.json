@@ -1,0 +1,30 @@
+{
+  "upstream-tests": {
+    "tests": 200,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "full-upstream-tests": {
+    "tests": 5015,
+    "failures": 5,
+    "errors": 0,
+    "skipped": 0
+  },
+  "chips-isolated": {
+    "tests": 5,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "focused-conformant-tests": {
+    "tests": 200,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "notes": {
+    "full-upstream-tests": "Initial broad run; Python socket guard did not prevent native Pump HTTP. Five failures disappeared when missing Pump transport stub was added. Not a certified lockfile environment.",
+    "focused-conformant-tests": "Native curl transport and external Python sockets disabled; pytest8.4.2/curl_cffi0.15.0 within declared ranges. Other versions recorded separately. No actual authentication/trading/messages."
+  }
+}

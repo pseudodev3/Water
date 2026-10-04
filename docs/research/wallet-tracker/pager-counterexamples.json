@@ -1,0 +1,105 @@
+{
+  "kind": "synthetic source replay, not live Fomo data",
+  "upstream_commit": "58c8f2f0329798f4a61fba5bfb63a23d397e5c80",
+  "cases": [
+    {
+      "case": "complete_two_page_control",
+      "rows": 51,
+      "calls": 2,
+      "paging_ok": true,
+      "expected_incomplete": false,
+      "false_success": false,
+      "second_request_cursor": "id-49"
+    },
+    {
+      "case": "repeated_page_detected_control",
+      "rows": 50,
+      "calls": 2,
+      "paging_ok": false,
+      "expected_incomplete": true,
+      "false_success": false,
+      "second_request_cursor": "id-49"
+    },
+    {
+      "case": "item_limit_with_more_history",
+      "rows": 10,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": null
+    },
+    {
+      "case": "twenty_page_limit_with_more_history",
+      "rows": 1000,
+      "calls": 20,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": "p0-id-49"
+    },
+    {
+      "case": "short_page_explicitly_has_more",
+      "rows": 1,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": null
+    },
+    {
+      "case": "empty_page_explicitly_has_more",
+      "rows": 0,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": null
+    },
+    {
+      "case": "http200_application_error",
+      "rows": 0,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": null
+    },
+    {
+      "case": "schema_changed_to_unrecognized_collection",
+      "rows": 0,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": null
+    },
+    {
+      "case": "non_object_swap_rows_silently_dropped",
+      "rows": 0,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": null
+    },
+    {
+      "case": "missing_ids_with_identical_tx_hash_drop_fill",
+      "rows": 1,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": true,
+      "false_success": true,
+      "second_request_cursor": null
+    },
+    {
+      "case": "empty_terminal_page_control",
+      "rows": 0,
+      "calls": 1,
+      "paging_ok": true,
+      "expected_incomplete": false,
+      "false_success": false,
+      "second_request_cursor": null
+    }
+  ]
+}

@@ -255,3 +255,86 @@ The cohort reports numeric retention, sold fraction, transferred-out fraction, d
 Robinhood market data, contract verification, and ERC-20 supply remain available through the public providers. Current top-wallet reconstruction uses Blockscout's indexed holder snapshot instead of replaying the chain's entire Transfer history during a scan.
 
 Set `BLOCKSCOUT_API_KEY` on the backend to enable Robinhood wallet-holder concentration and holder-cohort candidates. The indexed holder addresses are still checked with Robinhood JSON-RPC so contract-controlled pools/vaults are excluded before wallet ranking.
+
+## Wallet tracker
+
+The `/wallets` view discovers candidates from the public Pump monthly board,
+optional independent Fomo discovery and bounded recent supported onchain
+executions. It separates qualified records from research candidates, exposes
+both 30-day windows and their gates, and saves follows on the current browser.
+Activity collection runs in the Rust service independently of page visits and
+token scans. Token scans show holdings shared with fresh qualifying wallets;
+wallet positions link back to the scanner for market, holder and origin evidence.
+
+Qualification reconstructs actual token executions with FIFO opening lots,
+completed position episodes, fees, open losses, record age, sample size and
+outlier dependence. Each complete month needs 30 episodes, 10 tokens, 15 active
+days, positive realized and total results after fees, profit factor at least
+1.5, and profit that survives removing its largest winner. That winner may
+contribute at most 35% of gross gains. A verified trade must predate the window.
+The 60-day tier passes both months; the 30-day tier passes the latest month.
+The account must also be a supported wallet: a Solana system account or an RH
+externally owned account/valid EIP-7702 delegation. Other contract accounts need
+an ownership and fee adapter. Monthly sales use their own FIFO disposals, so an
+old unpriced position closed before the window does not invalidate later rounds.
+Historical USD conversions use hourly/daily candles and remain estimates.
+Missing basis, prices, fees, ordering, ending balances or history withhold totals
+and qualification. This is a versioned research filter, not proven future profit.
+
+Set `WATER_TRACKER_DB_PATH` to enable collection. Local development can use
+`/tmp/water-wallets.sqlite`. Production must use a mounted persistent volume,
+for example `/data/water/wallets.sqlite`; an ordinary Railway filesystem is not
+durable. SQLite commits transaction references with continuation cursors, keeps
+raw evidence and derived records, and retains free request counters across
+restarts. Use a single collecting backend instance for this database. Back up
+with SQLite's online backup API or while the service is stopped; copying only
+the database while its WAL is active can lose committed evidence.
+
+Configure these **server secrets**, never trading keys or browser variables:
+
+- `HELIUS_API_KEY`: free indexed Solana history. Public RPC is a research fallback
+  and cannot certify full wallet coverage or canonical transaction ordering.
+- `BLOCKSCOUT_API_KEY`: the existing free RH Pro index key. Address transactions,
+  token transfers and internal transactions all have independent continuations.
+- `FOMO_DISCOVERY_API_KEY`: optional free independent `fomoapi.io` discovery.
+  Provider account association does not certify ownership or PnL. Direct private
+  Fomo account collection is disabled; its terms require permitted access.
+- `ROBINHOOD_TRACE_RPC_URL`: defaults to free dRPC. Historical state falls back to
+  this endpoint at the exact transaction block when the main RPC cannot serve
+  it. Unavailable traces/state and unresolved smart-account fees stay incomplete.
+
+The default cohort is 12 wallets, up to 10,000 evidence records each, with one
+wallet processed per 60-second tick. It reserves at most 2,000 tracker HTTP
+requests per UTC day before sending them; configure between 10 and 2,500. At
+Helius's documented minimum 10 credits per indexed page, the maximum would use
+750,000 credits over 30 days if every request were such a page. Actual provider
+pricing and account-wide usage still need monitoring. Historical Gecko requests
+share its existing optional-request budget, which reserves capacity for scans.
+Collection pauses when budgets run out, preserves cursors and resumes later.
+High-activity wallets can exceed the record budget and remain unqualified.
+This bounded sample is not a search of all wallets or a complete venue catalog.
+
+Public nominations are disabled by default so visitors cannot consume the shared
+free cohort. `WATER_TRACKER_ALLOW_PUBLIC_NOMINATIONS=true` enables nominations
+only for a private/restricted installation. The default discovery path is
+automatic. Follows are local to a browser; no account, push alerts or trades are
+created.
+
+APIs:
+
+| Method | Route | Result |
+| --- | --- | --- |
+| GET | `/v1/wallets` | Collection status and ranking summaries with latest activity |
+| POST | `/v1/wallets/detail` | Full saved record; body `{ "chain": "solana", "wallet": "…" }` |
+| POST | `/v1/wallets/nominate` | Same body, only when explicitly enabled |
+| POST | `/v1/wallets/token` | Fresh qualified holdings; scan body `{ "chain": "solana", "address": "…" }` |
+
+Decimal values serialize as strings. List summaries omit full positions and
+notes; detail returns them. Evidence becomes stale after one hour and leaves the
+qualified list. Failed refreshes preserve received records. Provisional
+transactions may appear in observed activity but never enter PnL.
+
+See [implementation and acceptance notes](docs/wallet-tracker-implementation.md)
+and [source research](docs/wallet-tracker-research.md). No complete real-wallet
+60-day qualification is claimed before keyed provider acceptance and opening
+inventory/fee reconciliation pass on both chains.

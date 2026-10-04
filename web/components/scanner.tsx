@@ -29,6 +29,7 @@ import {
   OriginPanel,
   WaterPanel,
 } from "@/components/intelligence-panels";
+import { WalletOverlap } from "@/components/wallet-overlap";
 
 const chains: Array<{ id: Chain; label: string; logoClass: string }> = [
   { id: "solana", label: "Solana", logoClass: "chain-logo-solana" },
@@ -49,6 +50,12 @@ export function Scanner() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const pendingScan = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const selected = params.get("chain"); const token = params.get("address");
+    if ((selected === "solana" || selected === "robinhood") && token) { setChain(selected); setAddress(token.trim()); }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -412,6 +419,7 @@ function ResultView({ result }: { result: ScanResult }) {
       />
 
       <WaterPanel result={result} />
+      <WalletOverlap chain={result.chain} token={result.address} />
 
       <MemoryPanel result={result} />
 
