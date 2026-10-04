@@ -1,0 +1,168 @@
+{
+  "date_utc": "2026-10-04",
+  "scope": "Local production-build acceptance; no keyed whole-wallet completeness or deployed storage certification.",
+  "rust": {
+    "command": "cargo test",
+    "passed": 89,
+    "failed": 0,
+    "tracker_tests": 22
+  },
+  "web": {
+    "command": "npm run build",
+    "passed": true
+  },
+  "browser": [
+    {
+      "check": "Responsive real research list",
+      "width": 320,
+      "rows": 6
+    },
+    {
+      "check": "Responsive real research list",
+      "width": 390,
+      "rows": 6
+    },
+    {
+      "check": "Responsive real research list",
+      "width": 768,
+      "rows": 6
+    },
+    {
+      "check": "Responsive real research list",
+      "width": 1440,
+      "rows": 6
+    },
+    {
+      "check": "Incomplete wallets receive no rank"
+    },
+    {
+      "check": "Immediate chain and discovery filters"
+    },
+    {
+      "check": "Opening detail scrolls into view and closing restores focus"
+    },
+    {
+      "check": "Real saved wallet detail and qualification gates"
+    },
+    {
+      "check": "Follow survives browser reload"
+    },
+    {
+      "check": "Refresh failure preserves last received evidence"
+    },
+    {
+      "check": "Refresh recovers after transport failure"
+    },
+    {
+      "check": "Changing filters clears mismatched detail"
+    },
+    {
+      "check": "Unconfigured backend reports paused collection"
+    },
+    {
+      "check": "Blocked storage does not pretend to save a follow"
+    },
+    {
+      "check": "Wallet position links prefill the token scanner"
+    }
+  ],
+  "restart": {
+    "identities_preserved": true,
+    "references_retained": 1476,
+    "continuations_retained": 2,
+    "quota_preserved": [
+      110,
+      164
+    ],
+    "summary_bytes": 47341,
+    "no_false_qualification": true
+  },
+  "live_api": [
+    {
+      "path": "/health",
+      "seconds": 0.03,
+      "body": {
+        "chains": [
+          "solana",
+          "robinhood"
+        ],
+        "market_fallback": "Dexscreener public API",
+        "market_provider": "GeckoTerminal public API",
+        "requires_market_api_key": false,
+        "status": "ok"
+      }
+    },
+    {
+      "path": "/v1/wallets",
+      "wallets": 6,
+      "qualified": 0,
+      "indexed_access": {
+        "fomo_discovery_access": false,
+        "rh_indexed_access": false,
+        "solana_indexed_access": false
+      },
+      "requests_today": 302
+    },
+    {
+      "chain": "solana",
+      "seconds": 1.08,
+      "sources": [
+        {
+          "source": "GeckoTerminal public market data",
+          "ok": true,
+          "detail": "Token and top-pool market data received."
+        },
+        {
+          "source": "Direct chain verification",
+          "ok": true,
+          "detail": "Mint account exists on the configured Solana RPC."
+        },
+        {
+          "source": "Solana getTokenSupply",
+          "ok": true,
+          "detail": "Current onchain token supply is 964.11M. Top wallet authorities hold about 24.9% of total supply. Water grouped token accounts by authority and excluded 1 program/PDA-controlled authority (235.64M tokens) from the 1249 largest token accounts."
+        },
+        {
+          "source": "Solana wallet-holder reconstruction",
+          "ok": true,
+          "detail": "Current onchain token supply is 964.11M. Top wallet authorities hold about 24.9% of total supply. Water grouped token accounts by authority and excluded 1 program/PDA-controlled authority (235.64M tokens) from the 1249 largest token accounts."
+        }
+      ],
+      "address": "7uNUAogctSAby1pZUAt2QmBpe2bradWeep78adZmpump"
+    },
+    {
+      "chain": "robinhood",
+      "seconds": 1.33,
+      "sources": [
+        {
+          "source": "GeckoTerminal public market data",
+          "ok": true,
+          "detail": "Token and top-pool market data received."
+        },
+        {
+          "source": "Direct chain verification",
+          "ok": true,
+          "detail": "Contract bytecode exists on the configured Robinhood RPC (chain ID 4663)."
+        },
+        {
+          "source": "Robinhood ERC-20 totalSupply",
+          "ok": true,
+          "detail": "Current ERC-20 total supply is 1.00B. Robinhood wallet-holder reconstruction failed: Robinhood wallet-holder reconstruction needs the indexed holder source; BLOCKSCOUT_API_KEY is not configured."
+        },
+        {
+          "source": "Robinhood indexed wallet holders",
+          "ok": false,
+          "detail": "Current ERC-20 total supply is 1.00B. Robinhood wallet-holder reconstruction failed: Robinhood wallet-holder reconstruction needs the indexed holder source; BLOCKSCOUT_API_KEY is not configured."
+        }
+      ],
+      "address": "0xe06464260de1f3ba3467a01f9a1f769cc1484a20"
+    }
+  ],
+  "remaining_acceptance": [
+    "Durable production volume/redeploy persistence",
+    "Free Helius full-wallet pagination/ownership/order/prices",
+    "Existing free RH indexed routes plus full-wallet historical traces",
+    "Optional permitted independent Fomo discovery key"
+  ],
+  "real_wallet_60d_certified": false
+}

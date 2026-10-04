@@ -1,0 +1,7 @@
+{
+  "kind": "synthetic audit; no real credentials",
+  "session_mode_under_umask_022": "0o644",
+  "explicit_permissions_in_save_session": false,
+  "short_named_secret_redacted": false,
+  "note": "Existing CLI logging has heuristic long-string redaction; this is not a claim that all real tokens leak."
+}

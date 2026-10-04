@@ -20,6 +20,7 @@ jobs:
           UA = {"User-Agent": "water-live-smoke/0.1", "Accept": "application/json"}
           WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
           WSOL = "So11111111111111111111111111111111111111112"
+          WBNB = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
           KNOWN_RH_TX = "0x86cb71309e4b5aa175267153c28ddb2d77660d345eb7c7833917625845dd239a"
 
           def request_json(url, data=None, headers=None, attempts=3):
@@ -78,6 +79,21 @@ jobs:
           assert isinstance(pools.get("data"), list) and pools["data"], pools
           attrs = pools["data"][0].get("attributes", {})
           assert attrs.get("address"), attrs
+
+          # BNB remains observation-only for wallet economics. Its token scan
+          # must still use chain 56 and the market provider's bsc network slug.
+          try:
+              bnb_rpc = "https://bsc-dataseed.bnbchain.org"
+              bnb_chain = request_json(bnb_rpc, {"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]})
+              assert int(bnb_chain["result"], 16) == 56, bnb_chain
+              bnb_code = request_json(bnb_rpc, {"jsonrpc":"2.0","id":2,"method":"eth_getCode","params":[WBNB,"latest"]})
+              assert isinstance(bnb_code.get("result"), str) and bnb_code["result"] not in ("0x", "0x0"), bnb_code
+              bnb_pools = request_json(f"https://api.geckoterminal.com/api/v2/networks/bsc/tokens/{WBNB}/pools", headers={"Accept":"application/json;version=20230203"})
+              assert isinstance(bnb_pools.get("data"), list) and bnb_pools["data"], bnb_pools
+          except RuntimeError as exc:
+              if "429" not in str(exc):
+                  raise
+              print(f"BNB public provider throttled live smoke: {exc}")
 
           # Solana's public RPC can throttle datacenter runners. A 429 is an
           # infrastructure limitation, not a schema failure, so report it as

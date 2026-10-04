@@ -157,6 +157,7 @@ pub async fn holder_candidates(
                 Vec::new(),
             ))
         }
+        Chain::Bnb => Err("BNB current top-wallet indexing is not configured; no holder ranking is inferred from swap activity.".into()),
     }
 }
 
@@ -202,7 +203,7 @@ fn validate_token(chain: Chain, value: &str) -> Result<(), String> {
                 return Err("token contains invalid Solana base58 characters.".to_string());
             }
         }
-        Chain::Robinhood => {
+        Chain::Robinhood | Chain::Bnb => {
             if value.len() != 42
                 || !value.starts_with("0x")
                 || !value[2..].chars().all(|character| character.is_ascii_hexdigit())

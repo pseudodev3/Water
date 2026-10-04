@@ -51,7 +51,19 @@ pub async fn inspect_origin(
     match request.chain {
         Chain::Solana => inspect_solana(&http, config, &token).await,
         Chain::Robinhood => inspect_robinhood(&http, config, &token).await,
+        Chain::Bnb => inspect_bnb(&http, config, &token).await,
     }
+}
+
+async fn inspect_bnb(http: &Client, config: &Config, token: &str) -> Result<OriginResponse,String> {
+    let chain=evm_rpc(http,&config.bnb_rpc_url,"eth_chainId",json!([])).await?;
+    if chain.as_str()!=Some("0x38") {return Err("BNB origin rejected an RPC outside chain 56.".into());}
+    let owner=evm_rpc(http,&config.bnb_rpc_url,"eth_call",json!([{"to":token,"data":"0x8da5cb5b"},"latest"])).await.ok()
+        .and_then(|v|v.as_str().map(str::to_string)).filter(|s|s.len()==66&&s.starts_with("0x")&&s[2..26].bytes().all(|b|b==b'0')&&s[26..].bytes().all(|b|b.is_ascii_hexdigit()))
+        .map(|s|format!("0x{}",&s[26..]).to_ascii_lowercase());
+    let zero=owner.as_ref().is_some_and(|s|s[2..].bytes().all(|b|b==b'0'));
+    let detail=if zero {"owner() returned the zero address. Creator, proxy permissions and other controls remain unverified."} else if owner.is_some() {"The contract reports this address through owner(). This does not establish the creator or exclude other controls."} else {"No standard owner() address was received. Creator, launchpad and additional controls remain unknown."};
+    Ok(OriginResponse{chain:Chain::Bnb,token:token.into(),primary_label:"Reported contract owner".into(),primary_address:owner.filter(|_|!zero),secondary_label:None,secondary_address:None,primary_balance_percentage:None,creator_label:None,launchpad:None,active_controls:if zero {vec!["owner() returns the zero address; other controls unknown".into()]} else {vec![]},source:"BNB Chain JSON-RPC owner() read".into(),detail:detail.into()})
 }
 
 async fn inspect_solana(

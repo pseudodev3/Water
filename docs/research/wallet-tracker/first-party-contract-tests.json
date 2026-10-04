@@ -1,0 +1,42 @@
+{
+  "source": "https://fomo.family/assets/history-v2-ChyXtLDq.js",
+  "sha256": "400b40dcb7580b6b993cf89ed9672e465d025a4b561c8af82acb239a2cedb925",
+  "synthetic": true,
+  "liveHistoryTested": false,
+  "tests": [
+    {
+      "name": "first swap page uses the user route",
+      "passed": true
+    },
+    {
+      "name": "swap cursor and token filter encoded exactly",
+      "passed": true
+    },
+    {
+      "name": "short swap page with hasNextPage true continues",
+      "passed": true
+    },
+    {
+      "name": "terminal swap page stops",
+      "passed": true
+    },
+    {
+      "name": "swap error envelope throws",
+      "passed": true
+    },
+    {
+      "name": "transfer cursor matches first-party contract",
+      "passed": true
+    },
+    {
+      "name": "transfer error envelope throws",
+      "passed": true
+    },
+    {
+      "name": "missing identity never sends a request",
+      "passed": true
+    }
+  ],
+  "passed": 8,
+  "limitation": "Confirms shipped request/pagination behavior, not authenticated server retention or completeness."
+}

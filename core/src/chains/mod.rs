@@ -1,4 +1,5 @@
 pub mod robinhood;
+pub mod bnb;
 pub mod solana;
 
 use crate::{
@@ -32,5 +33,6 @@ pub async fn observe_asset(
             )
             .await
         }
+        Chain::Bnb => bnb::observe(http, &config.bnb_rpc_url, &config.bnb_fallback_rpc_url, address).await,
     }
 }

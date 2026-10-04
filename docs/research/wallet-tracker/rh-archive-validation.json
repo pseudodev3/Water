@@ -1,0 +1,119 @@
+{
+  "source": "https://robinhood.drpc.org",
+  "capturedAt": "2026-10-03T21:12:19.788878+00:00",
+  "limitations": [
+    "Two sampled transactions do not prove all-wallet 60-day enumeration or native-transfer completeness.",
+    "No wallet ownership inferred from transaction participants."
+  ],
+  "reference": {
+    "hash": "0x76b87af28d7faacec8b645824fe337d4cf0a61e2d958fc39909f6dd41f1782e6",
+    "block": "0x30f5803",
+    "time": "2026-09-01T01:45:18+00:00",
+    "status": "0x1",
+    "txFrom": "0xa99c430efbdf4d2d4110d32978a2eceee21ce79a",
+    "txTo": "0x22e99278308b393ea1260859b181ad7e78f5eeed",
+    "txValue": "0x0",
+    "receiptLogs": 16,
+    "trace": {
+      "rootFrom": "0xa99c430efbdf4d2d4110d32978a2eceee21ce79a",
+      "rootTo": "0x22e99278308b393ea1260859b181ad7e78f5eeed",
+      "rootValue": "0x0",
+      "calls": 43,
+      "nonzeroValueCalls": [],
+      "errors": []
+    },
+    "rootMatchesTransaction": true
+  },
+  "priorFreeTimeout": "RuntimeError: {'http': 408, 'error': {'message': 'Request timeout on the free plan, please upgrade to paid plan', 'code': 30}}",
+  "blockEnumerationSource": "https://rpc.mainnet.chain.robinhood.com",
+  "archive": {
+    "targetTime": 1785877940,
+    "hash": "0x3150b403901c6380240fa421549bde4abe6abb810fd4ddbfc979cafcfcfbd736",
+    "block": "0x1aa4b71",
+    "time": "2026-08-04T21:12:20+00:00",
+    "status": "0x1",
+    "trace": {
+      "rootFrom": "0x069a47593138fdba6b4f10eedef349853b21e6f1",
+      "rootTo": "0xcaf681a66d020601342297493863e78c959e5cb2",
+      "rootValue": "0x110d9316ec000",
+      "calls": 12,
+      "nonzeroValueCalls": [
+        {
+          "path": [],
+          "type": "CALL",
+          "from": "0x069a47593138fdba6b4f10eedef349853b21e6f1",
+          "to": "0xcaf681a66d020601342297493863e78c959e5cb2",
+          "value": "0x110d9316ec000",
+          "error": null
+        },
+        {
+          "path": [
+            0,
+            2,
+            0
+          ],
+          "type": "CALL",
+          "from": "0xcaf681a66d020601342297493863e78c959e5cb2",
+          "to": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+          "value": "0x110d9316ec000",
+          "error": null
+        },
+        {
+          "path": [
+            0,
+            2,
+            0,
+            0
+          ],
+          "type": "DELEGATECALL",
+          "from": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+          "to": "0xc6b81b429797e0f555440b70cd99e032d7ae947e",
+          "value": "0x110d9316ec000",
+          "error": null
+        }
+      ],
+      "errors": []
+    },
+    "rootMatchesOfficialTransaction": true,
+    "officialReceipt": {
+      "source": "https://rpc.mainnet.chain.robinhood.com",
+      "status": "0x1",
+      "blockHash": "0x0cbcb5758914bedcbfb833e05524022220b91363d63edc574370fb3130390c60",
+      "gasUsed": "0x1fabb",
+      "effectiveGasPrice": "0x14de490",
+      "logs": 4
+    },
+    "effectiveNativeValueCallsExcludingDelegatecall": [
+      {
+        "path": [],
+        "type": "CALL",
+        "from": "0x069a47593138fdba6b4f10eedef349853b21e6f1",
+        "to": "0xcaf681a66d020601342297493863e78c959e5cb2",
+        "valueWei": "300000000000000"
+      },
+      {
+        "path": [
+          0,
+          2,
+          0
+        ],
+        "type": "CALL",
+        "from": "0xcaf681a66d020601342297493863e78c959e5cb2",
+        "to": "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
+        "valueWei": "300000000000000"
+      }
+    ],
+    "nativeTraceChecks": {
+      "rootValueMatchesTransaction": true,
+      "transactionAndReceiptBlockMatch": true,
+      "successfulReceipt": true
+    }
+  },
+  "requests": 31,
+  "priorArchiveAttempt": {
+    "traceReturned": false,
+    "errorCode": -32601,
+    "method": "debug_traceTransaction",
+    "note": "Earlier older-boundary probe failed at the same public endpoint; a later selected transaction succeeded. First attempted hash was not retained."
+  }
+}

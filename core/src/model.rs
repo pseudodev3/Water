@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum Chain {
     Solana,
     Robinhood,
+    Bnb,
 }
 
 impl Chain {
@@ -12,6 +13,29 @@ impl Chain {
         match self {
             Self::Solana => "solana",
             Self::Robinhood => "robinhood",
+            Self::Bnb => "bsc",
+        }
+    }
+
+    /// Storage/API identity is separate from market-provider network slugs.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Bnb => "bnb",
+            _ => self.market_network(),
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Solana => "Solana",
+            Self::Robinhood => "Robinhood",
+            Self::Bnb => "BNB Chain",
+        }
+    }
+    pub fn evm_chain_id(self) -> Option<u64> {
+        match self {
+            Self::Solana => None,
+            Self::Robinhood => Some(4663),
+            Self::Bnb => Some(56),
         }
     }
 }
@@ -33,15 +57,26 @@ impl ScanRequest {
                 }
                 const BASE58: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
                 if !address.chars().all(|character| BASE58.contains(character)) {
-                    return Err("Solana token address contains invalid base58 characters.".to_string());
+                    return Err(
+                        "Solana token address contains invalid base58 characters.".to_string()
+                    );
                 }
             }
-            Chain::Robinhood => {
+            Chain::Robinhood | Chain::Bnb => {
                 if address.len() != 42 || !address.starts_with("0x") {
-                    return Err("Robinhood token contracts must be a 42-character 0x address.".to_string());
+                    return Err(format!(
+                        "{} token contracts must be a 42-character 0x address.",
+                        self.chain.label()
+                    ));
                 }
-                if !address[2..].chars().all(|character| character.is_ascii_hexdigit()) {
-                    return Err("Robinhood token contract contains non-hex characters.".to_string());
+                if !address[2..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+                {
+                    return Err(format!(
+                        "{} token contract contains non-hex characters.",
+                        self.chain.label()
+                    ));
                 }
             }
         }
@@ -149,6 +184,18 @@ pub struct ScanResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bnb_api_identity_and_market_slug_are_separate() {
+        let request = ScanRequest {
+            chain: Chain::Bnb,
+            address: "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".into(),
+        };
+        assert!(request.validate().is_ok());
+        assert_eq!(request.chain.key(), "bnb");
+        assert_eq!(request.chain.market_network(), "bsc");
+        assert_eq!(request.chain.evm_chain_id(), Some(56));
+        assert_eq!(serde_json::to_string(&request.chain).unwrap(), "\"bnb\"");
+    }
 
     #[test]
     fn validates_robinhood_hex_contracts() {

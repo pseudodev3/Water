@@ -1,4 +1,4 @@
-export type Chain = "solana" | "robinhood";
+export type Chain = "solana" | "robinhood" | "bnb";
 
 export type Health = {
   status: string;

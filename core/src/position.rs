@@ -89,6 +89,7 @@ pub async fn analyze_wallet_position(
                 .wallet_token_history(&wallet, &token)
                 .await
         }
+        Chain::Bnb => return Err("BNB per-token historical basis is unavailable from the public fallback. Observed execution evidence is available in Wallets; complete basis needs verified wallet-wide history.".into()),
     };
 
     let (transactions, mut history, pricing) =
@@ -200,7 +201,7 @@ fn validate_chain_address(chain: Chain, value: &str, field: &str) -> Result<(), 
                 return Err(format!("{field} contains invalid Solana base58 characters."));
             }
         }
-        Chain::Robinhood => {
+        Chain::Robinhood | Chain::Bnb => {
             if value.len() != 42
                 || !value.starts_with("0x")
                 || !value[2..].chars().all(|character| character.is_ascii_hexdigit())

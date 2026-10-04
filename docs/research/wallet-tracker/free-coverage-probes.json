@@ -1,0 +1,89 @@
+{
+  "capturedAt": "2026-10-03T21:06:40.220860+00:00",
+  "rh": [
+    {
+      "url": "https://rpc.arrowrpc.com",
+      "transaction": "0x76b87af28d7faacec8b645824fe337d4cf0a61e2d958fc39909f6dd41f1782e6",
+      "chain": {
+        "http": 530,
+        "response": {
+          "non_json": true,
+          "bytes": 17
+        }
+      }
+    },
+    {
+      "url": "https://rpc.ordofi.network",
+      "transaction": "0x76b87af28d7faacec8b645824fe337d4cf0a61e2d958fc39909f6dd41f1782e6",
+      "chain": {
+        "http": 200,
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "result": "0x1237"
+        }
+      },
+      "debug_traceTransaction": {
+        "http": 200,
+        "error": {
+          "code": -32000,
+          "message": "this transaction predates the state our node keeps, which is roughly the last 1.2M blocks \u2014 about a day and a half of history. Older traces are served by a fallback upstream, which did not answer. Recent transactions trace normally."
+        },
+        "traceReturned": false,
+        "traceSha256": null
+      }
+    },
+    {
+      "url": "https://robinhood.drpc.org",
+      "transaction": "0x76b87af28d7faacec8b645824fe337d4cf0a61e2d958fc39909f6dd41f1782e6",
+      "chain": {
+        "http": 200,
+        "response": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x1237"
+        }
+      },
+      "debug_traceTransaction": {
+        "http": 200,
+        "error": null,
+        "traceReturned": true,
+        "traceSha256": "3a87e576673703982a226d748b0d2c6f5db21176f2f93e2d464263622fc39e33"
+      }
+    }
+  ],
+  "sol": {
+    "url": "https://solana-rpc.publicnode.com",
+    "wallet": "21rgbFW6sujQovCw3qt6R2EdE97Yzzvk8sSc37Bb72Cm",
+    "pages": [
+      {
+        "requestedLimit": 1000,
+        "before": null,
+        "http": 200,
+        "rows": 51,
+        "newRows": 51,
+        "overlap": 0,
+        "newestTime": 1791061102,
+        "oldestTime": 1790980477
+      },
+      {
+        "requestedLimit": 1000,
+        "before": "436DEbTbvVDv22RHytnSF68jtZidfQd5ywZP5CHXQKMFMKQusKgdNygJAjr9sLLxwRAzEpWyTnSaxQ4VGwYFDVm7",
+        "http": 200,
+        "rows": 0,
+        "newRows": 0,
+        "overlap": 0,
+        "newestTime": null,
+        "oldestTime": null
+      }
+    ],
+    "oldestFetchedTransaction": {
+      "signature": "436DEbTbvVDv22RHytnSF68jtZidfQd5ywZP5CHXQKMFMKQusKgdNygJAjr9sLLxwRAzEpWyTnSaxQ4VGwYFDVm7",
+      "http": 200,
+      "returned": true,
+      "blockTime": 1790980477,
+      "error": null
+    }
+  },
+  "limitation": "Bounded capability probes; not a full 60-day or wallet-ownership validation."
+}

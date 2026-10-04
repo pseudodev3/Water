@@ -13,6 +13,7 @@ mod robinhood_launchpads;
 mod providers;
 mod position;
 mod reconstruct;
+mod tracker;
 
 use axum::{
     extract::State,
@@ -35,6 +36,7 @@ struct AppState {
     http: reqwest::Client,
     gecko: GeckoClient,
     market: providers::market::MarketClient,
+    tracker: Arc<tracker::Tracker>,
 }
 
 #[tokio::main]
@@ -47,14 +49,22 @@ async fn main() {
         .init();
 
     let config = Config::from_env();
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .expect("HTTP client should initialize");
+    let mut http_builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12));
+    // Honor an explicitly configured CA bundle while retaining TLS verification.
+    // This is needed by managed workspaces that use a trusted outbound proxy.
+    if let Ok(path) = std::env::var("SSL_CERT_FILE") {
+        let pem = std::fs::read(path).expect("Configured TLS CA bundle should be readable");
+        for certificate in reqwest::Certificate::from_pem_bundle(&pem).expect("Configured TLS CA bundle should contain valid certificates") {
+            http_builder = http_builder.add_root_certificate(certificate);
+        }
+    }
+    let http = http_builder.build().expect("HTTP client should initialize");
     let gecko = GeckoClient::new(http.clone(), config.gecko_api_host.clone());
 
     let market = providers::market::MarketClient::new(http.clone(), gecko.clone(), config.dexscreener_api_host.clone());
-    let state = Arc::new(AppState { config: config.clone(), http, gecko, market });
+    let tracker = tracker::Tracker::new(http.clone(), config.clone(), gecko.clone());
+    let state = Arc::new(AppState { config: config.clone(), http, gecko, market, tracker: tracker.clone() });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -69,6 +79,10 @@ async fn main() {
         .route("/v1/early-holders", post(early_holders))
         .route("/v1/origin", post(origin))
         .route("/v1/token-info", post(token_info))
+        .route("/v1/wallets", get(wallets))
+        .route("/v1/wallets/detail", post(wallet_detail))
+        .route("/v1/wallets/nominate", post(wallet_nominate))
+        .route("/v1/wallets/token", post(wallet_overlap))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -77,6 +91,7 @@ async fn main() {
         .await
         .expect("Water should bind to the configured port");
 
+    tracker.start();
     info!("Water core listening on {}", config.port);
 
     axum::serve(listener, app)
@@ -85,13 +100,38 @@ async fn main() {
         .expect("Water server should run");
 }
 
+async fn wallets(State(state): State<Arc<AppState>>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tracker=state.tracker.clone();
+    tokio::task::spawn_blocking(move||tracker.list()).await.map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"Wallet evidence is busy."}))))?.map(Json).map_err(|error|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":error}))))
+}
+
+async fn wallet_detail(State(state): State<Arc<AppState>>, Json(request): Json<tracker::model::WalletRequest>) -> Result<Json<tracker::model::Analysis>, (StatusCode, Json<Value>)> {
+    let tracker=state.tracker.clone();
+    tokio::task::spawn_blocking(move||tracker.detail(request.chain,&request.wallet)).await
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"Wallet evidence is busy."}))))?
+        .map_err(|error|(StatusCode::BAD_REQUEST,Json(json!({"error":error}))))?
+        .map(Json).ok_or((StatusCode::NOT_FOUND,Json(json!({"error":"This wallet has not been collected yet."}))))
+}
+
+async fn wallet_nominate(State(state): State<Arc<AppState>>, Json(request): Json<tracker::model::WalletRequest>) -> Result<Json<tracker::model::Analysis>, (StatusCode, Json<Value>)> {
+    let tracker=state.tracker.clone();
+    tokio::task::spawn_blocking(move||tracker.nominate(request)).await
+        .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"Wallet evidence is busy."}))))?
+        .map(Json).map_err(|error|(StatusCode::BAD_REQUEST,Json(json!({"error":error}))))
+}
+
+async fn wallet_overlap(State(state): State<Arc<AppState>>, Json(request): Json<model::ScanRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tracker=state.tracker.clone();
+    tokio::task::spawn_blocking(move||tracker.token_overlap(request.chain,&request.address)).await.map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"Wallet evidence is busy."}))))?.map(Json).map_err(|error|(StatusCode::BAD_REQUEST,Json(json!({"error":error}))))
+}
+
 async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
         "market_provider": "GeckoTerminal public API",
         "market_fallback": "Dexscreener public API",
         "requires_market_api_key": false,
-        "chains": ["solana", "robinhood"]
+        "chains": ["solana", "robinhood", "bnb"]
     }))
 }
 
@@ -151,6 +191,10 @@ async fn scan(
                 ok: holder_evidence.top_ten_percentage.is_some(),
                 detail: holder_evidence.detail.clone(),
             });
+        }
+        Chain::Bnb => {
+            sources.push(SourceStatus{source:"BNB ERC-20 totalSupply".into(),ok:holder_evidence.total_supply.is_some(),detail:holder_evidence.detail.clone()});
+            sources.push(SourceStatus{source:"BNB wallet-holder indexing".into(),ok:false,detail:"A complete top-wallet holder index is unavailable; concentration stays unknown.".into()});
         }
     }
 
@@ -307,11 +351,12 @@ mod scan_regression_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let config = Config { port:0, gecko_api_host:url.clone(), dexscreener_api_host:url.clone(), solana_rpc_url:url.clone(), solana_fallback_rpc_url:url.clone(), robinhood_rpc_url:url.clone(), blockscout_api_url:url.clone(), blockscout_api_key:None };
+        let config = Config { port:0, gecko_api_host:url.clone(), dexscreener_api_host:url.clone(), solana_rpc_url:url.clone(), solana_fallback_rpc_url:url.clone(), robinhood_rpc_url:url.clone(), bnb_rpc_url:url.clone(), bnb_fallback_rpc_url:url.clone(), blockscout_api_url:url.clone(), blockscout_api_key:None };
         let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
         let gecko = GeckoClient::new(http.clone(), url.clone());
         let market = providers::market::MarketClient::new(http.clone(), gecko.clone(), url);
-        (Arc::new(AppState { gecko, market, http, config }), task)
+        let tracker = tracker::Tracker::new(http.clone(), config.clone(), gecko.clone());
+        (Arc::new(AppState { gecko, market, http, config, tracker }), task)
     }
 
     #[tokio::test]

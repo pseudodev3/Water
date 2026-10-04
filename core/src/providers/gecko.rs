@@ -533,6 +533,7 @@ fn market_asset_id(chain: Chain, asset_id: &str) -> &str {
     match chain {
         Chain::Solana if asset_id == "SOL" => SOL_WRAPPED_NATIVE,
         Chain::Robinhood if asset_id.eq_ignore_ascii_case("ETH") => ROBINHOOD_WRAPPED_NATIVE,
+        Chain::Bnb if asset_id.eq_ignore_ascii_case("BNB") => "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
         _ => asset_id,
     }
 }

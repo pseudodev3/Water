@@ -976,3 +976,129 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   429 with live fallback/RPC data, and production-build browser checks at
   320/390/768/1440px passed. Baseline/memory provider-change guards and baseline
   reset checked; no browser errors or overflow. Details: docs/market-data.md.
+
+## Wallet tracker research (2026-10-03; not deployed)
+
+- Current completed production baseline is main
+  `fbefa2a2c36d42c55f1b8fbf92dac41334b950e1` (PR #22, Gecko recovery).
+  This research pass changes documentation only.
+- User wants automatic discovery/ranking and continuous observation of strongly
+  profitable wallets with 30–60-day records, including Pump.fun, Fomo.family and
+  relevant directly discovered onchain wallets on Solana and RH 4663. User
+  rejected a $49/month data subscription; use free public/free keyed access.
+- Read `docs/wallet-tracker-research.md` for the pinned community-client audit,
+  first-party contracts, actual free-provider probes, accounting requirements
+  and forward paper evaluation. `docs/wallet-tracker.md` is the implementation
+  brief; machine evidence is in `docs/research/wallet-tracker/`.
+- Do not adopt FOMOTrade as the runtime or use its pagination-success flag for
+  qualification. Exact-source replay found eight false-success cases. Its 200
+  client/poller tests passed with external/native HTTP disabled; the initial
+  full suite had five failures caused by an omitted Pump transport stub, and
+  those five passed when isolated. No real login tokens, trades or messages used.
+- Fomo's public frontend independently confirms `lastSwapIdV2`, `lastTransferId`
+  and hasNextPage continuation. Authenticated 60-day history remains untested.
+  Its current terms section 16 prohibit automated collection; a normal login
+  alone does not establish a permitted Water feed. No access request was sent.
+- Helius documents a free 1M-credit plan and efficient historical SOL RPC; no
+  local key available for acceptance testing. Existing production Blockscout
+  free key needs address/internal-transfer paging validation. Alchemy free
+  archive/Transfers access excludes Debug/Trace and does not establish RH
+  internal transfers.
+- RH dRPC public access returned September 1 and August 4 call traces. The old
+  trace included native ETH calls and matched official transaction/receipt
+  evidence. Timeouts and an earlier method failure also occurred; this proves
+  sampled free archive capability, not complete-wallet coverage or reliable
+  monitoring. DELEGATECALL inherited value must not be counted as another ETH
+  transfer.
+- Next engineering gates: free wallet-wide history and opening-basis proof,
+  real native-swap reconciliation, durable storage within the existing budget,
+  strict coverage/accounting adapters, automatic discovery/UI, restart/gap
+  recovery and a forward paper evaluation. Never qualify missing/stale history
+  or assume provider PnL proves skill. No tracker endpoint, ranking, background
+  monitoring or alerts are deployed.
+
+## Wallet tracker implementation (2026-10-04; not deployed)
+
+- Branch `feat/wallet-tracker` implements `/wallets` plus four Rust endpoints,
+  bounded automatic Pump/optional independent Fomo/onchain discovery, a single
+  background collector, SQLite evidence/cursors and persisted daily quotas.
+  Read `docs/wallet-tracker-implementation.md` for supported semantics, acceptance
+  evidence and deployment setup. Existing token scans retain their provider path.
+- Rankings use two independent FIFO months with opening inventory, network fees,
+  open losses, episode/sample/profit-factor/outlier checks, canonical order and
+  freshness. Standard execution-account verification excludes protocol accounts.
+  Unknown prices on positions closed before the window do not poison later
+  known rounds. Unknown opening basis/current economics continue to block ranks.
+- SOL recognizes scoped Pump bonding-curve/Jupiter instructions, cancels owned
+  token-account rent/wrapping and verifies the actual fee payer. RH uses finalized
+  receipts, historical state, native call traces and a Sourcify-verified V3 runtime
+  template. Inherited delegate values, reverted calls, fake topics and unresolved
+  sponsored fees cannot qualify. No provider leaderboard PnL becomes Water PnL.
+- The responsive UI includes research/qualified/following lists, received activity,
+  detail/gates/coverage, local follows, independent qualified token overlap and
+  scanner links. Public nominations default off; no trades or private Fomo
+  polling, alerts, ownership merging or creator graph claims were added.
+- Validation: 89 Rust tests, Next production build and 15 browser checks passed.
+  Local stop/start preserved 1,476 records, two continuations and daily quotas.
+  Final SOL/RH live scans received market and direct-chain data with collection
+  active (1.08s/1.33s). The archived Aug 4 RH swap reconciled native input, gas
+  refund/payment and verified runtime. Evidence summaries are committed under
+  `docs/research/wallet-tracker/`; no complete real-wallet 60-day rank is certified.
+- Production activation still requires a durable Railway volume/path and one
+  collector instance, a free Helius key, validation of the existing RH index key
+  across every address-history route and archive traces, and optional permitted
+  Fomo discovery credentials. No such secrets are available in this workspace;
+  configure them on the server, never paste trading/login keys into the UI.
+  Without a database path the collector is paused and no rank is invented.
+- Follow-up work: keyed real-wallet acceptance, measure free credits/backfill/disk
+  growth, then forward cohort evaluation. PumpSwap/custom execution, smart-account
+  fees, funding/creator graphs and push alerts require later supported adapters.
+  Production remains main `fbefa2a` until this branch is merged and deployments
+  are verified; do not claim the tracker is live.
+
+
+## Helius budget and BNB pass (2026-10-04; PR #23, not deployed)
+
+- Helius Free is 1M credits per project per credit cycle, not 1M full-history
+  calls. Water requests at most 100 full transactions/page (ten-credit minimum).
+  Default 2,000 HTTP attempts/day would reserve at most 620,000 credits over 31
+  UTC days even if every attempt were a ten-credit Helius call. No paid plan,
+  purchase or autoscaling is configured.
+- Legacy `HELIUS_API_KEY` works; optional comma-separated `HELIUS_API_KEYS` trims
+  and deduplicates credentials (up to eight). HTTP 401/403 can fail over; 429
+  pauses an hour rather than switching around quota. Every key shares Water's
+  atomic SQLite budget, default `WATER_TRACKER_HELIUS_CREDITS_31D=800000`.
+  Counters include failed attempts, survive restarts/key changes and cover the
+  current plus preceding 31 UTC date buckets conservatively. UI values are local
+  reserved estimates, not actual provider remaining credits.
+- BNB API/storage identity is `bnb`, mainnet chain 56, market slug `bsc`, native
+  BNB. Scans receive market, contract and ERC-20 supply evidence; complete holders,
+  creator and deep per-token wallet/cohort reconstruction remain unknown. `owner()`
+  is an owner observation, not creator/control proof. Public node fallbacks must
+  independently identify chain 56. Scanner controls/prefills, wallet filters,
+  follows, explorer links and qualified-overlap identity include BNB.
+- Bounded automatic BNB discovery requires successful finalized Pancake V2
+  receipts, Sourcify runtime, historical tokens and documented factory/getPair
+  membership. Discovery gives each chain a turn before filling a new cohort;
+  existing wallets are retained. Free-provider archive/rate failures may yield
+  no new BNB nomination, which is not complete discovery. Four.meme/Pancake V3
+  and other venues require additional adapters.
+- BNB observation scans received token identities in address-scoped log windows,
+  preserving/merging empty block intervals. It cannot prove wallet-wide native,
+  failed, internal-only or unobserved-token history, so BNB 30/60-day qualification
+  is unavailable. Actual receipts remain visible through archive failures with
+  unresolved execution/unknown amounts and no fabricated native proceeds.
+  Missing precision does not create a normalized quantity; partial records retry.
+  BNB gas fees use standard receipt gas economics, separately from RH/ETH.
+- Validation: 100 Rust tests and Next production build passed. The existing 15
+  browser checks and 11 BNB/credit browser checks pass; latest scan timings are recorded
+  in `docs/research/wallet-tracker/bnb-and-credit-checks.json`. Active-collector
+  scans received SOL/RH/BNB market and chain evidence. A received BNB wallet was
+  manually nominated for local acceptance; the collector then found additional
+  real transfer references and retained partial receipt activity. This does not
+  certify automatic discovery coverage or a full real-wallet profitable record.
+- Read `docs/wallet-tracker-bnb.md` for sources, configuration and free BNB history
+  constraints. Etherscan's free history matrix excludes BNB; the NodeReal free
+  history/native category contract still needs keyed reconciliation. No paid
+  provider was substituted. Production volume, Helius/RH credentials and keyed
+  real-wallet acceptance from the previous handoff remain outstanding.
