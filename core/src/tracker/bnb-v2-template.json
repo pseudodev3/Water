@@ -1,0 +1,11 @@
+{
+  "templateSha256": "21aaaee65b8888b84b3233f12dea4e2077bf5c8c5e51ae3e1a0e9da53308f44a",
+  "immutableRanges": [],
+  "chainId": 56,
+  "pool": "0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae",
+  "factory": "0xca143ce32fe78f1f7019d7d551a6402fc5350c73",
+  "provenance": "Sourcify exact runtime match; recompiled runtime body matches live finalized bytecode. Only compiler CBOR metadata is removed. Historical factory getPair membership is independently required.",
+  "source": "https://sourcify.dev/server/v2/contract/56/0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE?fields=all",
+  "compiler": "0.5.16+commit.9c3226ce",
+  "contract": "PancakePair.sol:PancakePair"
+}

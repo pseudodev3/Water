@@ -33,6 +33,7 @@ import { WalletOverlap } from "@/components/wallet-overlap";
 
 const chains: Array<{ id: Chain; label: string; logoClass: string }> = [
   { id: "solana", label: "Solana", logoClass: "chain-logo-solana" },
+  { id: "bnb", label: "BNB Chain", logoClass: "chain-logo-bnb" },
   {
     id: "robinhood",
     label: "Robinhood Chain",
@@ -54,7 +55,7 @@ export function Scanner() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const selected = params.get("chain"); const token = params.get("address");
-    if ((selected === "solana" || selected === "robinhood") && token) { setChain(selected); setAddress(token.trim()); }
+    if ((selected === "solana" || selected === "robinhood" || selected === "bnb") && token) { setChain(selected); setAddress(token.trim()); }
   }, []);
 
   useEffect(() => {
@@ -136,7 +137,7 @@ export function Scanner() {
             Who holds the supply. How deep the liquidity goes.
             Where control began. One token, a clearer picture.
           </p>
-          <div className="hero-footnote">Solana &amp; Robinhood Chain</div>
+          <div className="hero-footnote">Solana · Robinhood · BNB Chain</div>
         </div>
       </section>
 
@@ -516,5 +517,5 @@ function shortenAddress(address: string) {
 }
 
 function chainLabel(chain: Chain) {
-  return chain === "solana" ? "Solana" : "Robinhood Chain";
+  return chain === "solana" ? "Solana" : chain === "bnb" ? "BNB Chain" : "Robinhood Chain";
 }

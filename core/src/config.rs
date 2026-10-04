@@ -6,6 +6,8 @@ pub struct Config {
     pub solana_rpc_url: String,
     pub solana_fallback_rpc_url: String,
     pub robinhood_rpc_url: String,
+    pub bnb_rpc_url: String,
+    pub bnb_fallback_rpc_url: String,
     pub blockscout_api_url: String,
     pub blockscout_api_key: Option<String>,
 }
@@ -27,6 +29,10 @@ impl Config {
                 .unwrap_or_else(|_| "https://solana-rpc.publicnode.com".to_string()),
             robinhood_rpc_url: std::env::var("ROBINHOOD_RPC_URL")
                 .unwrap_or_else(|_| "https://rpc.mainnet.chain.robinhood.com".to_string()),
+            bnb_rpc_url: std::env::var("BNB_RPC_URL")
+                .unwrap_or_else(|_| "https://bsc-rpc.publicnode.com".to_string()),
+            bnb_fallback_rpc_url: std::env::var("BNB_FALLBACK_RPC_URL")
+                .unwrap_or_else(|_| "https://bsc-dataseed.bnbchain.org".to_string()),
             blockscout_api_url: std::env::var("BLOCKSCOUT_API_URL")
                 .unwrap_or_else(|_| "https://api.blockscout.com/4663/api/v2".to_string()),
             blockscout_api_key: std::env::var("BLOCKSCOUT_API_KEY")

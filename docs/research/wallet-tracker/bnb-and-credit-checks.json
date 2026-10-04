@@ -1,0 +1,358 @@
+{
+  "checked_at": "2026-10-04",
+  "implementation_branch": "feat/wallet-tracker",
+  "pull_request": "https://github.com/pseudodev3/Water/pull/23",
+  "deployed": false,
+  "validation": {
+    "rust_tests_passed": 100,
+    "production_web_build": "passed",
+    "existing_browser_checks": [
+      {
+        "check": "Responsive real research list",
+        "width": 320,
+        "rows": 12
+      },
+      {
+        "check": "Responsive real research list",
+        "width": 390,
+        "rows": 12
+      },
+      {
+        "check": "Responsive real research list",
+        "width": 768,
+        "rows": 12
+      },
+      {
+        "check": "Responsive real research list",
+        "width": 1440,
+        "rows": 12
+      },
+      {
+        "check": "Incomplete wallets receive no rank"
+      },
+      {
+        "check": "Immediate chain and discovery filters"
+      },
+      {
+        "check": "Opening detail scrolls into view and closing restores focus"
+      },
+      {
+        "check": "Real saved wallet detail and qualification gates"
+      },
+      {
+        "check": "Follow survives browser reload"
+      },
+      {
+        "check": "Refresh failure preserves last received evidence"
+      },
+      {
+        "check": "Refresh recovers after transport failure"
+      },
+      {
+        "check": "Changing filters clears mismatched detail"
+      },
+      {
+        "check": "Unconfigured backend reports paused collection"
+      },
+      {
+        "check": "Blocked storage does not pretend to save a follow"
+      },
+      {
+        "check": "Wallet position links prefill the token scanner"
+      }
+    ],
+    "bnb_browser_checks": [
+      {
+        "check": "Three chain controls and BNB prefill fit",
+        "width": 320
+      },
+      {
+        "check": "BNB filter, research gates and explorer stay correct",
+        "width": 320
+      },
+      {
+        "check": "Received live BNB token scan",
+        "width": 390
+      },
+      {
+        "check": "Three chain controls and BNB prefill fit",
+        "width": 390
+      },
+      {
+        "check": "BNB filter, research gates and explorer stay correct",
+        "width": 390
+      },
+      {
+        "check": "Received partial BNB activity and browser follow persist"
+      },
+      {
+        "check": "Three chain controls and BNB prefill fit",
+        "width": 768
+      },
+      {
+        "check": "BNB filter, research gates and explorer stay correct",
+        "width": 768
+      },
+      {
+        "check": "Three chain controls and BNB prefill fit",
+        "width": 1440
+      },
+      {
+        "check": "BNB filter, research gates and explorer stay correct",
+        "width": 1440
+      },
+      {
+        "check": "Configured Helius disclosure labels shared estimate",
+        "test_only_status": true
+      }
+    ],
+    "browser_check_count": 26,
+    "viewports": [
+      320,
+      390,
+      768,
+      1440
+    ],
+    "uncaught_browser_errors": 0,
+    "horizontal_overflow": false,
+    "local_live_provider_smoke": {
+      "bnb": "chain 56, WBNB bytecode and bsc pools verified",
+      "robinhood": "verified",
+      "solana": "official RPC returned 429; smoke inconclusive, separate fallback-backed token scan received real supply/holder evidence"
+    }
+  },
+  "helius": {
+    "free_plan_unit": "credits per project per credit cycle",
+    "allowance": 1000000,
+    "history_page_limit": 100,
+    "full_history_credits_per_100_minimum": 10,
+    "default_tracker_http_attempts_per_utc_day": 2000,
+    "maximum_reserved_credits_over_31_utc_days_at_default": 620000,
+    "default_shared_credit_stop": 800000,
+    "reservation_window": "current and preceding 31 UTC date buckets; conservative overlap",
+    "credential_list": "HELIUS_API_KEYS",
+    "credential_failover": "HTTP 401/403; shared budget",
+    "rate_or_quota_response": "HTTP 429 pauses an hour; no key rotation around quota",
+    "actual_provider_balance_available": false,
+    "keyed_real_wallet_acceptance": false,
+    "sources": [
+      "https://www.helius.dev/pricing",
+      "https://www.helius.dev/docs/billing/credits",
+      "https://www.helius.dev/docs/rpc/gettransactionsforaddress",
+      "https://www.helius.dev/docs/api-reference/admin/get-project-usage"
+    ]
+  },
+  "bnb": {
+    "api_and_storage_identity": "bnb",
+    "market_slug": "bsc",
+    "chain_id": 56,
+    "native_asset": "BNB",
+    "qualification": "unavailable from public known-token transfer fallback",
+    "automatic_discovery_scope": "four finalized contract calls/block sample; Pancake V2 runtime + historical tokens/factory/getPair required",
+    "live_automatic_nomination_coverage_certified": false,
+    "holder_index": "unavailable",
+    "wallet_position_and_holder_cohort_depth": "unavailable",
+    "free_wallet_wide_index_validated": false,
+    "received_sample": {
+      "wallet": "0xc183cc3a513355d4aa983e700bbad1cca6abe3d9",
+      "transaction": "0x729fb97c849507ae2f66bce69605f1ddf802995a5379f8ea5d6f5f7004b90606",
+      "nomination": "manual local acceptance using actual public execution; not provider PnL",
+      "fee_asset": "BNB",
+      "fee_quantity": "0.00001217909",
+      "native_trace_available": false,
+      "historical_precision_fixture": "unavailable; no normalized token quantity invented",
+      "history_complete": false,
+      "activity_kind": "unresolved_execution",
+      "additional_received_transfer_references": 2
+    },
+    "runtime": {
+      "templateSha256": "21aaaee65b8888b84b3233f12dea4e2077bf5c8c5e51ae3e1a0e9da53308f44a",
+      "immutableRanges": [],
+      "chainId": 56,
+      "pool": "0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae",
+      "factory": "0xca143ce32fe78f1f7019d7d551a6402fc5350c73",
+      "provenance": "Sourcify exact runtime match; recompiled runtime body matches live finalized bytecode. Only compiler CBOR metadata is removed. Historical factory getPair membership is independently required.",
+      "source": "https://sourcify.dev/server/v2/contract/56/0x16b9a82891338f9bA80E2D6970FddA79D1eb0daE?fields=all",
+      "compiler": "0.5.16+commit.9c3226ce",
+      "contract": "PancakePair.sol:PancakePair"
+    },
+    "provider_constraints": [
+      "Publicnode broad wallet log query rejected without contract address",
+      "Official node historical state missing trie node / log restrictions",
+      "dRPC trace/history rate limits or missing transaction",
+      "Etherscan free normal-history matrix excludes BNB chain 56",
+      "NodeReal free wallet-wide native/internal contract needs keyed reconciliation"
+    ],
+    "sources": [
+      "https://docs.bnbchain.org/bnb-smart-chain/developers/json_rpc/json-rpc-endpoint/",
+      "https://developer.pancakeswap.finance/contracts/v2/addresses",
+      "https://docs.etherscan.io/supported-chains",
+      "https://docs.nodereal.io/reference/nr_gettransactionbyaddress",
+      "https://docs.nodereal.io/docs/migrating-from-bscscan"
+    ]
+  },
+  "active_collector_scans": [
+    {
+      "chain": "bnb",
+      "seconds": 0.44,
+      "evidence": {
+        "source": "BNB Chain JSON-RPC",
+        "verified": true,
+        "chain_id": 56,
+        "detail": "Contract bytecode verified on BNB Smart Chain (chain ID 56)."
+      },
+      "sources": [
+        {
+          "source": "GeckoTerminal public market data",
+          "ok": true,
+          "detail": "Token and top-pool market data received."
+        },
+        {
+          "source": "Direct chain verification",
+          "ok": true,
+          "detail": "Contract bytecode verified on BNB Smart Chain (chain ID 56)."
+        },
+        {
+          "source": "BNB ERC-20 totalSupply",
+          "ok": true,
+          "detail": "Current ERC-20 total supply is 1.56M. A complete wallet-holder index is not configured; concentration remains unknown."
+        },
+        {
+          "source": "BNB wallet-holder indexing",
+          "ok": false,
+          "detail": "A complete top-wallet holder index is unavailable; concentration stays unknown."
+        }
+      ]
+    },
+    {
+      "chain": "solana",
+      "seconds": 1.45,
+      "evidence": {
+        "source": "Solana JSON-RPC",
+        "verified": true,
+        "chain_id": null,
+        "detail": "Mint account exists on the configured Solana RPC."
+      },
+      "sources": [
+        {
+          "source": "GeckoTerminal public market data",
+          "ok": true,
+          "detail": "Token and top-pool market data received."
+        },
+        {
+          "source": "Direct chain verification",
+          "ok": true,
+          "detail": "Mint account exists on the configured Solana RPC."
+        },
+        {
+          "source": "Solana getTokenSupply",
+          "ok": true,
+          "detail": "Current onchain token supply is 964.11M. Top wallet authorities hold about 24.9% of total supply. Water grouped token accounts by authority and excluded 1 program/PDA-controlled authority (236.01M tokens) from the 1243 largest token accounts."
+        },
+        {
+          "source": "Solana wallet-holder reconstruction",
+          "ok": true,
+          "detail": "Current onchain token supply is 964.11M. Top wallet authorities hold about 24.9% of total supply. Water grouped token accounts by authority and excluded 1 program/PDA-controlled authority (236.01M tokens) from the 1243 largest token accounts."
+        }
+      ]
+    },
+    {
+      "chain": "robinhood",
+      "seconds": 0.54,
+      "evidence": {
+        "source": "Robinhood Chain JSON-RPC",
+        "verified": true,
+        "chain_id": 4663,
+        "detail": "Contract bytecode exists on the configured Robinhood RPC (chain ID 4663)."
+      },
+      "sources": [
+        {
+          "source": "GeckoTerminal public market data",
+          "ok": true,
+          "detail": "Token and top-pool market data received."
+        },
+        {
+          "source": "Direct chain verification",
+          "ok": true,
+          "detail": "Contract bytecode exists on the configured Robinhood RPC (chain ID 4663)."
+        },
+        {
+          "source": "Robinhood ERC-20 totalSupply",
+          "ok": true,
+          "detail": "Current ERC-20 total supply is 1.00B. Robinhood wallet-holder reconstruction failed: Robinhood wallet-holder reconstruction needs the indexed holder source; BLOCKSCOUT_API_KEY is not configured."
+        },
+        {
+          "source": "Robinhood indexed wallet holders",
+          "ok": false,
+          "detail": "Current ERC-20 total supply is 1.00B. Robinhood wallet-holder reconstruction failed: Robinhood wallet-holder reconstruction needs the indexed holder source; BLOCKSCOUT_API_KEY is not configured."
+        }
+      ]
+    }
+  ],
+  "local_restart": {
+    "before": {
+      "requests": [
+        [
+          "requests:20729",
+          "317"
+        ],
+        [
+          "requests:20730",
+          "2138"
+        ]
+      ],
+      "records": 8028,
+      "wallets": 12
+    },
+    "after": {
+      "requests": [
+        [
+          "requests:20729",
+          "317"
+        ],
+        [
+          "requests:20730",
+          "2245"
+        ]
+      ],
+      "records": 8074,
+      "wallets": 12,
+      "bnb": [
+        {
+          "id": "0x729fb97c849507ae2f66bce69605f1ddf802995a5379f8ea5d6f5f7004b90606",
+          "received_transaction": true,
+          "fee_asset": "BNB",
+          "fee_quantity": "0.000012179090",
+          "movement_complete": false,
+          "trace_available": false
+        },
+        {
+          "id": "0x5b36c29d0ff87f9b8d3ede7c661eced6f35c197798f0a9ee3fc036981e65442d",
+          "received_transaction": true,
+          "fee_asset": "BNB",
+          "fee_quantity": null,
+          "movement_complete": false,
+          "trace_available": false
+        },
+        {
+          "id": "0xa404c7646d157eaa2f13085d40f1fb7510565ca0c13e64ceeaa460b5521a61ca",
+          "received_transaction": true,
+          "fee_asset": "BNB",
+          "fee_quantity": "0.00005642279500",
+          "movement_complete": false,
+          "trace_available": false
+        }
+      ]
+    },
+    "previous_schema_wallets_retained": 11,
+    "previous_schema_references_retained": 7290,
+    "daily_counter_reset": false,
+    "deployed_volume_certified": false
+  },
+  "limitations": [
+    "No complete real-wallet 60-day qualification certified on any chain",
+    "No Helius/RH/Fomo runtime credentials available in this workspace",
+    "Production volume and single collector deployment remain unconfigured",
+    "No paid provider added; BNB history qualification remains research-only"
+  ]
+}

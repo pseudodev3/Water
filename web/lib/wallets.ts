@@ -95,6 +95,10 @@ export type WalletResponse = {
     daily_request_limit?: number;
     solana_indexed_access?: boolean;
     rh_indexed_access?: boolean;
+    helius_key_count?: number;
+    helius_credits_reserved_31d?: number;
+    helius_credit_limit_31d?: number;
+    bnb_history_scope?: string;
     fomo_discovery_access?: boolean;
     last_discovery_at?: number | null;
     discovery_notes?: string[] | null;
@@ -172,7 +176,11 @@ export function walletId(candidate: WalletCandidate) {
   return `${candidate.chain}:${candidate.wallet}`;
 }
 export function chainLabel(chain: Chain) {
-  return chain === "solana" ? "Solana" : "Robinhood";
+  return chain === "solana"
+    ? "Solana"
+    : chain === "bnb"
+      ? "BNB Chain"
+      : "Robinhood";
 }
 export function shortAddress(value: string) {
   return value.length > 18 ? `${value.slice(0, 7)}…${value.slice(-6)}` : value;
@@ -184,7 +192,9 @@ export function evidenceLink(
 ) {
   return chain === "solana"
     ? `https://solscan.io/${type === "tx" ? "tx" : "account"}/${encodeURIComponent(value)}`
-    : `https://robinhoodchain.blockscout.com/${type}/${encodeURIComponent(value)}`;
+    : chain === "bnb"
+      ? `https://bscscan.com/${type}/${encodeURIComponent(value)}`
+      : `https://robinhoodchain.blockscout.com/${type}/${encodeURIComponent(value)}`;
 }
 export function amount(value: string | null, usd = false) {
   if (value === null) return "—";

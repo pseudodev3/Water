@@ -1,4 +1,5 @@
 mod accounting;
+mod bnb;
 pub mod model;
 mod providers;
 mod store;
@@ -30,7 +31,80 @@ fn env_number(name: &str, default: usize, min: usize, max: usize) -> usize {
         .clamp(min, max)
 }
 fn secret(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn helius_keys(list: Option<String>, legacy: Option<String>) -> Vec<String> {
+    let mut keys = Vec::new();
+    for key in list
+        .or(legacy)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .take(8)
+    {
+        if !keys.iter().any(|v| v == key) {
+            keys.push(key.to_string());
+        }
+    }
+    keys
+}
+
+fn balanced_candidates(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let mut groups: std::collections::BTreeMap<&str, std::collections::VecDeque<Candidate>> =
+        std::collections::BTreeMap::new();
+    for c in candidates {
+        groups.entry(c.chain.key()).or_default().push_back(c);
+    }
+    let mut out = Vec::new();
+    while groups.values().any(|g| !g.is_empty()) {
+        for g in groups.values_mut() {
+            if let Some(c) = g.pop_front() {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    #[test]
+    fn credential_lists_are_trimmed_deduplicated_and_do_not_change_budget() {
+        assert_eq!(
+            helius_keys(Some(" a, b, a, , c ".into()), Some("legacy".into())),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(helius_keys(None, Some(" old ".into())), vec!["old"]);
+        assert!(helius_keys(None, None).is_empty());
+    }
+    #[test]
+    fn discovery_does_not_fill_the_cohort_before_a_chain_gets_a_turn() {
+        let candidate = |chain, w: &str| Candidate {
+            observed_tokens: Vec::new(),
+            chain,
+            wallet: w.into(),
+            discovered_at: 0,
+            sources: vec![],
+        };
+        let candidates = vec![
+            candidate(Chain::Solana, "s1"),
+            candidate(Chain::Solana, "s2"),
+            candidate(Chain::Robinhood, "r1"),
+            candidate(Chain::Bnb, "b1"),
+        ];
+        let first = balanced_candidates(candidates)
+            .into_iter()
+            .take(3)
+            .map(|c| c.chain.key())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(first, BTreeSet::from(["bnb", "robinhood", "solana"]));
+    }
 }
 
 fn demote_stale(analysis: &mut Analysis) {
@@ -92,10 +166,14 @@ impl Tracker {
             http,
             config,
             store: store.clone(),
-            helius_key: secret("HELIUS_API_KEY"),
+            helius_keys: helius_keys(secret("HELIUS_API_KEYS"), secret("HELIUS_API_KEY")),
+            helius_credit_limit: env_number("WATER_TRACKER_HELIUS_CREDITS_31D", 800000, 10, 1000000)
+                as u64,
             fomo_key: secret("FOMO_DISCOVERY_API_KEY"),
             rh_trace_url: std::env::var("ROBINHOOD_TRACE_RPC_URL")
                 .unwrap_or_else(|_| "https://robinhood.drpc.org".into()),
+            bnb_trace_url: std::env::var("BNB_TRACE_RPC_URL")
+                .unwrap_or_else(|_| "https://bsc.drpc.org".into()),
             daily_limit: env_number("WATER_TRACKER_DAILY_REQUESTS", 2000, 10, 2500) as u64,
         });
         Arc::new(Self {
@@ -140,7 +218,7 @@ impl Tracker {
             .flatten()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
-        json!({"enabled":true,"nomination_enabled":self.public_nominations,"detail":store.state("collector_error").ok().flatten(),"policy":POLICY,"interval_seconds":self.interval,"cohort_limit":self.cohort_limit,"requests_today":used,"daily_request_limit":providers.daily_limit,"solana_indexed_access":providers.helius_key.is_some(),"rh_indexed_access":providers.config.blockscout_api_key.is_some(),"fomo_discovery_access":providers.fomo_key.is_some(),"last_discovery_at":store.state("discovery_time").ok().flatten().and_then(|v|v.parse::<u64>().ok()),"discovery_notes":store.state("discovery_notes").ok().flatten().and_then(|v|serde_json::from_str::<Value>(&v).ok()),"storage_configured":!store.path.is_empty(),"storage_durability":"Requires a persistent deployment volume; path configuration does not prove durability."})
+        json!({"enabled":true,"nomination_enabled":self.public_nominations,"detail":store.state("collector_error").ok().flatten(),"policy":POLICY,"interval_seconds":self.interval,"cohort_limit":self.cohort_limit,"requests_today":used,"daily_request_limit":providers.daily_limit,"solana_indexed_access":!providers.helius_keys.is_empty(),"rh_indexed_access":providers.config.blockscout_api_key.is_some(),"helius_key_count":providers.helius_keys.len(),"helius_credits_reserved_31d":store.helius_credits(now()).unwrap_or(0),"helius_credit_limit_31d":providers.helius_credit_limit,"bnb_history_scope":"Public token-transfer discovery; complete wallet/native-history coverage is unproved.","fomo_discovery_access":providers.fomo_key.is_some(),"last_discovery_at":store.state("discovery_time").ok().flatten().and_then(|v|v.parse::<u64>().ok()),"discovery_notes":store.state("discovery_notes").ok().flatten().and_then(|v|serde_json::from_str::<Value>(&v).ok()),"storage_configured":!store.path.is_empty(),"storage_durability":"Requires a persistent deployment volume; path configuration does not prove durability."})
     }
 
     pub fn list(&self) -> Result<Value, String> {
@@ -161,12 +239,7 @@ impl Tracker {
             tier(&a.status)
                 .cmp(&tier(&b.status))
                 .then_with(|| ranking_key(b).cmp(&ranking_key(a)))
-                .then_with(|| {
-                    a.candidate
-                        .chain
-                        .market_network()
-                        .cmp(b.candidate.chain.market_network())
-                })
+                .then_with(|| a.candidate.chain.key().cmp(b.candidate.chain.key()))
                 .then_with(|| a.candidate.wallet.cmp(&b.candidate.wallet))
         });
         let summaries: Vec<_> = analyses
@@ -211,7 +284,7 @@ impl Tracker {
             .store
             .as_ref()
             .ok_or("Wallet collection is paused until evidence storage is configured.")?;
-        let candidate=Candidate{chain:request.chain,wallet:wallet.clone(),discovered_at:now(),sources:vec![Source{name:"Added for research".into(),observed_at:now(),detail:"A nomination requests evidence collection; it does not verify ownership or profitability.".into(),profile:None}]};
+        let candidate=Candidate{observed_tokens:Vec::new(),chain:request.chain,wallet:wallet.clone(),discovered_at:now(),sources:vec![Source{name:"Added for research".into(),observed_at:now(),detail:"A nomination requests evidence collection; it does not verify ownership or profitability.".into(),profile:None}]};
         store.nominate(candidate, self.cohort_limit)?;
         let analysis = accounting::analyze(
             store
@@ -230,7 +303,7 @@ impl Tracker {
         };
         let mut wallets = Vec::new();
         for analysis in store.analyses()? {
-            if analysis.candidate.chain.market_network() != chain.market_network()
+            if analysis.candidate.chain.key() != chain.key()
                 || !analysis.status.starts_with("qualified_")
                 || analysis
                     .coverage
@@ -284,7 +357,7 @@ impl Tracker {
             .is_none_or(|t| now().saturating_sub(t) > 3600)
         {
             let (candidates, notes) = providers.discover(self.cohort_limit).await;
-            for candidate in candidates {
+            for candidate in balanced_candidates(candidates) {
                 let chain = candidate.chain;
                 let wallet = candidate.wallet.clone();
                 if store.nominate(candidate, self.cohort_limit).is_ok() {
@@ -311,13 +384,19 @@ impl Tracker {
         let mut coverage = snapshot.coverage.clone();
         let mut records = Vec::new();
         let head = providers.page(&candidate, None).await?;
-        let overlap = providers::head_covered(&head, &known);
+        let overlap = if matches!(candidate.chain, Chain::Bnb) {
+            providers::range_covered(&head, &coverage.public_scan_ranges)
+        } else {
+            providers::head_covered(&head, &known)
+        };
         coverage.provider = if matches!(candidate.chain, Chain::Solana) {
             if head.indexed {
                 "Helius indexed Solana history"
             } else {
                 "Public Solana signature history"
             }
+        } else if matches!(candidate.chain, Chain::Bnb) {
+            "BNB public token-transfer references and direct RPC/trace evidence"
         } else {
             "RH Blockscout and direct RPC/trace evidence"
         }
@@ -341,10 +420,16 @@ impl Tracker {
                 }
             }
         }
+        providers::add_scan_range(&mut coverage.public_scan_ranges, head.scan_range);
         records.extend(head.records);
         if let Some(cursor) = coverage.head_cursor.clone() {
             let page = providers.page(&candidate, Some(&cursor)).await?;
-            let caught_up = page.exhausted || providers::head_covered(&page, &known);
+            let caught_up = page.exhausted
+                || if matches!(candidate.chain, Chain::Bnb) {
+                    providers::range_covered(&page, &snapshot.coverage.public_scan_ranges)
+                } else {
+                    providers::head_covered(&page, &known)
+                };
             coverage.head_cursor = if caught_up {
                 if coverage.head_cursors.is_empty() {
                     None
@@ -356,6 +441,7 @@ impl Tracker {
             };
             coverage.head_complete = coverage.head_cursor.is_none();
             coverage.pages += 1;
+            providers::add_scan_range(&mut coverage.public_scan_ranges, page.scan_range);
             records.extend(page.records);
         } else if !coverage.backfill_done {
             if let Some(cursor) = coverage.cursor.clone() {
@@ -363,6 +449,7 @@ impl Tracker {
                 coverage.cursor = page.cursor;
                 coverage.backfill_done = page.exhausted;
                 coverage.pages += 1;
+                providers::add_scan_range(&mut coverage.public_scan_ranges, page.scan_range);
                 records.extend(page.records);
             }
         }
@@ -393,11 +480,15 @@ impl Tracker {
         let mut pending: Vec<_> = refreshed
             .records
             .iter()
-            .filter(|r| r.transaction.as_ref().is_none_or(|t| !t.finalized))
+            .filter(|r| {
+                r.transaction
+                    .as_ref()
+                    .is_none_or(|t| !t.finalized || !t.movement_complete)
+            })
             .filter(|r| {
                 let key = format!(
                     "retry:{}:{}:{}",
-                    candidate.chain.market_network(),
+                    candidate.chain.key(),
                     candidate.wallet,
                     r.id
                 );
@@ -415,11 +506,26 @@ impl Tracker {
         let mut fetched = Vec::new();
         for mut record in pending {
             match providers.fetch_record(&candidate, &record).await {
-                Ok(value) => fetched.push(value),
+                Ok(value) => {
+                    if value
+                        .transaction
+                        .as_ref()
+                        .is_some_and(|t| !t.movement_complete)
+                    {
+                        let key = format!(
+                            "retry:{}:{}:{}",
+                            candidate.chain.key(),
+                            candidate.wallet,
+                            record.id
+                        );
+                        store.set_state(&key, &(now() + 3600).to_string())?;
+                    }
+                    fetched.push(value);
+                }
                 Err(error) => {
                     let key = format!(
                         "retry:{}:{}:{}",
-                        candidate.chain.market_network(),
+                        candidate.chain.key(),
                         candidate.wallet,
                         record.id
                     );
@@ -469,8 +575,11 @@ impl Tracker {
             .iter()
             .filter_map(|r| r.transaction.as_ref())
             .collect();
-        coverage.pending_records =
-            refreshed.records.len() - txs.len() + txs.iter().filter(|t| !t.finalized).count();
+        coverage.pending_records = refreshed.records.len() - txs.len()
+            + txs
+                .iter()
+                .filter(|t| !t.finalized || !t.movement_complete)
+                .count();
         let errors: BTreeSet<_> = refreshed
             .records
             .iter()
@@ -485,9 +594,10 @@ impl Tracker {
         coverage.oldest_record_at = txs.iter().map(|t| t.timestamp).min();
         coverage.newest_record_at = txs.iter().map(|t| t.timestamp).max();
         let ownership_history = if matches!(candidate.chain, Chain::Solana) {
-            providers.helius_key.is_some() && txs.iter().all(|t| t.block >= 111_491_819)
+            !providers.helius_keys.is_empty() && txs.iter().all(|t| t.block >= 111_491_819)
         } else {
-            providers.config.blockscout_api_key.is_some()
+            matches!(candidate.chain, Chain::Robinhood)
+                && providers.config.blockscout_api_key.is_some()
         };
         // Every listed record, the canonical order, ending balances, fee
         // attribution and supported execution semantics are additional gates.
@@ -561,7 +671,7 @@ impl Tracker {
             .collect();
         let key = format!(
             "price_cursor:{}:{}",
-            snapshot.candidate.chain.market_network(),
+            snapshot.candidate.chain.key(),
             snapshot.candidate.wallet
         );
         let offset = store

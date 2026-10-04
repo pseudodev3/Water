@@ -10,7 +10,7 @@ recovery baseline `fbefa2a`; this feature has not been deployed.
   scheduling, restart persistence, failed-record retry and daily request limits.
 - Pump monthly nominations, optional independent Fomo account associations,
   successful signed Solana execution samples and successful finalized RH V3
-  execution samples. Boards never provide Water's PnL. Chain records stay
+  and verified BNB Pancake V2 execution samples. Boards never provide Water's PnL. Chain records stay
   separate and identities retain case-sensitive Solana addresses.
 - Indexed Helius history with explicit terminal cursors; public Solana research
   fallback. RH transactions, token transfers and internal transactions each
@@ -20,7 +20,7 @@ recovery baseline `fbefa2a`; this feature has not been deployed.
   completed episodes, both months, age, open losses, sample/PF/outlier gates and
   stale demotion. Unsupported economics withhold aggregate totals. Quote-to-quote
   trades require another ledger adapter and currently block qualification;
-  exact ETH/WETH wrapping is neutral.
+  exact native ETH/WETH and BNB/WBNB wrapping is neutral.
 - Qualification also verifies the execution account: Solana system wallets and
   RH externally owned accounts or valid EIP-7702 delegations. Program/contract
   accounts need a supported ownership and fee adapter before they can rank.
@@ -45,6 +45,13 @@ recovery baseline `fbefa2a`; this feature has not been deployed.
   and origin evidence through prefilled position links.
   Opening detail brings it into view and closing returns focus to its row;
   reduced motion and unavailable browser storage are handled explicitly.
+
+BNB chain-56 market/supply scans and observed wallet activity are described in
+[Helius budgets and BNB scope](wallet-tracker-bnb.md). BNB public known-token log
+windows retain empty-range continuations and received partial receipts. They
+cannot certify wallet-wide native/internal/failed coverage; BNB stays under
+research. Only the pinned Pancake V2 runtime plus historical token/factory
+membership establishes supported BNB swap execution.
 
 Supported SOL instructions: Pump bonding-curve buy/sell and specified Jupiter
 V6 route variants. Other Solana programs, PumpSwap-specific adapters, arbitrary
@@ -85,7 +92,9 @@ a paused collector, empty research list and no invented rank.
    on at least one wallet. Preserve failures/timeouts as gaps.
 4. Optional Fomo discovery needs a permitted independent API key or another
    expressly permitted feed. No login/session tokens are requested or used.
-5. Measure backfill time, disk growth, provider credits and polling gaps before
+5. Keep BNB research-only until a permitted free wallet-wide index and native
+   archive economics are reconciled. Public known-token logs are insufficient.
+6. Measure backfill time, disk growth, provider credits and polling gaps before
    expanding the cohort. No paid subscription is configured. After deployment,
    evaluate a fixed cohort forward for 14–30 days, retaining later losers and
    inactive wallets, before claiming useful follow-through.
@@ -96,7 +105,10 @@ Tests construct synthetic economics only inside the test module, never as app da
 
 ## Local validation (2026-10-04)
 
-- `cargo test`: 89 passed, including 22 tracker tests. Regression cases cover
+- `cargo test`: 100 passed. The BNB/credit pass adds shared persisted credit limits,
+  empty block-range continuity, chain separation, exact runtime rejection,
+  incomplete BNB economics and receipt retention during unavailable archive reads.
+  Regression cases cover
   same-asset unknown closed prehistory, unknown opening basis, partial exits,
   failed fees, open losses, withdrawals, protocol accounts, provisional records,
   paging gaps, persistence, scoped instruction logs and archived RH execution.
@@ -105,6 +117,10 @@ Tests construct synthetic economics only inside the test module, never as app da
   No horizontal overflow or uncaught browser errors occurred. Checks include
   filters, real detail/gates, reduced-motion scrolling/focus, follows after reload,
   blocked storage, failed-refresh recovery, paused collection and scanner links.
+  BNB-specific checks additionally cover all three mobile chain controls, actual
+  BNB scan/detail/activity, research gates, explorer links, follows and the
+  explicitly labeled shared Helius estimate. Counts and results are recorded in
+  the BNB/credit acceptance evidence below.
 - A real stop/start retained 1,476 transaction references and two continuations;
   the same-day request count continued from 110 to 164, without false ranks.
   This verifies local restart persistence, not a deployed Railway volume.
@@ -112,8 +128,10 @@ Tests construct synthetic economics only inside the test module, never as app da
   direct-chain evidence while the collector was active. RH holder indexing
   remains unavailable locally without its key.
 
-Compact results are recorded in
+The baseline results are recorded in
 [`research/wallet-tracker/local-implementation-checks.json`](research/wallet-tracker/local-implementation-checks.json).
+The subsequent BNB/credit pass is recorded in
+[`research/wallet-tracker/bnb-and-credit-checks.json`](research/wallet-tracker/bnb-and-credit-checks.json).
 
 Push delivery, paper-execution evaluation, creator relationships and a broad
 funding graph are subsequent capabilities, not shipped claims.

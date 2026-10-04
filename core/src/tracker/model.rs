@@ -29,12 +29,15 @@ pub fn wallet_key(chain: Chain, address: &str) -> Result<String, String> {
             }
             address.to_string()
         }
-        Chain::Robinhood => {
+        Chain::Robinhood | Chain::Bnb => {
             if address.len() != 42
                 || !address.starts_with("0x")
                 || !address[2..].chars().all(|c| c.is_ascii_hexdigit())
             {
-                return Err("Enter a valid Robinhood 0x wallet address.".into());
+                return Err(format!(
+                    "Enter a valid {} 0x wallet address.",
+                    chain.label()
+                ));
             }
             address.to_ascii_lowercase()
         }
@@ -46,6 +49,7 @@ pub fn native(chain: Chain) -> &'static str {
     match chain {
         Chain::Solana => "SOL",
         Chain::Robinhood => "ETH",
+        Chain::Bnb => "BNB",
     }
 }
 
@@ -61,6 +65,15 @@ pub fn quote(chain: Chain, asset: &str) -> bool {
         Chain::Robinhood => {
             asset.eq_ignore_ascii_case("ETH")
                 || asset.eq_ignore_ascii_case("0x0bd7d308f8e1639fab988df18a8011f41eacad73")
+        }
+        Chain::Bnb => {
+            asset.eq_ignore_ascii_case("BNB")
+                || matches!(
+                    asset.to_ascii_lowercase().as_str(),
+                    "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+                        | "0x55d398326f99059ff775485246999027b3197955"
+                        | "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d"
+                )
         }
     }
 }
@@ -79,6 +92,8 @@ pub struct Candidate {
     pub wallet: String,
     pub discovered_at: u64,
     pub sources: Vec<Source>,
+    #[serde(default)]
+    pub observed_tokens: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -88,6 +103,7 @@ pub struct Coverage {
     pub cursor: Option<String>,
     pub head_cursor: Option<String>,
     pub head_cursors: Vec<String>,
+    pub public_scan_ranges: Vec<(u64, u64)>,
     pub head_complete: bool,
     pub backfill_started: bool,
     pub backfill_done: bool,

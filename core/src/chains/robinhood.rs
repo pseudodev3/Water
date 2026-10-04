@@ -144,7 +144,7 @@ pub async fn observe(
 }
 
 
-async fn erc20_total_supply(
+pub(super) async fn erc20_total_supply(
     http: &reqwest::Client,
     rpc_url: &str,
     address: &str,
@@ -197,7 +197,7 @@ fn scaled_biguint_to_f64(value: &BigUint, decimals: u32) -> Option<f64> {
     normalized.parse::<f64>().ok().filter(|value| value.is_finite())
 }
 
-fn format_compact(value: f64) -> String {
+pub(super) fn format_compact(value: f64) -> String {
     if value >= 1_000_000_000.0 {
         format!("{:.2}B", value / 1_000_000_000.0)
     } else if value >= 1_000_000.0 {
@@ -209,7 +209,7 @@ fn format_compact(value: f64) -> String {
     }
 }
 
-async fn rpc(
+pub(super) async fn rpc(
     http: &reqwest::Client,
     rpc_url: &str,
     method: &str,

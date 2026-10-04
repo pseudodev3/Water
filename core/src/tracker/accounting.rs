@@ -134,6 +134,18 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
         fee_rows.push((tx.timestamp, fee_usd));
         if !tx.movement_complete {
             economic_gaps += 1;
+            events.push(Activity {
+                tx: tx.id.clone(),
+                timestamp: tx.timestamp,
+                kind: "unresolved_execution".into(),
+                asset: None,
+                quantity: None,
+                quote_asset: None,
+                quote_quantity: None,
+                value_usd: None,
+                finalized: tx.finalized,
+                counterparties: tx.counterparties.clone(),
+            });
         }
         if !tx.succeeded {
             events.push(Activity {
@@ -274,9 +286,18 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
             // Quote-to-quote trading needs its own basis ledger. Exact native /
             // wrapped-native conversions are the sole neutral exception.
             if tx.assets.len() > 1 {
-                let neutral_wrap = matches!(chain, crate::model::Chain::Robinhood)
+                let neutral_wrap = !matches!(chain, crate::model::Chain::Solana)
                     && tx.assets.len() == 2
-                    && tx.assets.iter().all(|d| quote(chain, &d.asset))
+                    && tx.assets.iter().all(|d| match chain {
+                        crate::model::Chain::Robinhood => quote(chain, &d.asset),
+                        crate::model::Chain::Bnb => {
+                            d.asset.eq_ignore_ascii_case("BNB")
+                                || d.asset.eq_ignore_ascii_case(
+                                    "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+                                )
+                        }
+                        _ => false,
+                    })
                     && tx.assets.iter().map(|d| d.quantity).sum::<Decimal>() == Decimal::ZERO;
                 if !neutral_wrap {
                     economic_gaps += 1;
@@ -317,7 +338,11 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
         .count();
     economic_gaps += unparsed;
     let mut coverage = snapshot.coverage.clone();
-    coverage.pending_records = unparsed + transactions.iter().filter(|t| !t.finalized).count();
+    coverage.pending_records = unparsed
+        + transactions
+            .iter()
+            .filter(|t| !t.finalized || !t.movement_complete)
+            .count();
     coverage.fees_complete = fee_rows
         .iter()
         .filter(|(t, _)| *t >= start)
@@ -531,6 +556,7 @@ mod tests {
     fn base() -> Snapshot {
         Snapshot {
             candidate: Candidate {
+                observed_tokens: Vec::new(),
                 chain: Chain::Solana,
                 wallet: "test".into(),
                 discovered_at: 0,
@@ -891,5 +917,44 @@ mod tests {
         let a = analyze(s, 90 * DAY);
         assert_eq!(a.status, "incomplete");
         assert!(a.windows.iter().all(|w| !w.qualified));
+    }
+    #[test]
+    fn bnb_public_history_stays_unqualified_and_equal_quote_amounts_are_not_native_wrapping() {
+        let mut s = consistent_sample();
+        s.candidate.chain = Chain::Bnb;
+        s.coverage.history_complete = false;
+        for r in &mut s.records {
+            let t = r.transaction.as_mut().unwrap();
+            t.fee_asset = "BNB".into();
+            for d in &mut t.assets {
+                if d.asset == "SOL" {
+                    d.asset = "BNB".into();
+                }
+            }
+        }
+        for p in &mut s.prices {
+            if p.asset == "SOL" {
+                p.asset = "BNB".into();
+            }
+        }
+        let a = analyze(s.clone(), 90 * DAY);
+        assert_eq!(a.status, "incomplete");
+        assert!(a
+            .windows
+            .iter()
+            .all(|w| !w.qualified && w.total_usd.is_none()));
+        s.coverage.history_complete = true;
+        let mut r = tx("quote-conversion", 89 * DAY, 10, -10, true);
+        let t = r.transaction.as_mut().unwrap();
+        t.fee_asset = "BNB".into();
+        t.assets[0].asset = "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d".into();
+        t.assets[1].asset = "0x55d398326f99059ff775485246999027b3197955".into();
+        s.records.push(r);
+        let a = analyze(s, 90 * DAY);
+        assert!(a.unresolved_records > 0);
+        assert!(a
+            .windows
+            .iter()
+            .all(|w| !w.qualified && w.total_usd.is_none()));
     }
 }

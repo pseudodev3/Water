@@ -1055,3 +1055,50 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   fees, funding/creator graphs and push alerts require later supported adapters.
   Production remains main `fbefa2a` until this branch is merged and deployments
   are verified; do not claim the tracker is live.
+
+
+## Helius budget and BNB pass (2026-10-04; PR #23, not deployed)
+
+- Helius Free is 1M credits per project per credit cycle, not 1M full-history
+  calls. Water requests at most 100 full transactions/page (ten-credit minimum).
+  Default 2,000 HTTP attempts/day would reserve at most 620,000 credits over 31
+  UTC days even if every attempt were a ten-credit Helius call. No paid plan,
+  purchase or autoscaling is configured.
+- Legacy `HELIUS_API_KEY` works; optional comma-separated `HELIUS_API_KEYS` trims
+  and deduplicates credentials (up to eight). HTTP 401/403 can fail over; 429
+  pauses an hour rather than switching around quota. Every key shares Water's
+  atomic SQLite budget, default `WATER_TRACKER_HELIUS_CREDITS_31D=800000`.
+  Counters include failed attempts, survive restarts/key changes and cover the
+  current plus preceding 31 UTC date buckets conservatively. UI values are local
+  reserved estimates, not actual provider remaining credits.
+- BNB API/storage identity is `bnb`, mainnet chain 56, market slug `bsc`, native
+  BNB. Scans receive market, contract and ERC-20 supply evidence; complete holders,
+  creator and deep per-token wallet/cohort reconstruction remain unknown. `owner()`
+  is an owner observation, not creator/control proof. Public node fallbacks must
+  independently identify chain 56. Scanner controls/prefills, wallet filters,
+  follows, explorer links and qualified-overlap identity include BNB.
+- Bounded automatic BNB discovery requires successful finalized Pancake V2
+  receipts, Sourcify runtime, historical tokens and documented factory/getPair
+  membership. Discovery gives each chain a turn before filling a new cohort;
+  existing wallets are retained. Free-provider archive/rate failures may yield
+  no new BNB nomination, which is not complete discovery. Four.meme/Pancake V3
+  and other venues require additional adapters.
+- BNB observation scans received token identities in address-scoped log windows,
+  preserving/merging empty block intervals. It cannot prove wallet-wide native,
+  failed, internal-only or unobserved-token history, so BNB 30/60-day qualification
+  is unavailable. Actual receipts remain visible through archive failures with
+  unresolved execution/unknown amounts and no fabricated native proceeds.
+  Missing precision does not create a normalized quantity; partial records retry.
+  BNB gas fees use standard receipt gas economics, separately from RH/ETH.
+- Validation: 100 Rust tests and Next production build passed. The existing 15
+  browser checks and 11 BNB/credit browser checks pass; latest scan timings are recorded
+  in `docs/research/wallet-tracker/bnb-and-credit-checks.json`. Active-collector
+  scans received SOL/RH/BNB market and chain evidence. A received BNB wallet was
+  manually nominated for local acceptance; the collector then found additional
+  real transfer references and retained partial receipt activity. This does not
+  certify automatic discovery coverage or a full real-wallet profitable record.
+- Read `docs/wallet-tracker-bnb.md` for sources, configuration and free BNB history
+  constraints. Etherscan's free history matrix excludes BNB; the NodeReal free
+  history/native category contract still needs keyed reconciliation. No paid
+  provider was substituted. Production volume, Helius/RH credentials and keyed
+  real-wallet acceptance from the previous handoff remain outstanding.

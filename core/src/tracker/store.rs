@@ -9,6 +9,45 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn helius_credits(&self, timestamp: u64) -> Result<u64, String> {
+        let db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
+        credits_in_window(&db, timestamp / DAY)
+    }
+
+    /// Reserve before sending. Every configured Helius credential shares this
+    /// Water budget; a credential list does not multiply provider plan credits.
+    pub fn reserve_http(
+        &self,
+        timestamp: u64,
+        daily_limit: u64,
+        helius_limit: Option<u64>,
+    ) -> Result<(), String> {
+        let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let day = timestamp / DAY;
+        let daily_key = format!("requests:{day}");
+        let used: u64 = tx
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM state WHERE key=?",
+                [&daily_key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(0);
+        if used >= daily_limit {
+            return Err("Wallet collection reached its daily free request budget; it resumes after UTC midnight.".into());
+        }
+        if let Some(limit) = helius_limit {
+            if credits_in_window(&tx, day)?.saturating_add(10) > limit {
+                return Err("Helius collection reached Water's rolling 31-day credit budget; saved evidence and cursors are retained.".into());
+            }
+            tx.execute("INSERT INTO state(key,value) VALUES(?,10) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+10", [format!("helius-credits:{day}")]).map_err(|e| e.to_string())?;
+        }
+        tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![daily_key,(used+1).to_string()]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     pub fn open(path: &str) -> Result<Self, String> {
         if path != ":memory:" {
             if let Some(parent) = Path::new(path)
@@ -37,7 +76,7 @@ impl Store {
     pub fn nominate(&self, candidate: Candidate, limit: usize) -> Result<bool, String> {
         let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
-        let key = candidate.chain.market_network();
+        let key = candidate.chain.key();
         let existing: Option<String> = tx
             .query_row(
                 "SELECT candidate FROM wallets WHERE chain=? AND wallet=?",
@@ -49,6 +88,12 @@ impl Store {
         if let Some(value) = existing {
             let mut previous: Candidate =
                 serde_json::from_str(&value).map_err(|e| e.to_string())?;
+            for token in candidate.observed_tokens {
+                if previous.observed_tokens.len() < 64 && !previous.observed_tokens.contains(&token)
+                {
+                    previous.observed_tokens.push(token);
+                }
+            }
             for source in candidate.sources {
                 if let Some(old) = previous
                     .sources
@@ -112,7 +157,7 @@ impl Store {
         if let Some(c) = &candidate {
             tx.execute(
                 "UPDATE wallets SET scheduled_at=? WHERE chain=? AND wallet=?",
-                params![timestamp, c.chain.market_network(), c.wallet],
+                params![timestamp, c.chain.key(), c.wallet],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -125,7 +170,7 @@ impl Store {
         let tuple: Option<(String, String, String)> = db
             .query_row(
                 "SELECT candidate,coverage,balances FROM wallets WHERE chain=? AND wallet=?",
-                params![chain.market_network(), wallet],
+                params![chain.key(), wallet],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -137,9 +182,7 @@ impl Store {
             .prepare("SELECT record FROM records WHERE chain=? AND wallet=? ORDER BY id")
             .map_err(|e| e.to_string())?;
         let records = statement
-            .query_map(params![chain.market_network(), wallet], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_map(params![chain.key(), wallet], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .map(|r| {
                 r.map_err(|e| e.to_string())
@@ -150,7 +193,7 @@ impl Store {
             .prepare("SELECT price FROM prices WHERE chain=?")
             .map_err(|e| e.to_string())?;
         let prices = statement
-            .query_map([chain.market_network()], |r| r.get::<_, String>(0))
+            .query_map([chain.key()], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .map(|r| {
                 r.map_err(|e| e.to_string())
@@ -178,14 +221,14 @@ impl Store {
         let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
         for record in records {
-            tx.execute("INSERT INTO records(chain,wallet,id,record,ready) VALUES(?,?,?,?,?) ON CONFLICT(chain,wallet,id) DO UPDATE SET record=excluded.record,ready=excluded.ready WHERE excluded.ready=1 OR records.ready=0", params![candidate.chain.market_network(), candidate.wallet, record.id, serde_json::to_string(record).unwrap(), record.transaction.is_some() as i32]).map_err(|e| e.to_string())?;
+            tx.execute("INSERT INTO records(chain,wallet,id,record,ready) VALUES(?,?,?,?,?) ON CONFLICT(chain,wallet,id) DO UPDATE SET record=excluded.record,ready=excluded.ready WHERE excluded.ready=1 OR records.ready=0", params![candidate.chain.key(), candidate.wallet, record.id, serde_json::to_string(record).unwrap(), record.transaction.is_some() as i32]).map_err(|e| e.to_string())?;
         }
         tx.execute(
             "UPDATE wallets SET coverage=?,balances=? WHERE chain=? AND wallet=?",
             params![
                 serde_json::to_string(coverage).unwrap(),
                 serde_json::to_string(balances).unwrap(),
-                candidate.chain.market_network(),
+                candidate.chain.key(),
                 candidate.wallet
             ],
         )
@@ -201,7 +244,7 @@ impl Store {
             tx.execute(
                 "INSERT OR REPLACE INTO prices(chain,asset,timestamp,price) VALUES(?,?,?,?)",
                 params![
-                    chain.market_network(),
+                    chain.key(),
                     price.asset,
                     price.timestamp,
                     serde_json::to_string(price).unwrap()
@@ -221,7 +264,7 @@ impl Store {
                 "UPDATE wallets SET analysis=? WHERE chain=? AND wallet=?",
                 params![
                     serde_json::to_string(analysis).unwrap(),
-                    analysis.candidate.chain.market_network(),
+                    analysis.candidate.chain.key(),
                     analysis.candidate.wallet
                 ],
             )
@@ -295,11 +338,41 @@ impl Store {
     }
 }
 
+fn credits_in_window(db: &Connection, day: u64) -> Result<u64, String> {
+    db.query_row("SELECT COALESCE(SUM(CAST(value AS INTEGER)),0) FROM state WHERE key LIKE 'helius-credits:%' AND CAST(substr(key,length('helius-credits:')+1) AS INTEGER) BETWEEN ? AND ?", params![day.saturating_sub(31),day], |r|r.get(0)).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn credit_limits_are_atomic_persisted_and_span_billing_month_boundaries() {
+        let path =
+            std::env::temp_dir().join(format!("water-credits-{}.sqlite", std::process::id()));
+        let path = path.to_str().unwrap();
+        let db = Store::open(path).unwrap();
+        db.reserve_http(100 * DAY, 3, Some(20)).unwrap();
+        db.reserve_http(101 * DAY, 3, Some(20)).unwrap();
+        assert_eq!(db.helius_credits(130 * DAY).unwrap(), 20);
+        assert!(db.reserve_http(130 * DAY, 3, Some(20)).is_err());
+        assert_eq!(db.state("requests:130").unwrap(), None);
+        drop(db);
+        let db = Store::open(path).unwrap();
+        assert_eq!(db.helius_credits(131 * DAY).unwrap(), 20);
+        assert_eq!(db.helius_credits(132 * DAY).unwrap(), 10);
+        db.reserve_http(132 * DAY, 3, Some(20)).unwrap();
+        assert!(db.reserve_http(132 * DAY, 3, Some(20)).is_err());
+        // Public/non-Helius reads consume the daily request limit only.
+        db.reserve_http(132 * DAY, 3, None).unwrap();
+        db.reserve_http(132 * DAY, 3, None).unwrap();
+        assert!(db.reserve_http(132 * DAY, 3, None).is_err());
+        assert_eq!(db.helius_credits(132 * DAY).unwrap(), 20);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
     fn candidate() -> Candidate {
         Candidate {
+            observed_tokens: Vec::new(),
             chain: Chain::Solana,
             wallet: "21rgbFW6sujQovCw3qt6R2EdE97Yzzvk8sSc37Bb72Cm".into(),
             discovered_at: 1,

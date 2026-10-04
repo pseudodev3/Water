@@ -20,12 +20,32 @@ pub fn v3_topic() -> String {
     )
 }
 
+pub fn v2_topic() -> String {
+    format!(
+        "0x{:x}",
+        Keccak256::digest(b"Swap(address,uint256,uint256,uint256,uint256,address)")
+    )
+}
+
+pub fn verified_bnb_v2_runtime(value: &str) -> bool {
+    static TEMPLATE: OnceLock<Template> = OnceLock::new();
+    let template = TEMPLATE.get_or_init(|| {
+        serde_json::from_str(include_str!("bnb-v2-template.json"))
+            .expect("Pinned BNB V2 runtime template is valid")
+    });
+    verified_runtime(value, template)
+}
+
 pub fn verified_v3_runtime(value: &str) -> bool {
     static TEMPLATE: OnceLock<Template> = OnceLock::new();
     let template = TEMPLATE.get_or_init(|| {
         serde_json::from_str(include_str!("v3-template.json"))
             .expect("Pinned V3 runtime template is valid")
     });
+    verified_runtime(value, template)
+}
+
+fn verified_runtime(value: &str, template: &Template) -> bool {
     let Some(hex) = value.strip_prefix("0x") else {
         return false;
     };
@@ -67,6 +87,24 @@ pub fn verified_v3_runtime(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bnb_v2_runtime_matches_recompiled_source_and_rejects_opcode_changes() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/tracker-bnb-v2-runtime.json"
+        ))
+        .unwrap();
+        let code = v["observedBytecode"].as_str().unwrap();
+        assert!(verified_bnb_v2_runtime(code));
+        assert!(verified_bnb_v2_runtime(
+            v["recompiledBytecode"].as_str().unwrap()
+        ));
+        assert!(!verified_bnb_v2_runtime(&format!("0x00{}", &code[4..])));
+        assert!(!verified_v3_runtime(code));
+        assert_eq!(
+            v2_topic(),
+            "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
+        );
+    }
     #[test]
     fn a_swap_topic_does_not_certify_forged_pool_code() {
         let value: serde_json::Value =

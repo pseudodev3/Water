@@ -29,7 +29,7 @@ pub fn asset_key(chain: Chain, address: &str) -> String {
     // Base58 is case-sensitive. Only EVM addresses may be lowercased.
     let address = match chain {
         Chain::Solana => address.to_string(),
-        Chain::Robinhood => address.to_ascii_lowercase(),
+        Chain::Robinhood | Chain::Bnb => address.to_ascii_lowercase(),
     };
     format!("{}:{address}", chain.market_network())
 }
@@ -201,7 +201,7 @@ fn fallback_snapshot(
                     .and_then(Value::as_str)
                     .is_some_and(|address| match chain {
                         Chain::Solana => address == token,
-                        Chain::Robinhood => address.eq_ignore_ascii_case(token),
+                        Chain::Robinhood | Chain::Bnb => address.eq_ignore_ascii_case(token),
                     })
                 && positive(pair.get("priceUsd")).is_some()
                 && pair
@@ -297,6 +297,25 @@ mod tests {
         assert_eq!(
             asset_key(Chain::Robinhood, "0xAB"),
             asset_key(Chain::Robinhood, "0xab")
+        );
+    }
+
+    #[test]
+    fn bnb_fallback_requires_bsc_and_keeps_same_address_on_rh_separate() {
+        let token = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c";
+        let mut bnb = pair();
+        bnb["chainId"] = json!("bsc");
+        bnb["baseToken"]["address"] = json!(token.to_ascii_uppercase());
+        let mut rh = bnb.clone();
+        rh["chainId"] = json!("robinhood");
+        rh["liquidity"]["usd"] = json!(99999999);
+        let (snapshot, _) =
+            fallback_snapshot(&json!([bnb, rh.clone()]), Chain::Bnb, token).unwrap();
+        assert_eq!(snapshot.liquidity_usd, Some(17216.13));
+        assert!(fallback_snapshot(&json!([rh]), Chain::Bnb, token).is_none());
+        assert_ne!(
+            asset_key(Chain::Bnb, token),
+            asset_key(Chain::Robinhood, token)
         );
     }
 

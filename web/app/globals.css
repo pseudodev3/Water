@@ -87,7 +87,7 @@
 .wallet-gates p { color: var(--faint); font-size: 12px; line-height: 1.7; margin: 5px 0 0; }
 .wallet-coverage, .wallet-positions, .wallet-sources, .wallet-detail-activity { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 12px; }
 .wallet-coverage dl { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 32px; }
-.wallet-detail p { color: var(--muted); line-height: 1.7; font-size: 13px; }
+.wallet-detail p { color: var(--muted); line-height: 1.7; font-size: 13px; overflow-wrap: anywhere; }
 .wallet-position-row { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .wallet-position-row a { color: var(--text); display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
 .wallet-sources > div { padding: 10px 0; }
@@ -413,6 +413,12 @@ a:focus-visible {
 
 .chain-logo-robinhood {
   background-image: url("https://robinhood.com/favicon.ico");
+}
+.chain-logo-bnb { background-image: url("https://www.bnbchain.org/favicon.ico"); }
+@media (max-width: 520px) {
+  .chain-button { min-width: 0; padding: 0 8px; gap: 4px; }
+  .chain-button .chain-logo { width: 16px; height: 16px; flex-basis: 16px; }
+  .chain-button .chain-label { font-size: 11px; }
 }
 
 .chain-button.active {

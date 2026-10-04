@@ -19,9 +19,11 @@ pub struct Providers {
     pub http: reqwest::Client,
     pub config: Config,
     pub store: Arc<Store>,
-    pub helius_key: Option<String>,
+    pub helius_keys: Vec<String>,
+    pub helius_credit_limit: u64,
     pub fomo_key: Option<String>,
     pub rh_trace_url: String,
+    pub bnb_trace_url: String,
     pub daily_limit: u64,
 }
 
@@ -32,6 +34,7 @@ pub struct Page {
     pub indexed: bool,
     pub notes: Vec<String>,
     pub segments: Vec<(Vec<String>, bool)>,
+    pub scan_range: Option<(u64, u64)>,
 }
 
 pub fn record_priority(record: &Record) -> u64 {
@@ -56,25 +59,84 @@ pub fn head_covered(page: &Page, known: &BTreeSet<String>) -> bool {
         .all(|(ids, exhausted)| *exhausted || ids.iter().any(|id| known.contains(id)))
 }
 
+pub fn range_covered(page: &Page, ranges: &[(u64, u64)]) -> bool {
+    page.scan_range.is_some_and(|(from, to)| {
+        ranges
+            .iter()
+            .any(|(a, b)| from <= b.saturating_add(1) && to.saturating_add(1) >= *a)
+    })
+}
+
+pub fn add_scan_range(ranges: &mut Vec<(u64, u64)>, range: Option<(u64, u64)>) {
+    if let Some(range) = range {
+        ranges.push(range);
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in ranges.drain(..) {
+        if let Some(last) = merged
+            .last_mut()
+            .filter(|last| a <= last.1.saturating_add(1))
+        {
+            last.1 = last.1.max(b);
+        } else {
+            merged.push((a, b));
+        }
+    }
+    *ranges = merged;
+}
+
 impl Providers {
+    fn evm_url(&self, chain: Chain) -> &str {
+        match chain {
+            Chain::Bnb => &self.config.bnb_rpc_url,
+            _ => &self.config.robinhood_rpc_url,
+        }
+    }
+    fn trace_url(&self, chain: Chain) -> &str {
+        match chain {
+            Chain::Bnb => &self.bnb_trace_url,
+            _ => &self.rh_trace_url,
+        }
+    }
+    pub(super) async fn evm_rpc(
+        &self,
+        chain: Chain,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        match self.rpc(self.evm_url(chain), method, params.clone()).await {
+            Ok(value) => Ok(value),
+            Err(primary) if matches!(chain, Chain::Bnb) => {
+                let url = &self.config.bnb_fallback_rpc_url;
+                if self.rpc(url, "eth_chainId", json!([])).await?.as_str() != Some("0x38") {
+                    return Err("BNB fallback rejected an RPC outside chain 56.".into());
+                }
+                self.rpc(url, method, params).await.map_err(|second| {
+                    format!("BNB public evidence unavailable: {primary} {second}")
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
     pub fn reserve(&self) -> Result<(), String> {
         // One collector owns this counter. Persisting before sending makes the
         // daily ceiling survive process restarts and failed requests.
-        let day = now() / DAY;
-        let key = format!("requests:{day}");
-        let used = self
-            .store
-            .state(&key)?
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        if used >= self.daily_limit {
-            return Err("Wallet collection reached its daily free request budget; it resumes after UTC midnight.".into());
-        }
-        self.store.set_state(&key, &(used + 1).to_string())
+        self.store.reserve_http(now(), self.daily_limit, None)
     }
 
     pub async fn rpc(&self, url: &str, method: &str, params: Value) -> Result<Value, String> {
-        self.reserve()?;
+        if reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .as_deref()
+            == Some("mainnet.helius-rpc.com")
+        {
+            self.store
+                .reserve_http(now(), self.daily_limit, Some(self.helius_credit_limit))?;
+        } else {
+            self.reserve()?;
+        }
         let response = self
             .http
             .post(url)
@@ -106,6 +168,48 @@ impl Providers {
             .ok_or_else(|| format!("{method} omitted its result."))
     }
 
+    async fn helius_rpc(&self, method: &str, params: Value) -> Result<Value, String> {
+        let cooldown = self
+            .store
+            .state("helius-cooldown")?
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        if now() < cooldown {
+            return Err("Helius collection is paused after a rate or quota response. Saved evidence remains available.".into());
+        }
+        if self.helius_keys.is_empty() {
+            return Err("Helius credentials are not configured.".into());
+        }
+        let start = self
+            .store
+            .state("helius-active-key")?
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0)
+            % self.helius_keys.len();
+        for n in 0..self.helius_keys.len() {
+            let index = (start + n) % self.helius_keys.len();
+            let mut url = reqwest::Url::parse("https://mainnet.helius-rpc.com/").unwrap();
+            url.query_pairs_mut()
+                .append_pair("api-key", &self.helius_keys[index]);
+            match self.rpc(url.as_str(), method, params.clone()).await {
+                Ok(value) => {
+                    self.store
+                        .set_state("helius-active-key", &index.to_string())?;
+                    return Ok(value);
+                }
+                Err(e) if e.contains("HTTP 401") || e.contains("HTTP 403") => continue,
+                Err(e) => {
+                    if e.contains("HTTP 429") {
+                        self.store
+                            .set_state("helius-cooldown", &(now() + 3600).to_string())?;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Err("Helius rejected the configured credentials; saved history is retained.".into())
+    }
+
     async fn get(&self, url: reqwest::Url, key: Option<&str>) -> Result<Value, String> {
         self.reserve()?;
         let mut request = self
@@ -131,17 +235,28 @@ impl Providers {
             .map_err(|_| "Wallet discovery/index returned invalid JSON.".into())
     }
 
-    async fn rh_archive(&self, method: &str, params: Value) -> Result<Value, String> {
-        match self
-            .rpc(&self.config.robinhood_rpc_url, method, params.clone())
-            .await
-        {
+    pub(super) async fn evm_archive(
+        &self,
+        chain: Chain,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        match self.evm_rpc(chain, method, params.clone()).await {
             Ok(value) => Ok(value),
             Err(primary) => {
-                self.rpc(&self.rh_trace_url, method, params)
+                if matches!(chain, Chain::Bnb)
+                    && self
+                        .rpc(&self.bnb_trace_url, "eth_chainId", json!([]))
+                        .await?
+                        .as_str()
+                        != Some("0x38")
+                {
+                    return Err("BNB archive rejected an RPC outside chain 56.".into());
+                }
+                self.rpc(self.trace_url(chain), method, params)
                     .await
                     .map_err(|secondary| {
-                        format!("Historical RH evidence unavailable: {primary} {secondary}")
+                        format!("Historical EVM evidence unavailable: {primary} {secondary}")
                     })
             }
         }
@@ -156,7 +271,7 @@ impl Providers {
                 Some(rows)=>for row in rows.iter().take((limit/3).max(1)){
                     if let Some(address)=row["walletAddress"].as_str(){
                         let chain=if address.starts_with("0x"){Chain::Robinhood}else{Chain::Solana};
-                        if let Ok(wallet)=wallet_key(chain,address){candidates.push(Candidate{chain,wallet,discovered_at:timestamp,sources:vec![Source{name:"Pump.fun".into(),observed_at:row["lastRefreshedAtMs"].as_u64().unwrap_or(timestamp*1000)/1000,detail:"Monthly leaderboard nomination. Provider PnL is not Water qualification; chain activity and execution identity must be verified.".into(),profile:row["username"].as_str().map(str::to_string)}]});}
+                        if let Ok(wallet)=wallet_key(chain,address){candidates.push(Candidate{observed_tokens:Vec::new(),chain,wallet,discovered_at:timestamp,sources:vec![Source{name:"Pump.fun".into(),observed_at:row["lastRefreshedAtMs"].as_u64().unwrap_or(timestamp*1000)/1000,detail:"Monthly leaderboard nomination. Provider PnL is not Water qualification; chain activity and execution identity must be verified.".into(),profile:row["username"].as_str().map(str::to_string)}]});}
                     }
                 },
                 None=>notes.push("Pump discovery response omitted entries.".into()),
@@ -180,7 +295,7 @@ impl Providers {
                             {
                                 if let Some(address) = row["wallets"][field].as_str() {
                                     if let Ok(wallet) = wallet_key(chain, address) {
-                                        candidates.push(Candidate{chain,wallet,discovered_at:timestamp,sources:vec![Source{name:"Fomo discovery".into(),observed_at:timestamp,detail:"Independent API-reported account association; app attribution and execution identity are not inferred from funding.".into(),profile:row["handle"].as_str().map(str::to_string)}]});
+                                        candidates.push(Candidate{observed_tokens:Vec::new(),chain,wallet,discovered_at:timestamp,sources:vec![Source{name:"Fomo discovery".into(),observed_at:timestamp,detail:"Independent API-reported account association; app attribution and execution identity are not inferred from funding.".into(),profile:row["handle"].as_str().map(str::to_string)}]});
                                     }
                                 }
                             }
@@ -244,7 +359,7 @@ impl Providers {
                                     && tx.assets.iter().any(|a| quote(Chain::Solana, &a.asset))
                                 {
                                     if let Ok(wallet) = wallet_key(Chain::Solana, address) {
-                                        candidates.push(Candidate{chain:Chain::Solana,wallet,discovered_at:timestamp,sources:vec![Source{name:"Onchain activity".into(),observed_at:tx.timestamp,detail:format!("Recent finalized supported program sample: {program}; signed execution {id}. This is a candidate, not a profitability claim."),profile:None}]});
+                                        candidates.push(Candidate{observed_tokens:Vec::new(),chain:Chain::Solana,wallet,discovered_at:timestamp,sources:vec![Source{name:"Onchain activity".into(),observed_at:tx.timestamp,detail:format!("Recent finalized supported program sample: {program}; signed execution {id}. This is a candidate, not a profitability claim."),profile:None}]});
                                         found = true;
                                         break;
                                     }
@@ -316,7 +431,8 @@ impl Providers {
                                         continue;
                                     };
                                     if let Ok(code) = self
-                                        .rh_archive(
+                                        .evm_archive(
+                                            Chain::Robinhood,
                                             "eth_getCode",
                                             json!([emitter, row["blockNumber"]]),
                                         )
@@ -331,7 +447,7 @@ impl Providers {
                             }
                             if verified {
                                 if let Ok(wallet) = wallet_key(Chain::Robinhood, address) {
-                                    candidates.push(Candidate{chain:Chain::Robinhood,wallet,discovered_at:timestamp,sources:vec![Source{name:"Onchain activity".into(),observed_at:hex(block["timestamp"].as_str().unwrap_or("0x0")).unwrap_or(timestamp),detail:format!("Successful finalized V3 execution {id} from a verified pool runtime. Sender is a research candidate; execution ownership and profitability require wallet-history reconciliation."),profile:None}]});
+                                    candidates.push(Candidate{observed_tokens:Vec::new(),chain:Chain::Robinhood,wallet,discovered_at:timestamp,sources:vec![Source{name:"Onchain activity".into(),observed_at:hex(block["timestamp"].as_str().unwrap_or("0x0")).unwrap_or(timestamp),detail:format!("Successful finalized V3 execution {id} from a verified pool runtime. Sender is a research candidate; execution ownership and profitability require wallet-history reconciliation."),profile:None}]});
                                     added += 1;
                                 }
                             }
@@ -345,28 +461,30 @@ impl Providers {
                 notes.push("RH discovery rejected a non-4663 provider.".into());
             }
         }
+        match super::bnb::discover(self, limit).await {
+            Ok(rows) => candidates.extend(rows),
+            Err(error) => notes.push(format!("BNB discovery: {error}")),
+        }
         (candidates, notes)
     }
 
     pub async fn page(&self, candidate: &Candidate, cursor: Option<&str>) -> Result<Page, String> {
         match candidate.chain {
             Chain::Solana => {
-                if let Some(key) = &self.helius_key {
-                    let url = format!("https://mainnet.helius-rpc.com/?api-key={key}");
+                if !self.helius_keys.is_empty() {
                     let mut options = json!({"transactionDetails":"full","sortOrder":"desc","limit":100,"filters":{"tokenAccounts":"balanceChanged"}});
                     if let Some(cursor) = cursor {
                         options["paginationToken"] = json!(cursor);
                     }
                     let value = self
-                        .rpc(
-                            &url,
+                        .helius_rpc(
                             "getTransactionsForAddress",
                             json!([candidate.wallet, options]),
                         )
                         .await?;
                     let mut page = helius_page(value, cursor, &candidate.wallet)?;
                     let finalized = self
-                        .rpc(&url, "getSlot", json!([{"commitment":"finalized"}]))
+                        .helius_rpc("getSlot", json!([{"commitment":"finalized"}]))
                         .await?
                         .as_u64()
                         .ok_or("Solana finalized slot missing.")?;
@@ -411,8 +529,9 @@ impl Providers {
                     records.iter().map(|r| r.id.clone()).collect(),
                     rows.is_empty(),
                 )];
-                Ok(Page{records,cursor:next,exhausted:rows.is_empty(),indexed:false,notes:vec!["Public signature history cannot prove closed token-account or archive coverage; canonical transaction indices remain unresolved.".into()],segments})
+                Ok(Page{records,cursor:next,exhausted:rows.is_empty(),indexed:false,notes:vec!["Public signature history cannot prove closed token-account or archive coverage; canonical transaction indices remain unresolved.".into()],segments,scan_range:None})
             }
+            Chain::Bnb => super::bnb::page(self, candidate, cursor).await,
             Chain::Robinhood => {
                 let chain = self
                     .rpc(&self.config.robinhood_rpc_url, "eth_chainId", json!([]))
@@ -501,7 +620,7 @@ impl Providers {
                     segments.push((ids, next.is_null()));
                 }
                 let exhausted = states.values().all(Option::is_none);
-                Ok(Page{records:records.into_values().collect(),cursor:Some(serde_json::to_string(&states).unwrap()),exhausted,indexed:true,notes:vec!["Three independent index routes cover transactions, token transfers and internal native transfers. Index completeness and ending balances still require reconciliation.".into()],segments})
+                Ok(Page{records:records.into_values().collect(),cursor:Some(serde_json::to_string(&states).unwrap()),exhausted,indexed:true,notes:vec!["Three independent index routes cover transactions, token transfers and internal native transfers. Index completeness and ending balances still require reconciliation.".into()],segments,scan_range:None})
             }
         }
     }
@@ -513,12 +632,17 @@ impl Providers {
     ) -> Result<Record, String> {
         match candidate.chain {
             Chain::Solana => {
-                let url = self
-                    .helius_key
-                    .as_ref()
-                    .map(|key| format!("https://mainnet.helius-rpc.com/?api-key={key}"))
-                    .unwrap_or_else(|| self.config.solana_fallback_rpc_url.clone());
-                let raw=self.rpc(&url,"getTransaction",json!([record.id,{"encoding":"jsonParsed","maxSupportedTransactionVersion":0,"commitment":"finalized"}])).await?;
+                let params = json!([record.id,{"encoding":"jsonParsed","maxSupportedTransactionVersion":0,"commitment":"finalized"}]);
+                let raw = if self.helius_keys.is_empty() {
+                    self.rpc(
+                        &self.config.solana_fallback_rpc_url,
+                        "getTransaction",
+                        params,
+                    )
+                    .await?
+                } else {
+                    self.helius_rpc("getTransaction", params).await?
+                };
                 let mut transaction = parse_solana(&raw, &candidate.wallet, true)?;
                 if let Some(previous) = &record.transaction {
                     if previous.block == transaction.block {
@@ -532,58 +656,120 @@ impl Providers {
                     error: None,
                 })
             }
-            Chain::Robinhood => {
-                let url = &self.config.robinhood_rpc_url;
+            Chain::Robinhood | Chain::Bnb => {
+                if matches!(candidate.chain, Chain::Bnb) {
+                    super::bnb::ensure_chain(self).await?;
+                }
+
                 let tx = self
-                    .rpc(url, "eth_getTransactionByHash", json!([record.id]))
+                    .evm_rpc(
+                        candidate.chain,
+                        "eth_getTransactionByHash",
+                        json!([record.id]),
+                    )
                     .await?;
                 let receipt = self
-                    .rpc(url, "eth_getTransactionReceipt", json!([record.id]))
+                    .evm_rpc(
+                        candidate.chain,
+                        "eth_getTransactionReceipt",
+                        json!([record.id]),
+                    )
                     .await?;
                 let block = self
-                    .rpc(
-                        url,
+                    .evm_rpc(
+                        candidate.chain,
                         "eth_getBlockByNumber",
                         json!([tx["blockNumber"], false]),
                     )
                     .await?;
                 let finalized = self
-                    .rpc(url, "eth_getBlockByNumber", json!(["finalized", false]))
-                    .await?;
-                let trace = self
-                    .rpc(
-                        &self.rh_trace_url,
-                        "debug_traceTransaction",
-                        json!([record.id,{"tracer":"callTracer"}]),
+                    .evm_rpc(
+                        candidate.chain,
+                        "eth_getBlockByNumber",
+                        json!(["finalized", false]),
                     )
                     .await?;
+                let trace_access = if matches!(candidate.chain, Chain::Bnb) {
+                    match self
+                        .rpc(&self.bnb_trace_url, "eth_chainId", json!([]))
+                        .await
+                    {
+                        Ok(id) if id.as_str() != Some("0x38") => {
+                            return Err("BNB trace rejected an RPC outside chain 56.".into())
+                        }
+                        Ok(_) => Ok(()),
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    Ok(())
+                };
+                let trace_result = match trace_access {
+                    Ok(_) => {
+                        self.rpc(
+                            self.trace_url(candidate.chain),
+                            "debug_traceTransaction",
+                            json!([record.id,{"tracer":"callTracer"}]),
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
+                let trace_error = trace_result.as_ref().err().cloned();
+                let trace = match trace_result {
+                    Ok(value) => value,
+                    Err(_) if matches!(candidate.chain, Chain::Bnb) => Value::Null,
+                    Err(error) => return Err(error),
+                };
                 let mut decimals = BTreeMap::new();
                 let mut verified_pairs = Vec::new();
-                if let Some(logs) = receipt["logs"].as_array() {
-                    for log in logs
-                        .iter()
-                        .filter(|l| l["topics"][0].as_str() == Some(venues::v3_topic().as_str()))
+                let mut verified_venues = Vec::new();
+                let mut venue_errors = Vec::new();
+                if matches!(candidate.chain, Chain::Bnb) {
+                    for log in receipt["logs"]
+                        .as_array()
+                        .ok_or("BNB receipt logs missing.")?
                     {
-                        if valid_v3_swap_log(log) {
-                            let emitter = log["address"].as_str().ok_or("Swap emitter missing.")?;
-                            let runtime = self
-                                .rh_archive("eth_getCode", json!([emitter, tx["blockNumber"]]))
-                                .await?;
-                            if runtime.as_str().is_some_and(venues::verified_v3_runtime) {
-                                let mut pair = BTreeSet::new();
-                                for selector in ["0x0dfe1681", "0xd21220a7"] {
-                                    let token=self.rh_archive("eth_call",json!([{"to":emitter,"data":selector},tx["blockNumber"]])).await?;
-                                    let token = topic_address(
-                                        token.as_str().ok_or("Pool token identity missing.")?,
-                                    )?;
-                                    pair.insert(if quote(Chain::Robinhood, &token) {
-                                        "ETH".to_string()
-                                    } else {
-                                        token
-                                    });
-                                }
-                                if pair.len() == 2 {
-                                    verified_pairs.push(pair);
+                        match super::bnb::verified_pair(self, log, &tx["blockNumber"]).await {
+                            Ok(Some((pair, evidence))) => {
+                                verified_pairs.push(pair);
+                                verified_venues.push(evidence);
+                            }
+                            Ok(None) => {}
+                            Err(error) => venue_errors.push(error),
+                        }
+                    }
+                }
+                if matches!(candidate.chain, Chain::Robinhood) {
+                    if let Some(logs) = receipt["logs"].as_array() {
+                        for log in logs.iter().filter(|l| {
+                            l["topics"][0].as_str() == Some(venues::v3_topic().as_str())
+                        }) {
+                            if valid_v3_swap_log(log) {
+                                let emitter =
+                                    log["address"].as_str().ok_or("Swap emitter missing.")?;
+                                let runtime = self
+                                    .evm_archive(
+                                        candidate.chain,
+                                        "eth_getCode",
+                                        json!([emitter, tx["blockNumber"]]),
+                                    )
+                                    .await?;
+                                if runtime.as_str().is_some_and(venues::verified_v3_runtime) {
+                                    let mut pair = BTreeSet::new();
+                                    for selector in ["0x0dfe1681", "0xd21220a7"] {
+                                        let token=self.evm_archive(candidate.chain,"eth_call",json!([{"to":emitter,"data":selector},tx["blockNumber"]])).await?;
+                                        let token = topic_address(
+                                            token.as_str().ok_or("Pool token identity missing.")?,
+                                        )?;
+                                        pair.insert(if quote(Chain::Robinhood, &token) {
+                                            "ETH".to_string()
+                                        } else {
+                                            token
+                                        });
+                                    }
+                                    if pair.len() == 2 {
+                                        verified_pairs.push(pair);
+                                    }
                                 }
                             }
                         }
@@ -610,7 +796,12 @@ impl Providers {
                         if let Some(address) = log["address"].as_str() {
                             let address = address.to_ascii_lowercase();
                             if !decimals.contains_key(&address) {
-                                let value=self.rh_archive("eth_call",json!([{"to":address,"data":"0x313ce567"},tx["blockNumber"]])).await?;
+                                let result=self.evm_archive(candidate.chain,"eth_call",json!([{"to":address,"data":"0x313ce567"},tx["blockNumber"]])).await;
+                                let value = match result {
+                                    Ok(value) => value,
+                                    Err(_) if matches!(candidate.chain, Chain::Bnb) => continue,
+                                    Err(error) => return Err(error),
+                                };
                                 let value =
                                     hex(value.as_str().ok_or("Token decimals were not hex.")?)?;
                                 let n =
@@ -625,7 +816,8 @@ impl Providers {
                         }
                     }
                 }
-                let mut transaction = parse_robinhood(
+                let mut transaction = parse_evm(
+                    candidate.chain,
                     &record.id,
                     &candidate.wallet,
                     &tx,
@@ -642,8 +834,16 @@ impl Providers {
                     .iter()
                     .filter(|a| a.quantity != Decimal::ZERO)
                     .map(|a| {
-                        if quote(Chain::Robinhood, &a.asset) {
-                            "ETH".to_string()
+                        if a.asset.eq_ignore_ascii_case(native(candidate.chain))
+                            || a.asset.eq_ignore_ascii_case(
+                                if matches!(candidate.chain, Chain::Bnb) {
+                                    "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+                                } else {
+                                    "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
+                                },
+                            )
+                        {
+                            native(candidate.chain).to_string()
                         } else {
                             a.asset.clone()
                         }
@@ -651,9 +851,12 @@ impl Providers {
                     .collect();
                 transaction.swap_evidence =
                     moved.len() == 2 && verified_pairs.iter().any(|pair| pair == &moved);
+                if !venue_errors.is_empty() {
+                    transaction.notes.push("Historical pool verification unavailable; received receipts remain observations and unverified events do not establish swaps.".into());
+                }
                 Ok(Record {
                     id: record.id.clone(),
-                    raw: json!({"transaction":tx,"receipt":receipt,"trace":trace,"block":block,"decimals":decimals}),
+                    raw: json!({"transaction":tx,"receipt":receipt,"trace":trace,"block":block,"decimals":decimals,"verified_venues":verified_venues,"venue_errors":venue_errors,"trace_error":trace_error}),
                     transaction: Some(transaction),
                     error: None,
                 })
@@ -692,10 +895,13 @@ impl Providers {
                         || (value["value"].is_null() && paid_solana_fee),
                 )
             }
-            Chain::Robinhood => {
+            Chain::Robinhood | Chain::Bnb => {
+                if matches!(candidate.chain, Chain::Bnb) {
+                    super::bnb::ensure_chain(self).await?;
+                }
                 let code = self
-                    .rpc(
-                        &self.config.robinhood_rpc_url,
+                    .evm_rpc(
+                        candidate.chain,
                         "eth_getCode",
                         json!([candidate.wallet, "finalized"]),
                     )
@@ -729,10 +935,13 @@ impl Providers {
                     }
                 }
             }
-            Chain::Robinhood => {
+            Chain::Robinhood | Chain::Bnb => {
+                if matches!(candidate.chain, Chain::Bnb) {
+                    super::bnb::ensure_chain(self).await?;
+                }
                 let block = self
-                    .rpc(
-                        &self.config.robinhood_rpc_url,
+                    .evm_rpc(
+                        candidate.chain,
                         "eth_getBlockByNumber",
                         json!(["finalized", false]),
                     )
@@ -743,15 +952,15 @@ impl Providers {
                         &candidate.wallet[2..]
                     );
                     let value = self
-                        .rpc(
-                            &self.config.robinhood_rpc_url,
+                        .evm_rpc(
+                            candidate.chain,
                             "eth_call",
                             json!([{"to":asset,"data":data},block["number"]]),
                         )
                         .await?;
                     let decimals = self
-                        .rpc(
-                            &self.config.robinhood_rpc_url,
+                        .evm_rpc(
+                            candidate.chain,
                             "eth_call",
                             json!([{"to":asset,"data":"0x313ce567"},block["number"]]),
                         )
@@ -811,7 +1020,7 @@ pub fn helius_page(value: Value, previous: Option<&str>, wallet: &str) -> Result
         records.iter().map(|r| r.id.clone()).collect(),
         next.is_none(),
     )];
-    Ok(Page{records,cursor:next.clone(),exhausted:next.is_none(),indexed:true,notes:vec!["Indexed token-account discovery before slot 111491819 is not complete without separate historical ownership evidence.".into()],segments})
+    Ok(Page{records,cursor:next.clone(),exhausted:next.is_none(),indexed:true,notes:vec!["Indexed token-account discovery before slot 111491819 is not complete without separate historical ownership evidence.".into()],segments,scan_range:None})
 }
 
 fn token_amount(value: &Value) -> Result<Decimal, String> {
@@ -1161,7 +1370,8 @@ fn arbitrum_fees_match(trace: &Value, wallet: &str, fee: Option<Decimal>) -> Res
     Ok(fee == Some(paid))
 }
 
-fn parse_robinhood(
+fn parse_evm(
+    chain: Chain,
     id: &str,
     wallet: &str,
     tx: &Value,
@@ -1180,19 +1390,21 @@ fn parse_robinhood(
     {
         return Err("RH transaction/receipt/block identity did not match.".into());
     }
-    if trace["from"] != tx["from"]
-        || trace["to"] != tx["to"]
-        || scaled_hex(trace["value"].as_str().unwrap_or("0x0"), 18)?
-            != scaled_hex(tx["value"].as_str().unwrap_or("0x0"), 18)?
+    if !trace.is_null()
+        && (trace["from"] != tx["from"]
+            || trace["to"] != tx["to"]
+            || scaled_hex(trace["value"].as_str().unwrap_or("0x0"), 18)?
+                != scaled_hex(tx["value"].as_str().unwrap_or("0x0"), 18)?)
     {
         return Err("RH trace root did not match its transaction.".into());
     }
     let mut values = BTreeMap::new();
     let mut counterparties = BTreeSet::new();
-    let mut complete = matches!(
-        tx["type"].as_str(),
-        Some("0x0" | "0x1" | "0x2" | "0x3" | "0x4")
-    );
+    let mut complete = !trace.is_null()
+        && matches!(
+            tx["type"].as_str(),
+            Some("0x0" | "0x1" | "0x2" | "0x3" | "0x4")
+        );
     let succeeded = match receipt["status"].as_str() {
         Some("0x1") => true,
         Some("0x0") => false,
@@ -1229,9 +1441,13 @@ fn parse_robinhood(
             .as_str()
             .ok_or("Transfer contract missing.")?
             .to_ascii_lowercase();
-        let decimals = decimals
-            .get(&asset)
-            .ok_or("Historical token decimals missing.")?;
+        let Some(decimals) = decimals.get(&asset) else {
+            if matches!(chain, Chain::Bnb) {
+                complete = false;
+                continue;
+            }
+            return Err("Historical token decimals missing.".into());
+        };
         let amount = scaled_hex(
             log["data"].as_str().ok_or("Transfer amount missing.")?,
             *decimals,
@@ -1245,10 +1461,40 @@ fn parse_robinhood(
             counterparties.insert(from);
         }
     }
-    let native = native_calls(trace, wallet)?;
-    native_counterparties(trace, wallet, &mut counterparties, false);
+    let native = if trace.is_null() {
+        let mut outer = Decimal::ZERO;
+        if succeeded {
+            let amount = scaled_hex(
+                tx["value"]
+                    .as_str()
+                    .ok_or("External native value missing.")?,
+                18,
+            )?;
+            for (field, sign, other) in
+                [("from", -Decimal::ONE, "to"), ("to", Decimal::ONE, "from")]
+            {
+                if tx[field]
+                    .as_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case(wallet))
+                {
+                    outer += amount * sign;
+                    if amount > Decimal::ZERO {
+                        if let Some(a) = tx[other].as_str() {
+                            counterparties.insert(a.to_ascii_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+        outer
+    } else {
+        native_calls(trace, wallet)?
+    };
+    if !trace.is_null() {
+        native_counterparties(trace, wallet, &mut counterparties, false);
+    }
     if native != Decimal::ZERO {
-        values.insert("ETH".into(), native);
+        values.insert(super::model::native(chain).into(), native);
     }
     let sender = tx["from"]
         .as_str()
@@ -1267,7 +1513,10 @@ fn parse_robinhood(
         complete = false;
         None
     };
-    if !arbitrum_fees_match(trace, wallet, fee)? {
+    if matches!(chain, Chain::Robinhood) && !arbitrum_fees_match(trace, wallet, fee)? {
+        complete = false;
+    }
+    if matches!(chain, Chain::Bnb) && fee == Some(Decimal::ZERO) {
         complete = false;
     }
     let number = hex(tx["blockNumber"]
@@ -1289,12 +1538,14 @@ fn parse_robinhood(
             .filter(|(_, v)| *v != Decimal::ZERO)
             .map(|(asset, quantity)| Delta { asset, quantity })
             .collect(),
-        fee_asset: "ETH".into(),
+        fee_asset: super::model::native(chain).into(),
         fee_quantity: fee,
         movement_complete: complete,
         swap_evidence,
-        notes: if !complete {
-            vec!["Smart-account fee attribution or Arbitrum system transfers require additional evidence.".into()]
+        notes: if trace.is_null() {
+            vec!["Native call trace unavailable. Only external native value and receipt token deltas are observed; internal calls and complete economics remain unknown.".into()]
+        } else if !complete {
+            vec!["Token precision, account fee attribution or chain-specific system transfers require additional evidence.".into()]
         } else {
             vec![]
         },
@@ -1302,7 +1553,7 @@ fn parse_robinhood(
     })
 }
 
-fn hex(value: &str) -> Result<u64, String> {
+pub(super) fn hex(value: &str) -> Result<u64, String> {
     u64::from_str_radix(value.strip_prefix("0x").ok_or("Expected 0x integer.")?, 16)
         .map_err(|_| "Hex integer exceeded supported precision.".into())
 }
@@ -1320,7 +1571,7 @@ fn scaled_hex(value: &str, decimals: u32) -> Result<Decimal, String> {
     .ok_or("Invalid hex amount.")?;
     token_amount(&json!({"amount":value.to_str_radix(10),"decimals":decimals}))
 }
-fn topic_address(value: &str) -> Result<String, String> {
+pub(super) fn topic_address(value: &str) -> Result<String, String> {
     if value.len() != 66
         || !value.starts_with("0x")
         || !value[2..].chars().all(|c| c.is_ascii_hexdigit())
@@ -1330,7 +1581,7 @@ fn topic_address(value: &str) -> Result<String, String> {
     }
     Ok(format!("0x{}", &value[26..]).to_ascii_lowercase())
 }
-fn valid_hash(value: &str) -> bool {
+pub(super) fn valid_hash(value: &str) -> bool {
     value.len() == 66
         && value.starts_with("0x")
         && value[2..].chars().all(|c| c.is_ascii_hexdigit())
@@ -1346,6 +1597,152 @@ fn standard_evm_account(code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn bnb_fetch_keeps_received_receipt_when_archive_verification_is_unavailable() {
+        use axum::{routing::post, Json, Router};
+        async fn rpc_stub(Json(request): Json<Value>) -> Json<Value> {
+            let evidence: Value = serde_json::from_str(include_str!(
+                "../../tests/fixtures/tracker-bnb-observed.json"
+            ))
+            .unwrap();
+            let result = match request["method"].as_str().unwrap() {
+                "eth_chainId" => json!("0x38"),
+                "eth_getTransactionByHash" => evidence["transaction"].clone(),
+                "eth_getTransactionReceipt" => evidence["receipt"].clone(),
+                "eth_getBlockByNumber" => evidence["block"].clone(),
+                _ => {
+                    return Json(
+                        json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Test: archive unavailable"}}),
+                    )
+                }
+            };
+            Json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+        }
+        async fn wrong_chain() -> Json<Value> {
+            Json(json!({"jsonrpc":"2.0","id":1,"result":"0x1237"}))
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/", post(rpc_stub))
+                    .route("/wrong", post(wrong_chain)),
+            )
+            .await
+            .unwrap()
+        });
+        let config = Config {
+            port: 0,
+            gecko_api_host: url.clone(),
+            dexscreener_api_host: url.clone(),
+            solana_rpc_url: url.clone(),
+            solana_fallback_rpc_url: url.clone(),
+            robinhood_rpc_url: url.clone(),
+            bnb_rpc_url: url.clone(),
+            bnb_fallback_rpc_url: url.clone(),
+            blockscout_api_url: url.clone(),
+            blockscout_api_key: None,
+        };
+        let mut providers = Providers {
+            http: reqwest::Client::new(),
+            config,
+            store: Arc::new(Store::open(":memory:").unwrap()),
+            helius_keys: vec![],
+            helius_credit_limit: 800_000,
+            fomo_key: None,
+            rh_trace_url: url.clone(),
+            bnb_trace_url: url.clone(),
+            daily_limit: 100,
+        };
+        let evidence: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/tracker-bnb-observed.json"
+        ))
+        .unwrap();
+        let candidate = Candidate {
+            chain: Chain::Bnb,
+            wallet: evidence["wallet"].as_str().unwrap().into(),
+            discovered_at: 0,
+            sources: vec![],
+            observed_tokens: vec![],
+        };
+        let reference = Record {
+            id: evidence["id"].as_str().unwrap().into(),
+            raw: Value::Null,
+            transaction: None,
+            error: None,
+        };
+        let record = providers
+            .fetch_record(&candidate, &reference)
+            .await
+            .unwrap();
+        assert_eq!(record.raw["receipt"], evidence["receipt"]);
+        assert!(!record.raw["venue_errors"].as_array().unwrap().is_empty());
+        assert!(record.raw["trace"].is_null());
+        let transaction = record.transaction.unwrap();
+        assert_eq!(
+            transaction.fee_quantity,
+            Some(Decimal::from_str("0.00001217909").unwrap())
+        );
+        assert!(!transaction.movement_complete && !transaction.swap_evidence);
+        assert!(transaction.assets.is_empty());
+        providers.bnb_trace_url = format!("{url}/wrong");
+        assert!(providers
+            .fetch_record(&candidate, &reference)
+            .await
+            .unwrap_err()
+            .contains("outside chain 56"));
+        task.abort();
+    }
+    #[test]
+    fn bnb_missing_trace_retains_receipt_evidence_and_exact_bnb_fee_without_complete_economics() {
+        let v: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/tracker-bnb-observed.json"
+        ))
+        .unwrap();
+        let decimals = serde_json::from_value(v["decimals"].clone()).unwrap();
+        let tx = parse_evm(
+            Chain::Bnb,
+            v["id"].as_str().unwrap(),
+            v["wallet"].as_str().unwrap(),
+            &v["transaction"],
+            &v["receipt"],
+            &Value::Null,
+            &v["block"],
+            &decimals,
+            u64::MAX,
+        )
+        .unwrap();
+        assert_eq!(tx.fee_asset, "BNB");
+        assert_eq!(
+            tx.fee_quantity,
+            Some(Decimal::from_str("0.00001217909").unwrap())
+        );
+        assert!(!tx.movement_complete && !tx.swap_evidence);
+        assert!(tx.assets.iter().all(|a| a.asset != "ETH"));
+        assert!(tx.assets.is_empty(),"Unknown token denominations cannot become normalized quantities or a synthetic native proceeds leg.");
+        assert!(tx.notes.iter().any(|n| n.contains("trace unavailable")));
+    }
+    #[test]
+    fn public_empty_block_intervals_bridge_gaps_without_becoming_full_wallet_history() {
+        let mut ranges = vec![(1000, 1999)];
+        let page = Page {
+            records: vec![],
+            cursor: Some("2999".into()),
+            exhausted: false,
+            indexed: false,
+            notes: vec![],
+            segments: vec![],
+            scan_range: Some((3000, 3999)),
+        };
+        assert!(!range_covered(&page, &ranges));
+        add_scan_range(&mut ranges, Some((2000, 2999)));
+        assert!(range_covered(&page, &ranges));
+        add_scan_range(&mut ranges, page.scan_range);
+        assert_eq!(ranges, vec![(1000, 3999)]);
+        assert!(!page.indexed);
+    }
     #[test]
     fn short_page_with_continuation_and_application_errors_are_not_completion() {
         assert!(helius_page(json!({"data":[],"paginationToken":"more"}), None, "wallet").is_err());
@@ -1379,6 +1776,7 @@ mod tests {
     fn each_history_route_must_bridge_the_poll_gap() {
         let known = BTreeSet::from(["old".into()]);
         let mut page = Page {
+            scan_range: None,
             records: vec![],
             cursor: Some("next".into()),
             exhausted: false,
@@ -1420,7 +1818,8 @@ mod tests {
         .unwrap();
         let decimals: BTreeMap<String, u32> =
             serde_json::from_value(v["decimals"].clone()).unwrap();
-        let tx = parse_robinhood(
+        let tx = parse_evm(
+            Chain::Robinhood,
             v["id"].as_str().unwrap(),
             v["wallet"].as_str().unwrap(),
             &v["transaction"],
@@ -1448,7 +1847,8 @@ mod tests {
         let mut large_trace = v["trace"].clone();
         large_tx["value"] = json!("0x2b5e3af16b1880000");
         large_trace["value"] = large_tx["value"].clone();
-        let large = parse_robinhood(
+        let large = parse_evm(
+            Chain::Robinhood,
             v["id"].as_str().unwrap(),
             v["wallet"].as_str().unwrap(),
             &large_tx,
@@ -1483,7 +1883,8 @@ mod tests {
         );
         let mut receipt = v["receipt"].clone();
         receipt.as_object_mut().unwrap().remove("status");
-        assert!(parse_robinhood(
+        assert!(parse_evm(
+            Chain::Robinhood,
             v["id"].as_str().unwrap(),
             v["wallet"].as_str().unwrap(),
             &v["transaction"],

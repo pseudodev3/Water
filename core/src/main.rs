@@ -131,7 +131,7 @@ async fn health() -> Json<Value> {
         "market_provider": "GeckoTerminal public API",
         "market_fallback": "Dexscreener public API",
         "requires_market_api_key": false,
-        "chains": ["solana", "robinhood"]
+        "chains": ["solana", "robinhood", "bnb"]
     }))
 }
 
@@ -191,6 +191,10 @@ async fn scan(
                 ok: holder_evidence.top_ten_percentage.is_some(),
                 detail: holder_evidence.detail.clone(),
             });
+        }
+        Chain::Bnb => {
+            sources.push(SourceStatus{source:"BNB ERC-20 totalSupply".into(),ok:holder_evidence.total_supply.is_some(),detail:holder_evidence.detail.clone()});
+            sources.push(SourceStatus{source:"BNB wallet-holder indexing".into(),ok:false,detail:"A complete top-wallet holder index is unavailable; concentration stays unknown.".into()});
         }
     }
 
@@ -347,7 +351,7 @@ mod scan_regression_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let config = Config { port:0, gecko_api_host:url.clone(), dexscreener_api_host:url.clone(), solana_rpc_url:url.clone(), solana_fallback_rpc_url:url.clone(), robinhood_rpc_url:url.clone(), blockscout_api_url:url.clone(), blockscout_api_key:None };
+        let config = Config { port:0, gecko_api_host:url.clone(), dexscreener_api_host:url.clone(), solana_rpc_url:url.clone(), solana_fallback_rpc_url:url.clone(), robinhood_rpc_url:url.clone(), bnb_rpc_url:url.clone(), bnb_fallback_rpc_url:url.clone(), blockscout_api_url:url.clone(), blockscout_api_key:None };
         let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().unwrap();
         let gecko = GeckoClient::new(http.clone(), url.clone());
         let market = providers::market::MarketClient::new(http.clone(), gecko.clone(), url);

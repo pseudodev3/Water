@@ -308,6 +308,25 @@ export function WalletTracker() {
               ? "Independent Fomo discovery access is configured."
               : "Fomo association is unavailable until permitted discovery access is configured."}
           </p>
+          <p>
+            BNB uses public token-transfer history. Native-only and failed
+            transactions may be missing, so complete 30/60-day qualification is
+            unavailable.
+          </p>
+          {response.status.solana_indexed_access && (
+            <p>
+              {(
+                response.status.helius_credits_reserved_31d ?? 0
+              ).toLocaleString()}{" "}
+              /{" "}
+              {(
+                response.status.helius_credit_limit_31d ?? 800000
+              ).toLocaleString()}{" "}
+              Helius credits reserved over 31 days. This is Water’s conservative
+              estimate; other apps share the provider quota. Configured keys use
+              one budget.
+            </p>
+          )}
           {response.status.discovery_notes?.map((note, i) => (
             <p key={i}>{note}</p>
           ))}
@@ -367,6 +386,7 @@ export function WalletTracker() {
               <option value="all">Both chains</option>
               <option value="solana">Solana</option>
               <option value="robinhood">Robinhood</option>
+              <option value="bnb">BNB Chain</option>
             </select>
           </label>
           <label>
@@ -537,6 +557,7 @@ export function WalletTracker() {
                 >
                   <option value="solana">Solana</option>
                   <option value="robinhood">Robinhood</option>
+                  <option value="bnb">BNB Chain</option>
                 </select>
               </label>
               <label className="wallet-add-address">
@@ -588,7 +609,7 @@ export function WalletTracker() {
                   <small>
                     {shortAddress(a.candidate.wallet)} ·{" "}
                     {chainLabel(a.candidate.chain)} ·{" "}
-                    {a.asset ? shortAddress(a.asset) : "Network fee"}
+                    {a.asset ? shortAddress(a.asset) : "Amounts unverified"}
                   </small>
                 </div>
                 <span>{amount(a.quantity)}</span>
@@ -840,7 +861,7 @@ function WalletDetail({
                 {!a.finalized && " · provisional"}
               </strong>
               <small>
-                {a.asset ? shortAddress(a.asset) : "Network fee"}
+                {a.asset ? shortAddress(a.asset) : "Amounts unverified"}
                 {a.counterparties.length
                   ? ` · counterparty ${shortAddress(a.counterparties[0])}`
                   : ""}

@@ -908,7 +908,7 @@ export function MemoryPanel({ result }: { result: ScanResult }) {
           item &&
           typeof item.at === "number" &&
           typeof item.token === "string" &&
-          (item.chain === "solana" || item.chain === "robinhood"),
+          (item.chain === "solana" || item.chain === "robinhood" || item.chain === "bnb"),
       );
 
       const last = clean[clean.length - 1];

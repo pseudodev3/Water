@@ -4,7 +4,9 @@ Water is an evidence-first, multi-chain trading research terminal built around o
 
 **What does the other side of this trade see?**
 
-V1 supports Solana and Robinhood Chain with no paid market-data key required.
+Token scans support Solana, Robinhood Chain and BNB Smart Chain with no paid
+market-data key required. BNB wallet history currently supports research
+observations; complete 30/60-day qualification remains unavailable.
 
 ## Data path
 
@@ -19,6 +21,7 @@ core/ Rust + Axum
   +-- Solana JSON-RPC            mint + supply + largest token accounts
   +-- Robinhood JSON-RPC         contract verification
   +-- Robinhood JSON-RPC         contracts / ERC-20 execution history
+  +-- BNB JSON-RPC               chain 56 contract verification / ERC-20 supply
   +-- Blockscout Pro             indexed RH current holders / contract origin
   +-- engine.rs                  deterministic diagnostics
 ```
@@ -292,24 +295,35 @@ the database while its WAL is active can lose committed evidence.
 
 Configure these **server secrets**, never trading keys or browser variables:
 
-- `HELIUS_API_KEY`: free indexed Solana history. Public RPC is a research fallback
-  and cannot certify full wallet coverage or canonical transaction ordering.
+- `HELIUS_API_KEY`: free indexed Solana history. Optional comma-separated
+  `HELIUS_API_KEYS` supports credential failover with a shared budget, not a quota
+  multiplier. Public RPC cannot certify full wallet coverage or canonical order.
 - `BLOCKSCOUT_API_KEY`: the existing free RH Pro index key. Address transactions,
   token transfers and internal transactions all have independent continuations.
 - `FOMO_DISCOVERY_API_KEY`: optional free independent `fomoapi.io` discovery.
   Provider account association does not certify ownership or PnL. Direct private
   Fomo account collection is disabled; its terms require permitted access.
+- `BNB_RPC_URL`, `BNB_FALLBACK_RPC_URL`, `BNB_TRACE_RPC_URL`: free chain-56
+  evidence sources. Known-token transfer references remain incomplete for
+  native-only, internal-only, failed calls and unobserved tokens. No BNB rank is
+  awarded from this fallback.
 - `ROBINHOOD_TRACE_RPC_URL`: defaults to free dRPC. Historical state falls back to
   this endpoint at the exact transaction block when the main RPC cannot serve
   it. Unavailable traces/state and unresolved smart-account fees stay incomplete.
 
 The default cohort is 12 wallets, up to 10,000 evidence records each, with one
 wallet processed per 60-second tick. It reserves at most 2,000 tracker HTTP
-requests per UTC day before sending them; configure between 10 and 2,500. At
-Helius's documented minimum 10 credits per indexed page, the maximum would use
-750,000 credits over 30 days if every request were such a page. Actual provider
-pricing and account-wide usage still need monitoring. Historical Gecko requests
-share its existing optional-request budget, which reserves capacity for scans.
+requests per UTC day before sending them; configure between 10 and 2,500.
+Helius's free plan provides 1M **credits per project per credit cycle**. Full
+history pages cost ten credits per 100 returned transactions, with a ten-credit
+minimum. At the default 2,000 attempts/day, even assigning every attempt ten
+credits reserves 620,000 over 31 UTC days. Water reserves ten credits per Helius
+attempt before sending it and stops at a shared rolling 800,000-credit limit
+(`WATER_TRACKER_HELIUS_CREDITS_31D`). Failed calls remain reserved; this local
+estimate is distinct from actual project usage. Keys share the budget and HTTP
+429 pauses collection instead of rotating keys around quota limits. Monitor the
+Helius dashboard for other traffic and actual credit-cycle dates.
+Historical Gecko requests share its existing optional-request budget, which reserves capacity for scans.
 Collection pauses when budgets run out, preserves cursors and resumes later.
 High-activity wallets can exceed the record budget and remain unqualified.
 This bounded sample is not a search of all wallets or a complete venue catalog.
@@ -335,6 +349,8 @@ qualified list. Failed refreshes preserve received records. Provisional
 transactions may appear in observed activity but never enter PnL.
 
 See [implementation and acceptance notes](docs/wallet-tracker-implementation.md)
-and [source research](docs/wallet-tracker-research.md). No complete real-wallet
+[Helius/BNB scope and sources](docs/wallet-tracker-bnb.md), and
+[source research](docs/wallet-tracker-research.md). No complete real-wallet
 60-day qualification is claimed before keyed provider acceptance and opening
-inventory/fee reconciliation pass on both chains.
+inventory/fee reconciliation pass. BNB remains research-only until complete
+wallet-wide history and native economics are proved.

@@ -428,6 +428,8 @@ mod tests {
             solana_rpc_url: url.clone(),
             solana_fallback_rpc_url: url.clone(),
             robinhood_rpc_url: url.clone(),
+            bnb_rpc_url: url.clone(),
+            bnb_fallback_rpc_url: url.clone(),
             blockscout_api_url: url.clone(),
             blockscout_api_key: Some("test-fixture".into()),
         };
