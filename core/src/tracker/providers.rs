@@ -156,9 +156,30 @@ impl Providers {
             .await
             .map_err(|_| format!("{method} returned invalid JSON."))?;
         if value.get("error").is_some() {
+            // Classify known failures without reflecting provider text, which
+            // may contain credential-bearing URLs or other private context.
+            let message = value["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let reason = if message.contains("historical state")
+                || message.contains("missing trie node")
+                || message.contains("state is not available")
+            {
+                " Historical state is unavailable."
+            } else if message.contains("rate limit") || message.contains("quota") {
+                " Provider rate or quota limit reached."
+            } else if message.contains("execution reverted") {
+                " Contract execution reverted."
+            } else {
+                ""
+            };
             return Err(format!(
-                "{method} failed (RPC code {}).",
+                "{method} failed (RPC code {}).{reason}",
                 value["error"]["code"]
+                    .as_i64()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown".into())
             ));
         }
         value
@@ -210,6 +231,47 @@ impl Providers {
         Err("Helius rejected the configured credentials; saved history is retained.".into())
     }
 
+    async fn solana_rpc(&self, method: &str, params: Value) -> Result<Value, String> {
+        if self.helius_keys.is_empty() {
+            self.rpc(&self.config.solana_fallback_rpc_url, method, params)
+                .await
+        } else {
+            // State, discovery and history share the same persisted budget and
+            // cooldown. A quota response must not silently switch providers.
+            self.helius_rpc(method, params).await
+        }
+    }
+
+    async fn ensure_evm_chain(&self, chain: Chain, url: &str) -> Result<(), String> {
+        let expected = chain.evm_chain_id().ok_or("Expected an EVM chain.")?;
+        let value = self.rpc(url, "eth_chainId", json!([])).await?;
+        if value.as_str().and_then(|v| hex(v).ok()) != Some(expected) {
+            return Err(format!(
+                "{} evidence rejected an RPC outside chain {expected}.",
+                chain.label()
+            ));
+        }
+        Ok(())
+    }
+
+    async fn finalized_evm_block(&self, chain: Chain) -> Result<Value, String> {
+        let expected = chain.evm_chain_id().ok_or("Expected an EVM chain.")?;
+        let id = self.evm_rpc(chain, "eth_chainId", json!([])).await?;
+        if id.as_str().and_then(|v| hex(v).ok()) != Some(expected) {
+            return Err(format!(
+                "{} evidence rejected an RPC outside chain {expected}.",
+                chain.label()
+            ));
+        }
+        let block = self
+            .evm_rpc(chain, "eth_getBlockByNumber", json!(["finalized", false]))
+            .await?;
+        hex(block["number"]
+            .as_str()
+            .ok_or("EVM finalized block number missing.")?)?;
+        Ok(block)
+    }
+
     async fn get(&self, url: reqwest::Url, key: Option<&str>) -> Result<Value, String> {
         self.reserve()?;
         let mut request = self
@@ -244,15 +306,7 @@ impl Providers {
         match self.evm_rpc(chain, method, params.clone()).await {
             Ok(value) => Ok(value),
             Err(primary) => {
-                if matches!(chain, Chain::Bnb)
-                    && self
-                        .rpc(&self.bnb_trace_url, "eth_chainId", json!([]))
-                        .await?
-                        .as_str()
-                        != Some("0x38")
-                {
-                    return Err("BNB archive rejected an RPC outside chain 56.".into());
-                }
+                self.ensure_evm_chain(chain, self.trace_url(chain)).await?;
                 self.rpc(self.trace_url(chain), method, params)
                     .await
                     .map_err(|secondary| {
@@ -267,16 +321,12 @@ impl Providers {
         let mut notes = Vec::new();
         let timestamp = now();
         match self.get(reqwest::Url::parse("https://frontend-api-v3.pump.fun/pnl-leaderboard?period=monthly&sort=realized&limit=20").unwrap(),None).await {
-            Ok(value)=>match value.get("entries").and_then(Value::as_array){
-                Some(rows)=>for row in rows.iter().take((limit/3).max(1)){
-                    if let Some(address)=row["walletAddress"].as_str(){
-                        let chain=if address.starts_with("0x"){Chain::Robinhood}else{Chain::Solana};
-                        if let Ok(wallet)=wallet_key(chain,address){candidates.push(Candidate{observed_tokens:Vec::new(),chain,wallet,discovered_at:timestamp,sources:vec![Source{name:"Pump.fun".into(),observed_at:row["lastRefreshedAtMs"].as_u64().unwrap_or(timestamp*1000)/1000,detail:"Monthly leaderboard nomination. Provider PnL is not Water qualification; chain activity and execution identity must be verified.".into(),profile:row["username"].as_str().map(str::to_string)}]});}
-                    }
-                },
-                None=>notes.push("Pump discovery response omitted entries.".into()),
+            Ok(value)=>match pump_nominations(&value, (limit/3).max(1), timestamp) {
+                Ok((rows,gaps))=>{candidates.extend(rows);notes.extend(gaps);},
+                Err(e)=>notes.push(e),
             },Err(e)=>notes.push(format!("Pump discovery: {e}")),
         }
+        notes.push("Pump monthly nominations cover Solana wallets. A permitted multichain social-wallet feed is not configured; RH and BNB use independent onchain discovery.".into());
         if let Some(key) = &self.fomo_key {
             match self
                 .get(
@@ -320,8 +370,7 @@ impl Providers {
             "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
         ] {
             match self
-                .rpc(
-                    &self.config.solana_fallback_rpc_url,
+                .solana_rpc(
                     "getSignaturesForAddress",
                     json!([program,{"limit":2,"commitment":"finalized"}]),
                 )
@@ -336,7 +385,7 @@ impl Providers {
                             let Some(id) = row["signature"].as_str() else {
                                 continue;
                             };
-                            let Ok(raw)=self.rpc(&self.config.solana_fallback_rpc_url,"getTransaction",json!([id,{"encoding":"jsonParsed","maxSupportedTransactionVersion":0,"commitment":"finalized"}])).await else{continue;};
+                            let Ok(raw)=self.solana_rpc("getTransaction",json!([id,{"encoding":"jsonParsed","maxSupportedTransactionVersion":0,"commitment":"finalized"}])).await else{continue;};
                             let Some(keys) =
                                 raw["transaction"]["message"]["accountKeys"].as_array()
                             else {
@@ -633,16 +682,7 @@ impl Providers {
         match candidate.chain {
             Chain::Solana => {
                 let params = json!([record.id,{"encoding":"jsonParsed","maxSupportedTransactionVersion":0,"commitment":"finalized"}]);
-                let raw = if self.helius_keys.is_empty() {
-                    self.rpc(
-                        &self.config.solana_fallback_rpc_url,
-                        "getTransaction",
-                        params,
-                    )
-                    .await?
-                } else {
-                    self.helius_rpc("getTransaction", params).await?
-                };
+                let raw = self.solana_rpc("getTransaction", params).await?;
                 let mut transaction = parse_solana(&raw, &candidate.wallet, true)?;
                 if let Some(previous) = &record.transaction {
                     if previous.block == transaction.block {
@@ -689,20 +729,15 @@ impl Providers {
                         json!(["finalized", false]),
                     )
                     .await?;
-                let trace_access = if matches!(candidate.chain, Chain::Bnb) {
-                    match self
-                        .rpc(&self.bnb_trace_url, "eth_chainId", json!([]))
-                        .await
-                    {
-                        Ok(id) if id.as_str() != Some("0x38") => {
-                            return Err("BNB trace rejected an RPC outside chain 56.".into())
-                        }
-                        Ok(_) => Ok(()),
-                        Err(error) => Err(error),
-                    }
-                } else {
-                    Ok(())
-                };
+                let trace_access = self
+                    .ensure_evm_chain(candidate.chain, self.trace_url(candidate.chain))
+                    .await;
+                if trace_access
+                    .as_ref()
+                    .is_err_and(|e| e.contains("outside chain"))
+                {
+                    return Err(trace_access.unwrap_err());
+                }
                 let trace_result = match trace_access {
                     Ok(_) => {
                         self.rpc(
@@ -884,8 +919,7 @@ impl Providers {
                     return Ok(false);
                 }
                 let value = self
-                    .rpc(
-                        &self.config.solana_fallback_rpc_url,
+                    .solana_rpc(
                         "getAccountInfo",
                         json!([candidate.wallet,{"encoding":"base64","commitment":"finalized"}]),
                     )
@@ -896,14 +930,12 @@ impl Providers {
                 )
             }
             Chain::Robinhood | Chain::Bnb => {
-                if matches!(candidate.chain, Chain::Bnb) {
-                    super::bnb::ensure_chain(self).await?;
-                }
+                let block = self.finalized_evm_block(candidate.chain).await?;
                 let code = self
-                    .evm_rpc(
+                    .evm_archive(
                         candidate.chain,
                         "eth_getCode",
-                        json!([candidate.wallet, "finalized"]),
+                        json!([candidate.wallet, block["number"]]),
                     )
                     .await?;
                 Ok(code.as_str().is_some_and(standard_evm_account))
@@ -920,7 +952,7 @@ impl Providers {
         match candidate.chain {
             Chain::Solana => {
                 for program in [TOKEN_PROGRAM, TOKEN_2022] {
-                    let value=self.rpc(&self.config.solana_fallback_rpc_url,"getTokenAccountsByOwner",json!([candidate.wallet,{"programId":program},{"encoding":"jsonParsed","commitment":"finalized"}])).await?;
+                    let value=self.solana_rpc("getTokenAccountsByOwner",json!([candidate.wallet,{"programId":program},{"encoding":"jsonParsed","commitment":"finalized"}])).await?;
                     let rows = value["value"]
                         .as_array()
                         .ok_or("Solana balances omitted value.")?;
@@ -936,30 +968,21 @@ impl Providers {
                 }
             }
             Chain::Robinhood | Chain::Bnb => {
-                if matches!(candidate.chain, Chain::Bnb) {
-                    super::bnb::ensure_chain(self).await?;
-                }
-                let block = self
-                    .evm_rpc(
-                        candidate.chain,
-                        "eth_getBlockByNumber",
-                        json!(["finalized", false]),
-                    )
-                    .await?;
+                let block = self.finalized_evm_block(candidate.chain).await?;
                 for asset in assets.iter().filter(|a| !quote(candidate.chain, a)) {
                     let data = format!(
                         "0x70a08231000000000000000000000000{}",
                         &candidate.wallet[2..]
                     );
                     let value = self
-                        .evm_rpc(
+                        .evm_archive(
                             candidate.chain,
                             "eth_call",
                             json!([{"to":asset,"data":data},block["number"]]),
                         )
                         .await?;
                     let decimals = self
-                        .evm_rpc(
+                        .evm_archive(
                             candidate.chain,
                             "eth_call",
                             json!([{"to":asset,"data":"0x313ce567"},block["number"]]),
@@ -968,8 +991,11 @@ impl Providers {
                     balances.insert(
                         asset.clone(),
                         scaled_hex(
-                            value.as_str().ok_or("RH balance missing.")?,
-                            hex(decimals.as_str().ok_or("RH decimals missing.")?)? as u32,
+                            value.as_str().ok_or("EVM balance missing.")?,
+                            u32::try_from(hex(decimals
+                                .as_str()
+                                .ok_or("EVM decimals missing.")?)?)
+                            .map_err(|_| "EVM token precision exceeds the supported range.")?,
                         )?,
                     );
                 }
@@ -977,6 +1003,47 @@ impl Providers {
         }
         Ok(balances)
     }
+}
+
+fn pump_nominations(
+    value: &Value,
+    limit: usize,
+    timestamp: u64,
+) -> Result<(Vec<Candidate>, Vec<String>), String> {
+    let rows = value["entries"]
+        .as_array()
+        .ok_or("Pump discovery response omitted entries.")?;
+    let mut candidates = Vec::new();
+    let mut notes = Vec::new();
+    for row in rows.iter().take(limit) {
+        let Some(address) = row["walletAddress"].as_str() else {
+            continue;
+        };
+        // This feed reports SOL amounts and a profile wallet. It does not
+        // establish which RH/BNB execution account owns a multichain position.
+        if address.starts_with("0x")
+            || row["topPositions"].as_array().is_some_and(|positions| {
+                positions
+                    .iter()
+                    .any(|p| p["chainId"].as_u64().is_some_and(|id| id != 1399811149))
+            })
+        {
+            notes.push("Pump nomination lacks a verified execution-wallet/chain association; it was not assigned to RH or BNB.".into());
+            continue;
+        }
+        if let Ok(wallet) = wallet_key(Chain::Solana, address) {
+            candidates.push(Candidate {
+                observed_tokens: Vec::new(), chain: Chain::Solana, wallet, discovered_at: timestamp,
+                sources: vec![Source {
+                    name: "Pump.fun".into(),
+                    observed_at: row["lastRefreshedAtMs"].as_u64().unwrap_or(timestamp.saturating_mul(1000))/1000,
+                    detail: "Monthly leaderboard nomination. Provider PnL is not Water qualification; chain activity and execution identity must be verified.".into(),
+                    profile: row["username"].as_str().map(str::to_string),
+                }],
+            });
+        }
+    }
+    Ok((candidates, notes))
 }
 
 pub fn helius_page(value: Value, previous: Option<&str>, wallet: &str) -> Result<Page, String> {
@@ -1597,6 +1664,357 @@ fn standard_evm_account(code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RpcHarness {
+        providers: Providers,
+        requests: Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+        task: tokio::task::JoinHandle<()>,
+        url: String,
+    }
+
+    impl Drop for RpcHarness {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn rpc_harness() -> RpcHarness {
+        use axum::{
+            extract::{Path, State},
+            routing::post,
+            Json, Router,
+        };
+        type Requests = Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+        async fn handler(
+            State(requests): State<Requests>,
+            Path(route): Path<String>,
+            Json(request): Json<Value>,
+        ) -> Json<Value> {
+            requests
+                .lock()
+                .unwrap()
+                .push((route.clone(), request.clone()));
+            let method = request["method"].as_str().unwrap();
+            let error = || {
+                Json(
+                    json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"historical state is not available; https://example.test/?api-key=synthetic-secret"}}),
+                )
+            };
+            let result = match (route.as_str(), method) {
+                ("wrong" | "bnb", "eth_chainId") => json!("0x38"),
+                ("primary" | "archive" | "noheight", "eth_chainId") => json!("0x1237"),
+                ("primary" | "bnb", "eth_getBlockByNumber") => json!({"number":"0x4c18eda"}),
+                ("noheight", "eth_getBlockByNumber") => json!({"number":null}),
+                ("archive" | "bnb", "eth_getCode" | "eth_call") => {
+                    if request["params"][1] != "0x4c18eda" {
+                        return error();
+                    }
+                    if method == "eth_getCode" {
+                        json!("0x")
+                    } else if request["params"][0]["data"] == "0x313ce567" {
+                        json!("0x12")
+                    } else {
+                        json!("0x2a")
+                    }
+                }
+                ("solana", "getAccountInfo") => {
+                    json!({"context":{"slot":1},"value":{"owner":"11111111111111111111111111111111"}})
+                }
+                ("solana", "getTokenAccountsByOwner") => json!({"context":{"slot":1},"value":[]}),
+                _ => return error(),
+            };
+            Json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+        }
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/{route}", post(handler))
+            .with_state(requests.clone());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let primary = format!("{url}/primary");
+        RpcHarness {
+            providers: Providers {
+                http: reqwest::Client::builder().no_proxy().build().unwrap(),
+                config: Config {
+                    port: 0,
+                    gecko_api_host: primary.clone(),
+                    dexscreener_api_host: primary.clone(),
+                    solana_rpc_url: format!("{url}/solana"),
+                    solana_fallback_rpc_url: format!("{url}/solana"),
+                    robinhood_rpc_url: primary.clone(),
+                    bnb_rpc_url: primary.clone(),
+                    bnb_fallback_rpc_url: primary.clone(),
+                    blockscout_api_url: primary,
+                    blockscout_api_key: None,
+                },
+                store: Arc::new(Store::open(":memory:").unwrap()),
+                helius_keys: vec![],
+                helius_credit_limit: 800_000,
+                fomo_key: None,
+                rh_trace_url: format!("{url}/archive"),
+                bnb_trace_url: format!("{url}/archive"),
+                daily_limit: 100,
+            },
+            requests,
+            task,
+            url,
+        }
+    }
+
+    fn rh_candidate() -> Candidate {
+        Candidate {
+            chain: Chain::Robinhood,
+            wallet: "0x4c64bac8ac8c9e091d0bd7c592a65d06dcf2f88b".into(),
+            discovered_at: 0,
+            sources: vec![],
+            observed_tokens: vec![],
+        }
+    }
+
+    fn sol_candidate() -> Candidate {
+        Candidate {
+            chain: Chain::Solana,
+            wallet: "3jWTgYPG5s7WfaRvppPBXio4hHQxg18fLUkV2z5covSQ".into(),
+            discovered_at: 0,
+            sources: vec![],
+            observed_tokens: vec![],
+        }
+    }
+
+    fn rh_assets() -> BTreeSet<String> {
+        BTreeSet::from(["0x2267629f4953a581c250cd01872f5e38990cd999".into()])
+    }
+
+    #[test]
+    fn pump_board_nominations_do_not_guess_an_evm_chain_or_execution_account_from_a_profile() {
+        let sol = sol_candidate().wallet;
+        let board = json!({"entries":[
+            {"walletAddress":sol,"username":"test-profile","pnlUsd":999999,"topPositions":[{"chainId":1399811149}]},
+            {"walletAddress":rh_candidate().wallet,"pnlUsd":999999},
+            {"walletAddress":sol,"topPositions":[{"chainId":56}]},
+            {"walletAddress":sol,"topPositions":[{"chainId":4663}]}
+        ]});
+        let (rows, notes) = pump_nominations(&board, 20, 100).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].chain.key(), "solana");
+        assert!(rows[0].observed_tokens.is_empty());
+        assert_eq!(notes.len(), 3);
+        assert!(pump_nominations(&json!({"error":"test upstream failure"}), 20, 100).is_err());
+    }
+
+    #[tokio::test]
+    async fn rh_state_checks_recover_from_pruned_primary_without_changing_the_finalized_height() {
+        let h = rpc_harness().await;
+        assert!(h
+            .providers
+            .execution_account(&rh_candidate(), false)
+            .await
+            .unwrap());
+        let balances = h
+            .providers
+            .balances(&rh_candidate(), &rh_assets())
+            .await
+            .unwrap();
+        assert_eq!(
+            balances.values().copied().collect::<Vec<_>>(),
+            vec![Decimal::new(42, 18)]
+        );
+        let requests = h.requests.lock().unwrap();
+        for (_, request) in requests
+            .iter()
+            .filter(|(_, r)| matches!(r["method"].as_str(), Some("eth_getCode" | "eth_call")))
+        {
+            assert_eq!(request["params"][1], "0x4c18eda");
+        }
+        assert!(requests
+            .iter()
+            .any(|(route, r)| route == "archive" && r["method"] == "eth_call"));
+    }
+
+    #[tokio::test]
+    async fn rh_state_checks_reject_wrong_primary_and_archive_chains() {
+        let mut h = rpc_harness().await;
+        h.providers.rh_trace_url = format!("{}/wrong", h.url);
+        assert!(h
+            .providers
+            .execution_account(&rh_candidate(), false)
+            .await
+            .unwrap_err()
+            .contains("outside chain 4663"));
+        assert!(h
+            .providers
+            .balances(&rh_candidate(), &rh_assets())
+            .await
+            .unwrap_err()
+            .contains("outside chain 4663"));
+        assert!(h
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(route, _)| route == "wrong")
+            .all(|(_, r)| r["method"] == "eth_chainId"));
+        h.providers.config.robinhood_rpc_url = format!("{}/wrong", h.url);
+        assert!(h
+            .providers
+            .execution_account(&rh_candidate(), false)
+            .await
+            .unwrap_err()
+            .contains("outside chain 4663"));
+    }
+
+    #[tokio::test]
+    async fn bnb_state_checks_retain_chain_56_failover_when_the_primary_is_unavailable() {
+        let mut h = rpc_harness().await;
+        h.providers.config.bnb_rpc_url = format!("{}/offline", h.url);
+        h.providers.config.bnb_fallback_rpc_url = format!("{}/bnb", h.url);
+        let mut candidate = rh_candidate();
+        candidate.chain = Chain::Bnb;
+        assert!(h
+            .providers
+            .execution_account(&candidate, false)
+            .await
+            .unwrap());
+        let balances = h
+            .providers
+            .balances(&candidate, &rh_assets())
+            .await
+            .unwrap();
+        assert_eq!(
+            balances.values().copied().collect::<Vec<_>>(),
+            vec![Decimal::new(42, 18)]
+        );
+        assert!(!h
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(route, _)| route == "archive"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_archive_keeps_state_unknown_and_sanitizes_rpc_errors() {
+        let mut h = rpc_harness().await;
+        // Same chain, but every archive state call fails like the primary.
+        h.providers.rh_trace_url = format!("{}/primary", h.url);
+        let account_error = h
+            .providers
+            .execution_account(&rh_candidate(), false)
+            .await
+            .unwrap_err();
+        let balance_error = h
+            .providers
+            .balances(&rh_candidate(), &rh_assets())
+            .await
+            .unwrap_err();
+        for error in [account_error, balance_error] {
+            assert!(error.contains("Historical state is unavailable"));
+            assert!(!error.contains("synthetic-secret") && !error.contains("example.test"));
+        }
+    }
+
+    #[tokio::test]
+    async fn evm_state_checks_require_a_received_finalized_height() {
+        let mut h = rpc_harness().await;
+        h.providers.config.robinhood_rpc_url = format!("{}/noheight", h.url);
+        assert!(h
+            .providers
+            .execution_account(&rh_candidate(), false)
+            .await
+            .unwrap_err()
+            .contains("block number missing"));
+        assert!(h
+            .providers
+            .balances(&rh_candidate(), &rh_assets())
+            .await
+            .unwrap_err()
+            .contains("block number missing"));
+        assert!(!h
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, r)| matches!(r["method"].as_str(), Some("eth_getCode" | "eth_call"))));
+    }
+
+    #[tokio::test]
+    async fn configured_helius_routes_solana_state_checks_through_the_shared_pause_and_credit_budget(
+    ) {
+        let mut h = rpc_harness().await;
+        h.providers.helius_keys = vec!["synthetic-key-one".into(), "synthetic-key-two".into()];
+        h.providers
+            .store
+            .set_state("helius-cooldown", &(now() + 3600).to_string())
+            .unwrap();
+        assert!(h
+            .providers
+            .execution_account(&sol_candidate(), false)
+            .await
+            .unwrap_err()
+            .contains("paused"));
+        assert!(h
+            .providers
+            .balances(&sol_candidate(), &BTreeSet::new())
+            .await
+            .unwrap_err()
+            .contains("paused"));
+        h.providers.store.set_state("helius-cooldown", "0").unwrap();
+        h.providers.helius_credit_limit = 10;
+        h.providers
+            .store
+            .reserve_http(now(), 100, Some(10))
+            .unwrap();
+        assert!(h
+            .providers
+            .execution_account(&sol_candidate(), false)
+            .await
+            .unwrap_err()
+            .contains("credit budget"));
+        assert!(h
+            .providers
+            .balances(&sol_candidate(), &BTreeSet::new())
+            .await
+            .unwrap_err()
+            .contains("credit budget"));
+        assert_eq!(h.providers.store.helius_credits(now()).unwrap(), 10);
+        assert!(
+            h.requests.lock().unwrap().is_empty(),
+            "Configured Helius must not be bypassed by public state reads or quota failover."
+        );
+    }
+
+    #[tokio::test]
+    async fn solana_state_checks_keep_the_public_fallback_when_helius_is_not_configured() {
+        let h = rpc_harness().await;
+        assert!(h
+            .providers
+            .execution_account(&sol_candidate(), false)
+            .await
+            .unwrap());
+        assert!(h
+            .providers
+            .balances(&sol_candidate(), &BTreeSet::new())
+            .await
+            .unwrap()
+            .is_empty());
+        let requests = h.requests.lock().unwrap();
+        let balance_requests: Vec<_> = requests
+            .iter()
+            .filter(|(_, r)| r["method"] == "getTokenAccountsByOwner")
+            .collect();
+        assert_eq!(balance_requests.len(), 2);
+        assert_ne!(
+            balance_requests[0].1["params"][1],
+            balance_requests[1].1["params"][1]
+        );
+        assert!(balance_requests
+            .iter()
+            .all(|(_, r)| r["params"][2]["commitment"] == "finalized"));
+    }
+
     #[tokio::test]
     async fn bnb_fetch_keeps_received_receipt_when_archive_verification_is_unavailable() {
         use axum::{routing::post, Json, Router};

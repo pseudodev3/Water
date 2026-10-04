@@ -1,0 +1,231 @@
+{
+  "checked_at": "2026-10-04T09:07:17.832752+00:00",
+  "branch": "fix/tracker-rpc-pump",
+  "production_baseline": "cd0fe21634153c30fdfe673173e4d231f53e547f",
+  "fix_deployed": false,
+  "validation": {
+    "rust_tests_passed": 108,
+    "production_web_build": "passed",
+    "live_rust_state_read": {
+      "balances": {
+        "Ok": {
+          "0x2267629f4953a581c250cd01872f5e38990cd999": "0",
+          "0x462af581b8f5221313dfa57a95604660c992cb47": "0",
+          "0x77e187005d6b5eb6aac43bf1d0bfabbcd87a2afd": "0"
+        }
+      },
+      "chain": "robinhood",
+      "checked_at": 1791104623,
+      "execution_account": {
+        "Ok": true
+      },
+      "passed": true,
+      "wallet": "0x4c64bac8ac8c9e091d0bd7c592a65d06dcf2f88b"
+    },
+    "browser_checks": [
+      {
+        "check": "Three-chain controls, received BNB research detail, mobile fit and no browser errors",
+        "width": 320,
+        "passed": true
+      },
+      {
+        "check": "Three-chain controls, received BNB research detail, mobile fit and no browser errors",
+        "width": 390,
+        "passed": true
+      },
+      {
+        "check": "Three-chain controls, received BNB research detail, mobile fit and no browser errors",
+        "width": 768,
+        "passed": true
+      },
+      {
+        "check": "Three-chain controls, received BNB research detail, mobile fit and no browser errors",
+        "width": 1440,
+        "passed": true
+      }
+    ]
+  },
+  "rpc_reproduction": {
+    "provider_headers": [
+      {
+        "url": "https://rpc.mainnet.chain.robinhood.com",
+        "method": "eth_chainId",
+        "received": "0x1237"
+      },
+      {
+        "url": "https://rpc.mainnet.chain.robinhood.com",
+        "method": "eth_getBlockByNumber",
+        "received": {
+          "number": "0x4c18eda",
+          "hash": "0x086370bbfbac9d98db1cdb790bcac911a48bec0c8fd3ff182998a29eb46cdf04",
+          "timestamp": "0x6ac20e33"
+        }
+      },
+      {
+        "url": "https://robinhood.drpc.org",
+        "method": "eth_chainId",
+        "received": "0x1237"
+      },
+      {
+        "url": "https://robinhood.drpc.org",
+        "method": "eth_getBlockByNumber",
+        "received": {
+          "number": "0x4c18eda",
+          "hash": "0x086370bbfbac9d98db1cdb790bcac911a48bec0c8fd3ff182998a29eb46cdf04",
+          "timestamp": "0x6ac20e33"
+        }
+      }
+    ],
+    "same_height_state_probes": [
+      {
+        "url": "https://rpc.mainnet.chain.robinhood.com",
+        "method": "eth_getCode",
+        "params": [
+          "0x4c64bac8ac8c9e091d0bd7c592a65d06dcf2f88b",
+          "0x4c18eda"
+        ],
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "error": {
+            "code": -32000,
+            "message": "historical state d820d3814ad6bed5102922329167c9ca2ea118d1b14c2710707b92b33ce668f3 is not available"
+          }
+        }
+      },
+      {
+        "url": "https://rpc.mainnet.chain.robinhood.com",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x2267629f4953a581c250cd01872f5e38990cd999",
+            "data": "0x313ce567"
+          },
+          "0x4c18eda"
+        ],
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "error": {
+            "code": -32000,
+            "message": "historical state d820d3814ad6bed5102922329167c9ca2ea118d1b14c2710707b92b33ce668f3 is not available"
+          }
+        }
+      },
+      {
+        "url": "https://rpc.mainnet.chain.robinhood.com",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x2267629f4953a581c250cd01872f5e38990cd999",
+            "data": "0x70a082310000000000000000000000004c64bac8ac8c9e091d0bd7c592a65d06dcf2f88b"
+          },
+          "0x4c18eda"
+        ],
+        "response": {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "error": {
+            "code": -32000,
+            "message": "historical state d820d3814ad6bed5102922329167c9ca2ea118d1b14c2710707b92b33ce668f3 is not available"
+          }
+        }
+      },
+      {
+        "url": "https://robinhood.drpc.org",
+        "method": "eth_getCode",
+        "params": [
+          "0x4c64bac8ac8c9e091d0bd7c592a65d06dcf2f88b",
+          "0x4c18eda"
+        ],
+        "response": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x"
+        }
+      },
+      {
+        "url": "https://robinhood.drpc.org",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x2267629f4953a581c250cd01872f5e38990cd999",
+            "data": "0x313ce567"
+          },
+          "0x4c18eda"
+        ],
+        "response": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000012"
+        }
+      },
+      {
+        "url": "https://robinhood.drpc.org",
+        "method": "eth_call",
+        "params": [
+          {
+            "to": "0x2267629f4953a581c250cd01872f5e38990cd999",
+            "data": "0x70a082310000000000000000000000004c64bac8ac8c9e091d0bd7c592a65d06dcf2f88b"
+          },
+          "0x4c18eda"
+        ],
+        "response": {
+          "id": 1,
+          "jsonrpc": "2.0",
+          "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    ]
+  },
+  "pump_scope": {
+    "mobile_site": "https://app.pump.fun/",
+    "mobile_claim": "Trade coins across any chain, discover what\u2019s trending, and grow your network with friends.",
+    "home_interface_legend": "Holders, dev holdings and top 10 holders come from the Solana indexer, so coins on Robinhood, Base, BNB Chain and Ethereum show \u2014 until it serves them. Snipers and bundlers track Solana launches only.",
+    "terms": "https://pump.fun/docs/terms-and-conditions",
+    "terms_sections": [
+      "6.1",
+      "21(h)",
+      "Supported Network definition"
+    ],
+    "monthly_source": "https://frontend-api-v3.pump.fun/pnl-leaderboard?period=monthly&sort=realized&limit=20",
+    "received_rows": 20,
+    "entry_fields": [
+      "buySpendSol",
+      "isVerified",
+      "lastRefreshedAtMs",
+      "pnlPercent",
+      "pnlSol",
+      "pnlUsd",
+      "positionsCount",
+      "profileImage",
+      "rank",
+      "realizedPnlSol",
+      "realizedPnlUsd",
+      "topPositions",
+      "unrealizedPnlSol",
+      "unrealizedPnlUsd",
+      "userId",
+      "username",
+      "verifiedBadgeVisible",
+      "walletAddress",
+      "xUsername"
+    ],
+    "sample_position_chain_ids": [
+      56,
+      4663,
+      8453,
+      1399811149
+    ],
+    "verified_multichain_execution_wallet_feed": false,
+    "authenticated_social_history_polled": false
+  },
+  "limitations": [
+    "The RPC fix is not yet deployed.",
+    "Sampled RH state reads do not resolve all pending transaction, fee, price or opening-lot gaps.",
+    "No live BNB automatic nomination was observed in this production cohort.",
+    "BNB complete 30/60-day wallet qualification remains unavailable on public known-token log coverage.",
+    "The public Pump board does not establish RH/BNB execution wallets.",
+    "No configured Helius credential was available locally for a live success-path probe; routing, shared budget and cooldown are verified by regressions."
+  ]
+}

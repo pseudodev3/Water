@@ -1,6 +1,6 @@
 # Water — Project Handoff
 
-_Last updated: 2026-10-03_
+_Last updated: 2026-10-04_
 
 This file is the canonical pickup point for a new ChatGPT/Codex session.
 
@@ -12,14 +12,16 @@ Production:
 - Frontend: `https://web-water.vercel.app`
 - Backend: `https://water-production-822e.up.railway.app`
 
-Feature baseline immediately before this handoff:
-- `34b7825e9a50b2e4e76be37a4f66abf419657080`
-- PR #15: **Recognize Pump.fun and StonkFun specifically**
+Current production baseline:
+- `cd0fe21634153c30fdfe673173e4d231f53e547f`
+- PR #23: wallet tracker, shared Helius budget and BNB scans/tracking, merged
+  and deployed to Railway/Vercel. See the latest sections below for subsequent
+  work; historical sections retain their original acceptance context.
 
-At the time this handoff was written:
+The production baseline was verified after PR #23:
 - Railway deployment: green
 - Vercel deployment: green
-- Open PRs: none
+- Review branches and open PRs: inspect GitHub; the latest work is below.
 
 If a new session is picking up work:
 1. Read this file.
@@ -1102,3 +1104,33 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   history/native category contract still needs keyed reconciliation. No paid
   provider was substituted. Production volume, Helius/RH credentials and keyed
   real-wallet acceptance from the previous handoff remain outstanding.
+
+## Tracker RPC recovery and Pump scope (2026-10-04; review branch)
+
+- Branch `fix/tracker-rpc-pump`, based on main `cd0fe216`. PR #23 is merged and
+  deployed; this follow-up is not deployed until separately merged.
+- Production now reports storage configured and collection enabled, two Helius
+  credentials, an RH index key and six received SOL/RH candidates. The earlier
+  deployment setup notes are historical. A path flag alone still does not prove
+  volume durability; Fomo discovery has no configured permitted access.
+- Reproduced RH `-32000` as unavailable historical state on the official RPC.
+  Free dRPC returned code, precision and balance at the same finalized height.
+  Account/balance checks now use archive fallback with a pinned finalized block;
+  fallback and trace chains are checked. Unknown reads never become `latest`.
+- Configured Helius now serves SOL state and bounded discovery reads, sharing
+  indexed history's persisted budget and cooldown. Previously these checks
+  bypassed Helius and received HTTP 403 from the public fallback.
+- BNB was already in discovery, history, activity, filters and follows. Its
+  public known-token history cannot prove wallet-wide completeness, so it stays
+  under research. No BNB production nomination was observed in this sample.
+- Pump's mobile/site interface is multichain, including RH and BNB references.
+  Its currently received public monthly board lacks RH/BNB execution-wallet
+  mappings. Removed `0x` => RH guessing and ambiguous multichain profile seeds.
+  No authenticated Pump social history or complete three-chain social feed was
+  implemented. Discovery notes expose this gap; see the linked research for the
+  permitted-feed requirements and the distinction from Go.fun bounty payouts.
+- Validation: 108 Rust tests, production web build, four viewport browser checks
+  and actual Rust provider state reads on the screenshot's RH wallet passed.
+  Pending history/price/trace/basis gaps remain separate from repaired state reads.
+- Details and captured evidence:
+  [RPC and Pump coverage](docs/wallet-tracker-rpc-pump.md).

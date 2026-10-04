@@ -1,7 +1,9 @@
 # Wallet tracker implementation and acceptance
 
-Implementation branch: `feat/wallet-tracker`. Production remains the Gecko
-recovery baseline `fbefa2a`; this feature has not been deployed.
+The initial tracker and BNB/Helius pass were merged and deployed through PR #23
+at `cd0fe21634153c30fdfe673173e4d231f53e547f`. The acceptance notes below describe
+that implementation pass. Subsequent RPC fixes and current Pump discovery limits
+are recorded in [RPC and Pump coverage](wallet-tracker-rpc-pump.md).
 
 ## Implemented
 

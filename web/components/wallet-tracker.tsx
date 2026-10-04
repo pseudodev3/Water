@@ -383,7 +383,7 @@ export function WalletTracker() {
                 setDetailLoading("");
               }}
             >
-              <option value="all">Both chains</option>
+              <option value="all">All chains</option>
               <option value="solana">Solana</option>
               <option value="robinhood">Robinhood</option>
               <option value="bnb">BNB Chain</option>
