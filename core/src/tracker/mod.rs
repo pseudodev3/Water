@@ -689,7 +689,7 @@ impl Tracker {
             .into_iter()
             .map(|mut a| {
                 a.activity.truncate(20);
-                let positions_count = a.positions.len();
+                let positions_count = evidence::current_positions_count(&a);
                 let mut value = serde_json::to_value(a).unwrap();
                 let fields = value.as_object_mut().unwrap();
                 fields.remove("positions");
@@ -699,7 +699,7 @@ impl Tracker {
             })
             .collect();
         Ok(
-            json!({"status":self.status(),"scope":"ranking_summary; full positions and notes are in wallet detail","wallets":summaries}),
+            json!({"status":self.status(),"scope":"ranking_summary; position counts cover non-zero token holdings at their recorded balance/history times; current positions and notes are in wallet detail","wallets":summaries}),
         )
     }
 
@@ -715,6 +715,9 @@ impl Tracker {
         let end = snapshot.coverage.last_collected_at.unwrap_or_else(now);
         let mut analysis = accounting::analyze(&snapshot, end.saturating_add(1));
         evidence::enrich(&mut analysis, &snapshot, store.token_quotes(chain)?, now());
+        // Accounting includes closed trades and losses; only the positions
+        // presentation is restricted to positive token balances.
+        evidence::retain_current_positions(&mut analysis);
         analysis.activity.truncate(100);
         demote_stale(&mut analysis);
         Ok(Some(analysis))
@@ -786,7 +789,7 @@ impl Tracker {
             if let Some(position) = analysis
                 .positions
                 .iter()
-                .find(|p| p.asset == token && p.quantity > rust_decimal::Decimal::ZERO)
+                .find(|p| p.asset == token && evidence::position_quantity(p, &analysis.coverage) > rust_decimal::Decimal::ZERO)
             {
                 wallets.push(json!({"wallet":analysis.candidate.wallet,"status":analysis.status,"position":position,"analyzed_at":analysis.analyzed_at}));
             }
@@ -1469,7 +1472,7 @@ impl Tracker {
             {
                 for p in &analysis.positions {
                     let entry = assets.entry(p.asset.clone()).or_default();
-                    entry.0 |= p.quantity > rust_decimal::Decimal::ZERO;
+                    entry.0 |= evidence::position_quantity(p, &analysis.coverage) > rust_decimal::Decimal::ZERO;
                     entry.1 = entry.1.max(p.last_activity_at.unwrap_or(0));
                 }
                 for a in &analysis.activity {
@@ -1484,6 +1487,13 @@ impl Tracker {
                     assets
                         .entry(asset.clone())
                         .or_insert((false, analysis.candidate.discovered_at));
+                }
+                for (asset, observation) in &analysis.coverage.balance_observations {
+                    if observation.quantity > rust_decimal::Decimal::ZERO {
+                        let entry = assets.entry(asset.clone()).or_default();
+                        entry.0 = true;
+                        entry.1 = entry.1.max(observation.observed_at);
+                    }
                 }
             }
             let mut due: Vec<_> = assets

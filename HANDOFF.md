@@ -13,22 +13,21 @@ Production:
 - Backend: `https://water-production-822e.up.railway.app`
 
 Current production baseline:
-- `362382cae26afe0cae234fb5b5741ffb77966842`
-- PR #26: responsive scanner/wallet research views, searchable/sortable wallet
-  collection and detailed Activity/Positions/Performance/Evidence profiles.
-  Merged 2026-10-05 after core/web CI, provider smoke and preview checks passed.
-- Both merged-head Vercel and Railway deployment statuses succeeded. Public
-  `/health` and `/v1/wallets` returned HTTP 200 with CORS on 2026-10-05 after
-  earlier Railway 502 failures. This is point-in-time availability, not proof
-  that repeated process restarts have been resolved.
+- `31a50c89f34131085a21eff826075208a193a3e3`
+- PR #26's responsive research UI and PR #27's bounded accounting/memory
+  improvements and runtime diagnostics are merged. Core/web CI, provider smoke
+  and merged-head Railway/Vercel deployments passed. Live wallet list, a
+  4,220-record profile, activity and raw source inspection returned HTTP 200.
+- Earlier Railway crashes remain unexplained without exit/resource details.
+  See [runtime investigation](docs/wallet-runtime-investigation.md).
 
-Current follow-up branch: `fix/tracker-runtime-memory`. It addresses measured
-raw-transaction memory amplification in wallet reads/collection, bounds blocking
-accounting work and adds process/container resource and shutdown logs. Full raw
-source records remain in SQLite and are loaded for explicit inspection or bounded
-retries. No variable, paid service or storage migration is required. The old crash
-exit code/container memory limit remain unknown; no production OOM cause has been
-confirmed. See [runtime investigation](docs/wallet-runtime-investigation.md).
+Current follow-up branch: `fix/wallet-current-positions`. A fresh profile returned
+1,449 position rows, including 1,326 zero balances. Positions now show positive
+token balances at their recorded balance/history times; received balances override
+historical reconstructed quantities. Counts and token overlap use that same rule.
+Closed trades/losses remain in stored accounting, Activity and Performance.
+Positive unpriced holdings and tiny positive quantities remain visible. No new
+variable, paid service, balance request or storage migration is required.
 
 PR #25's independent current activity allocation, token metadata/current marks,
 balance reads and detailed saved transactions are merged. The live collection

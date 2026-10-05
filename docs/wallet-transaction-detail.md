@@ -1,5 +1,45 @@
 # Wallet transaction detail and continuous collection
 
+## Current positions — 2026-10-05 follow-up
+
+A live Solana profile at 19:35 UTC returned 1,449 asset rows, including 1,326
+zero balances. The previous Positions view sorted positive balances first but
+still listed every historical ledger asset. Three earlier sampled rows had a
+positive historical reconstruction and a received RPC balance of zero.
+
+Wallet detail now presents positive token balances at their stated balance/history
+times. Received per-asset balances take precedence over reconstructed quantities.
+Summary counts, token-overlap membership and held-token market priority use the
+same balance rule. Positive RPC holdings count even before acquisition history is
+parsed. The frontend also filters older responses during deployment/cache overlap,
+and its profile metric, tab count, search results and pagination use the filtered
+set.
+
+A missing USD price or zero USD mark never establishes zero token quantity. Tiny
+positive balances remain visible; there is no dust/value cutoff. Missing or
+malformed cached quantity fields render unavailable rather than a received zero.
+An empty positions view distinguishes no saved non-zero balance from no collected
+balance evidence.
+
+This is a presentation change: stored accounting and normalized transaction
+history retain closed trades, fees and losses. Activity, monthly performance and
+qualification still use the entire collected history. The API's `positions`
+presentation and `positions_count` cover current non-zero holdings; the historical
+reconstructed `position.quantity` remains separate from `position.valuation.quantity`.
+
+Validation: 128 Rust tests pass, including balance/price distinctions on all three
+chains and a fully closed losing trade whose realized loss/history survives row
+filtering. A read-only replay of the received 4,280-record profile reduces 1,449
+rows to 123, with identical activity, performance, coverage and qualification data.
+Production-build browser replays pass at 320, 390 and 1440px for older/filtered
+responses, count/search/pagination consistency, tiny positive balances, positive
+balances with zero USD marks, unknown cached quantities, all-zero holdings and
+missing-history empty states. No browser errors or page overflow were observed;
+the empty holdings screen has zero scoped axe WCAG A/AA violations.
+No extra provider request, variable, paid service or storage migration is needed.
+
+## Original transaction-detail audit
+
 Research and implementation checked 2026-10-05 against `main` at
 `3fa8cdc53bfbcc4b2c5aed969004b556e8c66128`. This is a branch change; production
 continues using main until the PR is merged and deployments succeed.
