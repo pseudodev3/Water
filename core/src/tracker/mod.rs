@@ -25,6 +25,7 @@ pub struct Tracker {
     cohort_limit: usize,
     record_limit: usize,
     public_nominations: bool,
+    evidence_workers: Arc<tokio::sync::Semaphore>,
 }
 
 fn env_number(name: &str, default: usize, min: usize, max: usize) -> usize {
@@ -220,6 +221,7 @@ mod config_tests {
             cohort_limit: 1,
             record_limit: 10000,
             public_nominations: false,
+            evidence_workers: Arc::new(tokio::sync::Semaphore::new(2)),
         };
         let started = now();
         tracker.tick().await.unwrap();
@@ -402,6 +404,7 @@ mod config_tests {
             cohort_limit: 1,
             record_limit: 10000,
             public_nominations: false,
+            evidence_workers: Arc::new(tokio::sync::Semaphore::new(2)),
         };
         tracker.tick().await.unwrap();
         let detail = tracker
@@ -530,6 +533,7 @@ impl Tracker {
             lane: Some(budget::Lane::Current),
         });
         Arc::new(Self {
+            evidence_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             store,
             providers,
             gecko,
@@ -559,6 +563,7 @@ impl Tracker {
                 {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
+                        tracing::warn!(worker = "market", error = %error, "Wallet enrichment failed");
                         let _ = market_tracker
                             .store
                             .as_ref()
@@ -566,6 +571,7 @@ impl Tracker {
                             .set_state("market_error", &error);
                     }
                     Err(_) => {
+                        tracing::warn!(worker = "market", "Wallet enrichment exceeded its 45 second time budget");
                         let _=market_tracker.store.as_ref().unwrap().set_state("market_error","Market enrichment exceeded its work time budget; received marks are retained.");
                     }
                 }
@@ -698,6 +704,7 @@ impl Tracker {
     }
 
     pub fn detail(&self, chain: Chain, wallet: &str) -> Result<Option<Analysis>, String> {
+        let _permit = self.evidence_permit()?;
         let wallet = wallet_key(chain, wallet)?;
         let Some(store) = &self.store else {
             return Ok(None);
@@ -706,7 +713,7 @@ impl Tracker {
             return Ok(None);
         };
         let end = snapshot.coverage.last_collected_at.unwrap_or_else(now);
-        let mut analysis = accounting::analyze(snapshot.clone(), end.saturating_add(1));
+        let mut analysis = accounting::analyze(&snapshot, end.saturating_add(1));
         evidence::enrich(&mut analysis, &snapshot, store.token_quotes(chain)?, now());
         analysis.activity.truncate(100);
         demote_stale(&mut analysis);
@@ -714,17 +721,23 @@ impl Tracker {
     }
 
     pub fn activity(&self, request: ActivityRequest) -> Result<Option<Value>, String> {
+        let _permit = self.evidence_permit()?;
         let wallet = wallet_key(request.chain, &request.wallet)?;
         let Some(store) = &self.store else {
             return Ok(None);
         };
-        let Some(snapshot) = store.snapshot(request.chain, &wallet)? else {
+        let Some((snapshot, revision)) = store.activity_snapshot(
+            request.chain,
+            &wallet,
+            request.transaction.as_deref(),
+        )? else {
             return Ok(None);
         };
-        Ok(Some(evidence::activity_page(
+        Ok(Some(evidence::activity_page_with_revision(
             &snapshot,
             &store.token_quotes(request.chain)?,
             &request,
+            Some(revision),
         )?))
     }
 
@@ -735,6 +748,7 @@ impl Tracker {
                     .into(),
             );
         }
+        let _permit = self.evidence_permit()?;
         let wallet = wallet_key(request.chain, &request.wallet)?;
         let store = self
             .store
@@ -743,7 +757,7 @@ impl Tracker {
         let candidate=Candidate{observed_tokens:Vec::new(),chain:request.chain,wallet:wallet.clone(),discovered_at:now(),sources:vec![Source{name:"Added for research".into(),observed_at:now(),detail:"A nomination requests evidence collection; it does not verify ownership or profitability.".into(),profile:None}]};
         store.nominate(candidate, self.cohort_limit)?;
         let analysis = accounting::analyze(
-            store
+            &store
                 .snapshot(request.chain, &wallet)?
                 .ok_or("Wallet nomination was not saved.")?,
             now(),
@@ -795,16 +809,28 @@ impl Tracker {
     }
 
     async fn update_analysis(&self, chain: Chain, wallet: &str, end: u64) -> Result<(), String> {
-        let snapshot = self.snapshot(chain, wallet).await?;
-        let end = snapshot.coverage.last_collected_at.unwrap_or(end);
+        let permit = self.evidence_workers.clone().acquire_owned().await
+            .map_err(|_| "Wallet accounting is unavailable.")?;
         let store = self.store.clone().unwrap();
+        let wallet = wallet.to_owned();
         tokio::task::spawn_blocking(move || {
-            let mut analysis = accounting::analyze(snapshot, end.saturating_add(1));
+            // A timed-out caller cannot cancel a started blocking task. Its
+            // permit stays here until the database read and accounting finish.
+            let _permit = permit;
+            let snapshot = store.snapshot(chain, &wallet)?
+                .ok_or("Scheduled wallet disappeared.")?;
+            let end = snapshot.coverage.last_collected_at.unwrap_or(end);
+            let mut analysis = accounting::analyze(&snapshot, end.saturating_add(1));
             analysis.activity.truncate(100);
             store.save_analysis(&analysis)
         })
         .await
         .map_err(|_| "Wallet accounting worker failed.")?
+    }
+
+    fn evidence_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
+        self.evidence_workers.clone().try_acquire_owned()
+            .map_err(|_| "Wallet evidence is busy; retry shortly.".into())
     }
 
     async fn tick(&self) -> Result<(), String> {
@@ -828,8 +854,16 @@ impl Tracker {
             }
             if !candidates.is_empty() {
                 let results=futures::future::join_all(candidates.iter().map(|c|async {
-                    tokio::time::timeout(std::time::Duration::from_secs(30),self.collect_current(c)).await
-                        .map_err(|_|"Current wallet check exceeded its collection time budget; saved evidence is retained.".to_string())?
+                    let started = std::time::Instant::now();
+                    tracing::info!(chain = c.chain.key(), wallet = %c.wallet, "Current wallet collection started");
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(30),self.collect_current(c)).await
+                        .unwrap_or_else(|_| Err("Current wallet check exceeded its collection time budget; saved evidence is retained.".to_string()));
+                    if let Err(error) = &result {
+                        tracing::warn!(chain = c.chain.key(), wallet = %c.wallet, elapsed_ms = started.elapsed().as_millis() as u64, error = %error, "Current wallet collection failed");
+                    } else {
+                        tracing::info!(chain = c.chain.key(), wallet = %c.wallet, elapsed_ms = started.elapsed().as_millis() as u64, "Current wallet collection finished");
+                    }
+                    result
                 })).await;
                 let key = format!("current-checks:{}", now() / DAY);
                 let previous = store
@@ -897,9 +931,11 @@ impl Tracker {
                     store.set_state("history_error", "")?;
                 }
                 Ok(Err(error)) => {
+                    tracing::warn!(chain = candidate.chain.key(), wallet = %candidate.wallet, error = %error, "Wallet history collection failed");
                     store.set_state("history_error", &error)?;
                 }
                 Err(_) => {
+                    tracing::warn!(chain = candidate.chain.key(), wallet = %candidate.wallet, "Wallet history collection exceeded its 30 second time budget");
                     store.set_state("history_error","History pass exceeded its work time budget; committed records and cursors are retained.")?;
                 }
             }
@@ -1031,7 +1067,8 @@ impl Tracker {
                     .and_then(|s| s.parse::<u64>().ok())
                     .is_none_or(|t| t <= now())
             }) {
-                let mut failed = record.clone();
+                let mut failed = store.record(candidate.chain, &candidate.wallet, &record.id)?
+                    .ok_or("Saved transaction disappeared.")?;
                 match providers.fetch_record(candidate, record).await {
                     Ok(received) => store.save_page(
                         candidate,
@@ -1264,7 +1301,9 @@ impl Tracker {
         pending.sort_by_key(|r| std::cmp::Reverse(providers::record_priority(r)));
         pending.truncate(3);
         let mut fetched = Vec::new();
-        for mut record in pending {
+        for reference in pending {
+            let mut record = store.record(candidate.chain, &candidate.wallet, &reference.id)?
+                .ok_or("Saved transaction disappeared.")?;
             match providers.fetch_record(&candidate, &record).await {
                 Ok(value) => {
                     if value

@@ -13,32 +13,30 @@ Production:
 - Backend: `https://water-production-822e.up.railway.app`
 
 Current production baseline:
-- `6b5967c78f76dd258013fffe9bf23b9b231991dd`
-- PR #25: fresh activity allocation, token metadata/current marks, balance reads
-  and detailed saved transactions. Merged 2026-10-05 after core/web CI, public
-  provider smoke and Vercel preview checks passed.
-- Vercel's merged-head deployment passed. Railway's merged-head status later
-  reported “Deployment failed”; public `/health` and `/v1/wallets` returned
-  Railway 502 “Application failed to respond.” The user reported restarting the
-  service, but fresh UI captures still showed API unavailability during the
-  redesign audit. Startup/crash logs are needed before naming a root cause.
-  Historical acceptance sections below retain their original context.
+- `362382cae26afe0cae234fb5b5741ffb77966842`
+- PR #26: responsive scanner/wallet research views, searchable/sortable wallet
+  collection and detailed Activity/Positions/Performance/Evidence profiles.
+  Merged 2026-10-05 after core/web CI, provider smoke and preview checks passed.
+- Both merged-head Vercel and Railway deployment statuses succeeded. Public
+  `/health` and `/v1/wallets` returned HTTP 200 with CORS on 2026-10-05 after
+  earlier Railway 502 failures. This is point-in-time availability, not proof
+  that repeated process restarts have been resolved.
 
-Current follow-up branch: `feat/water-research-ui`. It introduces compact task
-headings, a shared navigation, a desktop wallet collection/profile layout,
-mobile detail reflow, wallet/asset search, explicit API-error recovery and
-keyboard-accessible research views. Scanner holders/origin reads start on first
-use. See [UI research and verification](docs/water-ui-research.md) and
-[transaction research and setup](docs/wallet-transaction-detail.md).
+Current follow-up branch: `fix/tracker-runtime-memory`. It addresses measured
+raw-transaction memory amplification in wallet reads/collection, bounds blocking
+accounting work and adds process/container resource and shutdown logs. Full raw
+source records remain in SQLite and are loaded for explicit inspection or bounded
+retries. No variable, paid service or storage migration is required. The old crash
+exit code/container memory limit remain unknown; no production OOM cause has been
+confirmed. See [runtime investigation](docs/wallet-runtime-investigation.md).
 
-The live audit found 12 stale wallets and 885 unpriced positive reconstructed
-positions out of 886. Saved activity existed, but the page hid quote amounts,
-fees and prices. The background counter was already 2,000/2,000. This follow-up
-preserves that spending while permitting fresh work within a separate allocation.
-The transaction change is merged; the UI redesign is not deployed at the time
-of this update. Populated layout checks replay previously received evidence
-and preserve its timestamps. They do not verify current production data or
-restore the failed Railway deployment.
+PR #25's independent current activity allocation, token metadata/current marks,
+balance reads and detailed saved transactions are merged. The live collection
+still had 12 wallets and a 2,000/2,000 background request counter during this
+follow-up; current work retained its own allocation. Historical qualification
+remains strict. See [UI research and verification](docs/water-ui-research.md) and
+[transaction research and setup](docs/wallet-transaction-detail.md). Populated UI
+checks during the earlier outage used received records with their saved timestamps.
 
 If a new session is picking up work:
 1. Read this file.
