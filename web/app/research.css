@@ -468,6 +468,24 @@ input::placeholder {
   font-size: 10px;
   line-height: 1.7;
 }
+.wallet-position-quantity {
+  font-variant-numeric: tabular-nums;
+}
+.wallet-position-value > strong {
+  display: block;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
+  font-variant-numeric: tabular-nums;
+}
+.wallet-position-value > strong.value-unavailable {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
 .view-heading {
   display: flex;
   justify-content: space-between;
@@ -493,6 +511,36 @@ input::placeholder {
 }
 .position-search {
   margin-bottom: 4px;
+}
+.wallet-position-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.wallet-position-controls .position-search {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+}
+.wallet-position-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.wallet-position-sort select {
+  min-height: 44px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
 }
 .wallet-detail .view-description {
   color: var(--faint);

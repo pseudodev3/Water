@@ -353,6 +353,23 @@ export function unitPrice(value: string | null, usd = false) {
     ...(usd ? { style: "currency", currency: "USD" } : {}),
   }).format(n);
 }
+/** Holding totals use cents; small positive marks must never display as zero. */
+export function holdingValue(value: string | null) {
+  if (value == null || value.trim() === "") return "Unavailable";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "Unavailable";
+  const magnitude = Math.abs(n);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    ...(magnitude > 0 && magnitude < 0.01
+      ? {
+          maximumSignificantDigits: 4,
+          ...(magnitude < 0.000001 ? { notation: "scientific" as const } : {}),
+        }
+      : { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+  }).format(n);
+}
 export function tokenLabel(
   asset: string,
   markets?: Record<string, TokenQuote>,
