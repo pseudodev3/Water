@@ -840,10 +840,13 @@ function WalletDetail({
   const chain = w.candidate.chain;
   const [positionLimit, setPositionLimit] = useState(20);
   const [assetSearch, setAssetSearch] = useState("");
+  const [includeUnpriced, setIncludeUnpriced] = useState(false);
   const tabs = useResearchTabs<
     "activity" | "positions" | "performance" | "evidence"
   >("activity");
-  const holdings = currentPositions(w.positions);
+  const valuedHoldings = currentPositions(w.positions);
+  const allHoldings = currentPositions(w.positions, true);
+  const holdings = includeUnpriced ? allHoldings : valuedHoldings;
   const positions = [...holdings]
     .sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))
     .filter((p) =>
@@ -896,8 +899,8 @@ function WalletDetail({
           <strong>{w.unresolved_records.toLocaleString()}</strong>
         </div>
         <div>
-          <span>Current positions</span>
-          <strong>{holdings.length.toLocaleString()}</strong>
+          <span>Valued positions</span>
+          <strong>{valuedHoldings.length.toLocaleString()}</strong>
         </div>
         <div>
           <span>History</span>
@@ -1014,9 +1017,24 @@ function WalletDetail({
             </span>
           </div>
           <p className="view-description">
-            Non-zero token balances at their stated read times. Closed trades
-            remain in Activity and Performance; missing prices stay unavailable.
+            Showing holdings with a positive USD value. Unpriced and zero-value
+            holdings are hidden by default; missing prices do not prove zero
+            value. Closed trades remain in Activity and Performance.
           </p>
+          {allHoldings.length > valuedHoldings.length && (
+            <label className="wallet-visibility-filter">
+              <input
+                type="checkbox"
+                checked={includeUnpriced}
+                onChange={(event) => {
+                  setIncludeUnpriced(event.target.checked);
+                  setPositionLimit(20);
+                }}
+              />
+              Show unpriced or zero-value holdings (
+              {allHoldings.length - valuedHoldings.length})
+            </label>
+          )}
           <label className="wallet-search position-search">
             <Search size={15} aria-hidden="true" />
             <input
@@ -1126,7 +1144,9 @@ function WalletDetail({
               {assetSearch.trim()
                 ? "No assets match this search."
                 : w.records || w.coverage.last_state_checked_at
-                  ? "No non-zero token balances in the saved evidence."
+                  ? includeUnpriced
+                    ? "No non-zero token balances in the saved evidence."
+                    : "No holdings with a received positive USD value."
                   : "No token balances have been collected yet."}
             </p>
           )}
@@ -1224,6 +1244,7 @@ function WalletTransactions({ wallet: w }: { wallet: WalletAnalysis }) {
   const [rows, setRows] = useState<TransactionEvidence[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [includeUnvalued, setIncludeUnvalued] = useState(false);
   const controller = useRef<AbortController | null>(null);
   const load = useCallback(
     async (cursor: string | null) => {
@@ -1238,6 +1259,7 @@ function WalletTransactions({ wallet: w }: { wallet: WalletAnalysis }) {
           w.candidate.wallet,
           cursor,
           request.signal,
+          includeUnvalued,
         );
         if (!request.signal.aborted) {
           setPage(next);
@@ -1256,9 +1278,11 @@ function WalletTransactions({ wallet: w }: { wallet: WalletAnalysis }) {
         if (!request.signal.aborted) setBusy(false);
       }
     },
-    [w.candidate.chain, w.candidate.wallet],
+    [w.candidate.chain, w.candidate.wallet, includeUnvalued],
   );
   useEffect(() => {
+    setRows([]);
+    setPage(null);
     void load(null);
     return () => controller.current?.abort();
   }, [load, w.analyzed_at]);
@@ -1266,14 +1290,28 @@ function WalletTransactions({ wallet: w }: { wallet: WalletAnalysis }) {
     <div className="wallet-detail-activity">
       <h3>Transactions, with the evidence.</h3>
       <p className="wallet-value-note">
-        All saved records can be inspected here. Entry and exit prices use
-        received swap amounts. USD conversions use historical candles; fees are
-        shown separately.
+        Trades and executions stay visible. Transfer-only records without a
+        received value are hidden by default. Entry and exit prices use received
+        swap amounts. USD conversions use historical candles; fees are shown
+        separately.
       </p>
+      <label className="wallet-visibility-filter">
+        <input
+          type="checkbox"
+          checked={includeUnvalued}
+          onChange={(event) => setIncludeUnvalued(event.target.checked)}
+        />
+        Show transfers without a received value
+      </label>
       {page && (
         <p className="wallet-value-note">
           Showing {rows.length.toLocaleString()} of{" "}
-          {page.total.toLocaleString()} saved transactions. Source history{" "}
+          {page.total.toLocaleString()} {includeUnvalued ? "saved" : "visible"}{" "}
+          transactions
+          {page.hidden_count
+            ? ` · ${page.hidden_count.toLocaleString()} hidden from ${page.saved_total?.toLocaleString()} saved`
+            : ""}
+          . Source history{" "}
           {w.coverage.history_complete ? "complete" : "incomplete"}.
         </p>
       )}
@@ -1288,6 +1326,13 @@ function WalletTransactions({ wallet: w }: { wallet: WalletAnalysis }) {
       ))}
       {!page && !busy && !error && (
         <p>No transaction records have been saved.</p>
+      )}
+      {page && !rows.length && !busy && !error && (
+        <p>
+          {page.hidden_count
+            ? "Only transfers without a received value have been collected. Enable the filter above to inspect them."
+            : "No transaction records have been saved."}
+        </p>
       )}
       {busy && <p role="status">Loading saved transactions…</p>}
       {error && (

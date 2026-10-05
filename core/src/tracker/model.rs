@@ -314,4 +314,6 @@ pub struct ActivityRequest {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
     pub transaction: Option<String>,
+    #[serde(default)]
+    pub include_unvalued: bool,
 }

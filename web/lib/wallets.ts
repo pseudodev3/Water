@@ -98,19 +98,32 @@ export type WalletAnalysis = {
   }>;
 };
 export type WalletSummary = Omit<WalletAnalysis, "positions" | "notes"> & {
-  /** Non-zero token holdings at their recorded balance/history times. */
+  /** Positive quantities with a fresh positive USD market value. */
   positions_count?: number;
+  unpriced_positions_count?: number;
 };
 
 /** Also handles older cached responses that include closed positions. */
-export function currentPositions(positions: WalletAnalysis["positions"]) {
+export function currentPositions(
+  positions: WalletAnalysis["positions"],
+  includeUnpriced = false,
+) {
   return positions.filter((position) => {
     const quantity = position.valuation?.quantity ?? position.quantity;
-    // Missing or malformed evidence is not a received zero balance.
-    if (quantity == null || quantity.trim() === "") return true;
+    if (quantity == null || quantity.trim() === "") return includeUnpriced;
     const value = Number(quantity);
-    return !Number.isFinite(value) || value > 0;
+    if (!Number.isFinite(value)) return includeUnpriced;
+    if (value <= 0) return false;
+    return includeUnpriced || positiveValue(position.market_value_usd);
   });
+}
+export function positiveValue(value: string | null | undefined) {
+  return (
+    value != null &&
+    value.trim() !== "" &&
+    Number.isFinite(Number(value)) &&
+    Number(value) > 0
+  );
 }
 export type WalletResponse = {
   status: {
@@ -304,16 +317,20 @@ export type ActivityPage = {
   next_cursor: string | null;
   total: number;
   revision: string;
+  saved_total?: number;
+  hidden_count?: number;
+  include_unvalued?: boolean;
 };
 export const getWalletActivity = (
   chain: Chain,
   wallet: string,
   cursor: string | null,
   signal?: AbortSignal,
+  includeUnvalued = false,
 ) =>
   request<ActivityPage>(
     "/v1/wallets/activity",
-    { chain, wallet, cursor, limit: 25 },
+    { chain, wallet, cursor, limit: 25, include_unvalued: includeUnvalued },
     signal,
   );
 export const getWalletTransaction = (
@@ -342,9 +359,13 @@ export function tokenLabel(
 ) {
   if (["SOL", "ETH", "BNB"].includes(asset)) return asset;
   const token = markets?.[asset];
-  return token?.symbol
-    ? `${token.name ?? token.symbol} (${token.symbol})`
-    : (token?.name ?? shortAddress(asset));
+  // Promotional metadata must not turn a compact activity row into an advert.
+  const name = token?.name && token.name.length <= 80 ? token.name : null;
+  const symbol =
+    token?.symbol && token.symbol.length <= 24 ? token.symbol : null;
+  return symbol
+    ? `${name ?? symbol} (${symbol})`
+    : (name ?? shortAddress(asset));
 }
 
 export function assetSymbol(

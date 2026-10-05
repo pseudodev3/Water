@@ -32,7 +32,7 @@ pub enum PriceGranularity {
     Day,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct TokenInfoSnapshot {
     pub image_url: Option<String>,
     pub websites: Vec<String>,
@@ -42,6 +42,57 @@ pub struct TokenInfoSnapshot {
     pub farcaster_url: Option<String>,
     pub zora_url: Option<String>,
     pub gt_verified: Option<bool>,
+    pub socials: Vec<TokenSocial>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TokenSocial {
+    pub label: String,
+    pub url: String,
+}
+
+impl TokenInfoSnapshot {
+    pub fn has_socials(&self) -> bool {
+        !self.socials.is_empty()
+            || self.twitter_url.is_some()
+            || self.telegram_url.is_some()
+            || self.discord_url.is_some()
+            || self.farcaster_url.is_some()
+            || self.zora_url.is_some()
+    }
+
+    pub fn fill_missing(&mut self, other: Self) {
+        if self.image_url.is_none() {
+            self.image_url = other.image_url;
+        }
+        if self.websites.is_empty() {
+            self.websites = other.websites;
+        }
+        if self.twitter_url.is_none() {
+            self.twitter_url = other.twitter_url;
+        }
+        if self.telegram_url.is_none() {
+            self.telegram_url = other.telegram_url;
+        }
+        if self.discord_url.is_none() {
+            self.discord_url = other.discord_url;
+        }
+        if self.farcaster_url.is_none() {
+            self.farcaster_url = other.farcaster_url;
+        }
+        if self.zora_url.is_none() {
+            self.zora_url = other.zora_url;
+        }
+        for link in other.socials {
+            if !self
+                .socials
+                .iter()
+                .any(|existing| existing.label == link.label)
+            {
+                self.socials.push(link);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -238,9 +289,20 @@ impl GeckoClient {
 
         let url = format!("{}/networks/{network}/tokens/{address}/info", self.host);
         let payload = self.get_json(&url).await?;
+        let received_address = payload
+            .pointer("/data/attributes/address")
+            .and_then(Value::as_str)
+            .ok_or(GeckoError::NoData)?;
+        if super::market::asset_key(chain, received_address) != cache_key {
+            return Err(GeckoError::NoData);
+        }
         let info = token_info_from_payload(&payload)?;
 
         if let Ok(mut cache) = self.info_cache.lock() {
+            cache.retain(|_, (at, _)| at.elapsed() < StdDuration::from_secs(600));
+            if cache.len() >= 256 {
+                cache.clear();
+            }
             cache.insert(cache_key, (Instant::now(), info.clone()));
         }
 
@@ -507,7 +569,7 @@ fn token_info_from_payload(payload: &Value) -> Result<TokenInfoSnapshot, GeckoEr
     let telegram_url = string_field(attributes.get("telegram_handle"))
         .and_then(|value| normalize_social_handle(&value, "https://t.me/"));
 
-    Ok(TokenInfoSnapshot {
+    let mut info = TokenInfoSnapshot {
         image_url: string_field(attributes.get("image_url"))
             .and_then(|value| safe_external_url(&value)),
         websites,
@@ -520,14 +582,36 @@ fn token_info_from_payload(payload: &Value) -> Result<TokenInfoSnapshot, GeckoEr
         zora_url: string_field(attributes.get("zora_url"))
             .and_then(|value| safe_external_url(&value)),
         gt_verified: attributes.get("gt_verified").and_then(Value::as_bool),
-    })
+        socials: Vec::new(),
+    };
+    for (label, url) in [
+        ("X", &info.twitter_url),
+        ("Telegram", &info.telegram_url),
+        ("Discord", &info.discord_url),
+        ("Farcaster", &info.farcaster_url),
+        ("Zora", &info.zora_url),
+    ] {
+        if let Some(url) = url {
+            info.socials.push(TokenSocial {
+                label: label.into(),
+                url: url.clone(),
+            });
+        }
+    }
+    Ok(info)
 }
 
-fn safe_external_url(value: &str) -> Option<String> {
+pub(super) fn safe_external_url(value: &str) -> Option<String> {
     let trimmed = value.trim();
     let parsed = reqwest::Url::parse(trimmed).ok()?;
     match parsed.scheme() {
-        "http" | "https" => Some(parsed.to_string()),
+        "http" | "https"
+            if parsed.host_str().is_some()
+                && parsed.username().is_empty()
+                && parsed.password().is_none() =>
+        {
+            Some(parsed.to_string())
+        }
         _ => None,
     }
 }

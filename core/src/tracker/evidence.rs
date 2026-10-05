@@ -45,6 +45,94 @@ pub fn retain_current_positions(analysis: &mut Analysis) {
         .retain(|p| !quote(chain, &p.asset) && position_quantity(p, coverage) > Decimal::ZERO);
 }
 
+/// A visibility filter only: missing/stale marks do not establish zero value.
+pub fn valued_positions_count(analysis: &Analysis, at: u64) -> usize {
+    let mut quantities: BTreeMap<&str, Decimal> = analysis
+        .positions
+        .iter()
+        .map(|p| (p.asset.as_str(), position_quantity(p, &analysis.coverage)))
+        .collect();
+    for (asset, observation) in &analysis.coverage.balance_observations {
+        quantities.insert(asset, observation.quantity);
+    }
+    quantities
+        .into_iter()
+        .filter(|(asset, quantity)| {
+            !quote(analysis.candidate.chain, asset)
+                && *quantity > Decimal::ZERO
+                && positive_market_value(asset, *quantity, &analysis.markets, at)
+        })
+        .count()
+}
+
+fn positive_market_value(
+    asset: &str,
+    quantity: Decimal,
+    markets: &BTreeMap<String, TokenQuote>,
+    at: u64,
+) -> bool {
+    markets
+        .get(asset)
+        .filter(|mark| at.saturating_sub(mark.observed_at) <= 900)
+        .and_then(|mark| mark.price_usd)
+        .filter(|price| *price > Decimal::ZERO)
+        .and_then(|price| price.checked_mul(quantity.abs()))
+        .is_some_and(|value| value > Decimal::ZERO)
+}
+
+pub fn retain_valued_summary_activity(analysis: &mut Analysis, at: u64) {
+    let markets = &analysis.markets;
+    let chain = analysis.candidate.chain;
+    analysis.activity.retain(|activity| {
+        !matches!(
+            activity.kind.as_str(),
+            "transfer_in" | "transfer_out" | "funding_in" | "funding_out"
+        ) || activity
+            .value_usd
+            .is_some_and(|value| value != Decimal::ZERO)
+            || activity
+                .asset
+                .as_ref()
+                .zip(activity.quantity)
+                .is_some_and(|(asset, quantity)| {
+                    (quote(chain, asset) && quantity != Decimal::ZERO)
+                        || positive_market_value(asset, quantity, markets, at)
+                })
+    });
+}
+
+/// Retain executions whose economics need inspection. Only hide complete,
+/// transfer-only records when none of their movements has a received value.
+fn unvalued_transfer(
+    chain: crate::model::Chain,
+    record: &Record,
+    activities: &[&Activity],
+    markets: &BTreeMap<String, TokenQuote>,
+    at: u64,
+) -> bool {
+    let Some(tx) = &record.transaction else {
+        return false;
+    };
+    tx.succeeded
+        && tx.finalized
+        && tx.movement_complete
+        && !tx.swap_evidence
+        && !tx.assets.is_empty()
+        && !activities.iter().any(|a| {
+            !matches!(
+                a.kind.as_str(),
+                "transfer_in" | "transfer_out" | "funding_in" | "funding_out"
+            ) || a.value_usd.is_some_and(|value| value != Decimal::ZERO)
+        })
+        && !tx
+            .assets
+            .iter()
+            .any(|movement| {
+                (quote(chain, &movement.asset) && movement.quantity != Decimal::ZERO)
+                    || positive_market_value(&movement.asset, movement.quantity, markets, at)
+            })
+}
+
 pub fn enrich(
     analysis: &mut Analysis,
     snapshot: &Snapshot,
@@ -156,7 +244,7 @@ pub fn activity_page_with_revision(
             r.id.clone(),
         ))
     });
-    let revision = if let Some(revision) = saved_revision {
+    let base_revision = if let Some(revision) = saved_revision {
         revision
     } else {
         let mut hasher = Sha256::new();
@@ -165,6 +253,45 @@ pub fn activity_page_with_revision(
         }
         format!("{:x}", hasher.finalize())
     };
+    let analysis = accounting::analyze(
+        snapshot,
+        snapshot
+            .coverage
+            .last_collected_at
+            .unwrap_or_else(now)
+            .saturating_add(1),
+    );
+    let mut activities: BTreeMap<&str, Vec<&Activity>> = BTreeMap::new();
+    for event in &analysis.activity {
+        activities.entry(&event.tx).or_default().push(event);
+    }
+    let saved_total = records.len();
+    let at = now();
+    // Direct source inspection always includes the requested record.
+    if !request.include_unvalued && request.transaction.is_none() {
+        records.retain(|record| {
+            !unvalued_transfer(
+                snapshot.candidate.chain,
+                record,
+                activities
+                    .get(record.id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                markets,
+                at,
+            )
+        });
+    }
+    // Bind continuation to both the saved evidence and the filtered membership.
+    // A mark refresh, expiry or filter toggle must never silently skip rows.
+    let mut hasher = Sha256::new();
+    hasher.update(base_revision.as_bytes());
+    hasher.update([u8::from(request.include_unvalued)]);
+    for record in &records {
+        hasher.update((record.id.len() as u64).to_be_bytes());
+        hasher.update(record.id.as_bytes());
+    }
+    let revision = format!("{:x}", hasher.finalize());
     let offset = if let Some(cursor) = &request.cursor {
         if cursor.len() > 512 {
             return Err("Invalid activity cursor.".into());
@@ -186,18 +313,6 @@ pub fn activity_page_with_revision(
     };
     if offset > records.len() {
         return Err("Invalid activity offset.".into());
-    }
-    let analysis = accounting::analyze(
-        snapshot,
-        snapshot
-            .coverage
-            .last_collected_at
-            .unwrap_or_else(now)
-            .saturating_add(1),
-    );
-    let mut activities: BTreeMap<&str, Vec<&Activity>> = BTreeMap::new();
-    for event in &analysis.activity {
-        activities.entry(&event.tx).or_default().push(event);
     }
     let row = |record: &&Record| {
         let tx = record.transaction.as_ref();
@@ -221,7 +336,7 @@ pub fn activity_page_with_revision(
     let next = (end < records.len())
         .then(|| URL_SAFE_NO_PAD.encode(serde_json::to_vec(&(revision.clone(), end)).unwrap()));
     Ok(
-        json!({"transactions":records[offset..end].iter().map(row).collect::<Vec<_>>(),"markets":markets,"next_cursor":next,"total":records.len(),"revision":revision,"scope":"All saved transaction records, including pending and failed executions. Source-history completeness is reported separately."}),
+        json!({"transactions":records[offset..end].iter().map(row).collect::<Vec<_>>(),"markets":markets,"next_cursor":next,"total":records.len(),"saved_total":saved_total,"hidden_count":saved_total-records.len(),"include_unvalued":request.include_unvalued,"revision":revision,"scope":"Complete transfer-only records without a received positive value are hidden by default. Trades, failed, provisional and unresolved executions remain visible. All source records remain inspectable; source-history completeness is separate."}),
     )
 }
 fn record_block(record: &Record) -> Option<u64> {
@@ -275,6 +390,7 @@ mod tests {
             cursor: None,
             limit: Some(25),
             transaction: None,
+            include_unvalued: false,
         }
     }
 
@@ -434,6 +550,212 @@ mod tests {
         assert_eq!(a.records, 2);
         assert_eq!(s.records.len(), 2);
     }
+    #[test]
+    fn valued_position_counts_use_current_balance_and_fresh_marks_on_all_chains() {
+        let at = 10000;
+        for chain in [
+            crate::model::Chain::Solana,
+            crate::model::Chain::Robinhood,
+            crate::model::Chain::Bnb,
+        ] {
+            let mut snapshot = snapshot();
+            snapshot.candidate.chain = chain;
+            let mut analysis = accounting::analyze(&snapshot, at);
+            analysis.positions = vec![
+                position("positive", 10.into()),
+                position("zero", 2.into()),
+                position("unpriced", 3.into()),
+                position("stale", 4.into()),
+                position("tiny", Decimal::new(1, 28)),
+            ];
+            for (asset, price, observed_at) in [
+                ("positive", 2.into(), at),
+                ("zero", Decimal::ZERO, at),
+                ("stale", 2.into(), at - 901),
+                ("tiny", 1.into(), at),
+                ("rpc-only", 1.into(), at),
+            ] {
+                analysis.markets.insert(
+                    asset.into(),
+                    TokenQuote {
+                        asset: asset.into(),
+                        price_usd: Some(price),
+                        observed_at,
+                        ..Default::default()
+                    },
+                );
+            }
+            assert_eq!(valued_positions_count(&analysis, at), 2);
+            analysis.coverage.balance_observations.insert(
+                "positive".into(),
+                BalanceObservation {
+                    quantity: Decimal::ZERO,
+                    observed_at: at,
+                    block: "fixture".into(),
+                    source: "fixture".into(),
+                },
+            );
+            analysis.coverage.balance_observations.insert(
+                "rpc-only".into(),
+                BalanceObservation {
+                    quantity: 2.into(),
+                    observed_at: at,
+                    block: "fixture".into(),
+                    source: "fixture".into(),
+                },
+            );
+            assert_eq!(valued_positions_count(&analysis, at), 2);
+            assert_eq!(valued_positions_count(&analysis, at + 901), 0);
+        }
+    }
+
+    #[test]
+    fn transfer_filter_pages_useful_executions_and_preserve_all_source_records() {
+        let mut s = snapshot();
+        let tx = |id: &str, asset: &str| Transaction {
+            id: id.into(),
+            timestamp: 1000,
+            block: 1000,
+            index: None,
+            finalized: true,
+            succeeded: true,
+            assets: vec![Delta {
+                asset: asset.into(),
+                quantity: 10.into(),
+            }],
+            fee_asset: "SOL".into(),
+            fee_quantity: Some(Decimal::ZERO),
+            movement_complete: true,
+            swap_evidence: false,
+            notes: vec![],
+            counterparties: vec![],
+        };
+        for n in 0..30 {
+            let id = format!("unpriced-{n:02}");
+            s.records.push(Record {
+                id: id.clone(),
+                raw: json!({"received":"fixture"}),
+                transaction: Some(tx(&id, "unpriced")),
+                error: None,
+            });
+        }
+        for (id, mut transaction) in [
+            ("priced", tx("priced", "priced")),
+            ("trade", tx("trade", "unpriced")),
+            ("failed", tx("failed", "unpriced")),
+            ("incomplete", tx("incomplete", "unpriced")),
+            ("provisional", tx("provisional", "unpriced")),
+            ("fee-only", tx("fee-only", "unpriced")),
+            ("funding", tx("funding", "SOL")),
+        ] {
+            match id {
+                "trade" => transaction.swap_evidence = true,
+                "failed" => transaction.succeeded = false,
+                "incomplete" => transaction.movement_complete = false,
+                "provisional" => transaction.finalized = false,
+                "fee-only" => transaction.assets.clear(),
+                _ => (),
+            }
+            s.records.push(Record {
+                id: id.into(),
+                raw: json!({"received":"fixture"}),
+                transaction: Some(transaction),
+                error: None,
+            });
+        }
+        s.records.push(Record {
+            id: "pending".into(),
+            raw: json!({}),
+            transaction: None,
+            error: Some("pending".into()),
+        });
+        let at = now();
+        let mut markets = BTreeMap::from([(
+            "priced".into(),
+            TokenQuote {
+                asset: "priced".into(),
+                price_usd: Some(1.into()),
+                observed_at: at,
+                ..Default::default()
+            },
+        )]);
+        let original = serde_json::to_value(&s).unwrap();
+        let accounting_before = serde_json::to_value(accounting::analyze(&s, 1001)).unwrap();
+        let mut req = request();
+        req.limit = Some(2);
+        let page = activity_page(&s, &markets, &req).unwrap();
+        assert_eq!(page["total"], 8);
+        assert_eq!(page["saved_total"], 38);
+        assert_eq!(page["hidden_count"], 30);
+        let first_cursor = page["next_cursor"].as_str().unwrap().to_owned();
+        let mut ids = BTreeSet::new();
+        loop {
+            let page = activity_page(&s, &markets, &req).unwrap();
+            for row in page["transactions"].as_array().unwrap() {
+                assert!(ids.insert(row["tx"].as_str().unwrap().to_owned()));
+            }
+            req.cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if req.cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            ids,
+            BTreeSet::from(
+                [
+                    "priced",
+                    "trade",
+                    "failed",
+                    "incomplete",
+                    "provisional",
+                    "fee-only",
+                    "funding",
+                    "pending"
+                ]
+                .map(str::to_owned)
+            )
+        );
+        req.cursor = Some(first_cursor.clone());
+        req.include_unvalued = true;
+        assert!(activity_page(&s, &markets, &req)
+            .unwrap_err()
+            .starts_with("Activity changed;"));
+        req.cursor = None;
+        req.limit = Some(100);
+        assert_eq!(
+            activity_page(&s, &markets, &req).unwrap()["transactions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            38
+        );
+        req.include_unvalued = false;
+        req.transaction = Some("unpriced-00".into());
+        assert_eq!(
+            activity_page(&s, &markets, &req).unwrap()["transaction"]["raw"],
+            json!({"received":"fixture"})
+        );
+        req.transaction = None;
+        req.cursor = Some(first_cursor);
+        markets.insert(
+            "unpriced".into(),
+            TokenQuote {
+                asset: "unpriced".into(),
+                price_usd: Some(1.into()),
+                observed_at: at,
+                ..Default::default()
+            },
+        );
+        assert!(activity_page(&s, &markets, &req)
+            .unwrap_err()
+            .starts_with("Activity changed;"));
+        assert_eq!(serde_json::to_value(&s).unwrap(), original);
+        assert_eq!(
+            serde_json::to_value(accounting::analyze(&s, 1001)).unwrap(),
+            accounting_before
+        );
+    }
+
     #[test]
     fn every_pending_record_is_pageable_and_changed_evidence_rejects_old_cursors() {
         let mut s = snapshot();

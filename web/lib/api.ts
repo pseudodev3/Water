@@ -241,6 +241,8 @@ export type TokenInfo = {
   farcaster_url: string | null;
   zora_url: string | null;
   gt_verified: boolean | null;
+  socials?: Array<{ label: string; url: string }>;
+  sources?: Array<{ source: string; ok: boolean; detail: string }>;
 };
 
 export async function fetchTokenInfo(

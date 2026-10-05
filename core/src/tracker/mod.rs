@@ -688,18 +688,21 @@ impl Tracker {
         let summaries: Vec<_> = analyses
             .into_iter()
             .map(|mut a| {
+                evidence::retain_valued_summary_activity(&mut a, now());
                 a.activity.truncate(20);
-                let positions_count = evidence::current_positions_count(&a);
+                let all_positions = evidence::current_positions_count(&a);
+                let positions_count = evidence::valued_positions_count(&a, now());
                 let mut value = serde_json::to_value(a).unwrap();
                 let fields = value.as_object_mut().unwrap();
                 fields.remove("positions");
                 fields.insert("positions_count".into(), json!(positions_count));
+                fields.insert("unpriced_positions_count".into(), json!(all_positions.saturating_sub(positions_count)));
                 fields.remove("notes");
                 value
             })
             .collect();
         Ok(
-            json!({"status":self.status(),"scope":"ranking_summary; position counts cover non-zero token holdings at their recorded balance/history times; current positions and notes are in wallet detail","wallets":summaries}),
+            json!({"status":self.status(),"scope":"ranking_summary; position counts cover positive token quantities with a fresh positive USD market value. Unpriced holdings remain inspectable in wallet detail; missing marks do not establish zero value.","wallets":summaries}),
         )
     }
 
