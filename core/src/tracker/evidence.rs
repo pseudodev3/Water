@@ -5,7 +5,45 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Received balance observations override the historical ledger quantity.
+/// Neither a missing price nor a zero USD mark says the token balance is zero.
+pub fn position_quantity(position: &Position, coverage: &Coverage) -> Decimal {
+    coverage
+        .balance_observations
+        .get(&position.asset)
+        .map(|o| o.quantity)
+        .or_else(|| position.valuation.as_ref().map(|v| v.quantity))
+        .unwrap_or(position.quantity)
+}
+
+pub fn current_positions_count(analysis: &Analysis) -> usize {
+    let chain = analysis.candidate.chain;
+    let mut assets: BTreeSet<&str> = analysis
+        .positions
+        .iter()
+        .filter(|p| {
+            !quote(chain, &p.asset) && position_quantity(p, &analysis.coverage) > Decimal::ZERO
+        })
+        .map(|p| p.asset.as_str())
+        .collect();
+    // A received holding can exist before its acquisition history is parsed.
+    for (asset, observation) in &analysis.coverage.balance_observations {
+        if observation.quantity > Decimal::ZERO && !quote(chain, asset) {
+            assets.insert(asset);
+        }
+    }
+    assets.len()
+}
+
+pub fn retain_current_positions(analysis: &mut Analysis) {
+    let chain = analysis.candidate.chain;
+    let coverage = &analysis.coverage;
+    analysis
+        .positions
+        .retain(|p| !quote(chain, &p.asset) && position_quantity(p, coverage) > Decimal::ZERO);
+}
 
 pub fn enrich(
     analysis: &mut Analysis,
@@ -238,6 +276,163 @@ mod tests {
             limit: Some(25),
             transaction: None,
         }
+    }
+
+    fn position(asset: &str, quantity: Decimal) -> Position {
+        Position {
+            asset: asset.into(),
+            quantity,
+            known_cost_usd: Decimal::ZERO,
+            basis_coverage: Decimal::ZERO,
+            market_value_usd: None,
+            realized_usd: None,
+            first_acquired_at: None,
+            last_activity_at: None,
+            valuation: None,
+            average_entry_usd: None,
+        }
+    }
+
+    #[test]
+    fn holdings_use_received_balances_and_do_not_confuse_missing_or_zero_prices_with_zero_tokens() {
+        for chain in [
+            crate::model::Chain::Solana,
+            crate::model::Chain::Robinhood,
+            crate::model::Chain::Bnb,
+        ] {
+            let mut s = snapshot();
+            s.candidate.chain = chain;
+            for (asset, quantity) in [
+                ("received-zero", Decimal::ZERO),
+                ("received-positive", 4.into()),
+                ("rpc-only", 2.into()),
+                (native(chain), 10.into()),
+            ] {
+                s.balances.insert(asset.into(), quantity);
+                s.coverage.balance_observations.insert(
+                    asset.into(),
+                    BalanceObservation {
+                        quantity,
+                        observed_at: 9900,
+                        block: "fixture block".into(),
+                        source: "fixture balance".into(),
+                    },
+                );
+            }
+            let mut a = accounting::analyze(&s, 10000);
+            a.positions = vec![
+                position("closed", Decimal::ZERO),
+                position("received-zero", 100.into()),
+                position("received-positive", Decimal::ZERO),
+                position("unpriced", 3.into()),
+                position("zero-usd-mark", 5.into()),
+                position("tiny", Decimal::new(1, 28)),
+            ];
+            let markets = BTreeMap::from([(
+                "zero-usd-mark".into(),
+                TokenQuote {
+                    asset: "zero-usd-mark".into(),
+                    price_usd: Some(Decimal::ZERO),
+                    observed_at: 10000,
+                    source: "fixture zero price".into(),
+                    ..Default::default()
+                },
+            )]);
+            // Cached summaries also count the RPC-only holding before enrich.
+            assert_eq!(current_positions_count(&a), 5);
+            enrich(&mut a, &s, markets, 10000);
+            retain_current_positions(&mut a);
+            let assets: BTreeSet<_> = a.positions.iter().map(|p| p.asset.as_str()).collect();
+            assert_eq!(
+                assets,
+                BTreeSet::from([
+                    "received-positive",
+                    "rpc-only",
+                    "unpriced",
+                    "zero-usd-mark",
+                    "tiny"
+                ])
+            );
+            assert_eq!(current_positions_count(&a), a.positions.len());
+            assert_eq!(
+                a.positions
+                    .iter()
+                    .find(|p| p.asset == "unpriced")
+                    .unwrap()
+                    .market_value_usd,
+                None
+            );
+            assert_eq!(
+                a.positions
+                    .iter()
+                    .find(|p| p.asset == "zero-usd-mark")
+                    .unwrap()
+                    .market_value_usd,
+                Some(Decimal::ZERO)
+            );
+            assert!(a
+                .positions
+                .iter()
+                .all(|p| position_quantity(p, &a.coverage) > Decimal::ZERO));
+        }
+    }
+
+    #[test]
+    fn removing_closed_position_rows_preserves_the_realized_loss_and_trade_history() {
+        let mut s = snapshot();
+        for (id, time, tokens, sol) in [("buy", 9000, 10, -2), ("sell", 9100, -10, 1)] {
+            s.records.push(Record {
+                id: id.into(),
+                raw: json!({"fixture":true}),
+                error: None,
+                transaction: Some(Transaction {
+                    id: id.into(),
+                    timestamp: time,
+                    block: time,
+                    index: Some(0),
+                    finalized: true,
+                    succeeded: true,
+                    assets: vec![
+                        Delta {
+                            asset: "closed-token".into(),
+                            quantity: tokens.into(),
+                        },
+                        Delta {
+                            asset: "SOL".into(),
+                            quantity: sol.into(),
+                        },
+                    ],
+                    fee_asset: "SOL".into(),
+                    fee_quantity: Some(Decimal::ZERO),
+                    movement_complete: true,
+                    swap_evidence: true,
+                    notes: vec![],
+                    counterparties: vec![],
+                }),
+            });
+            s.prices.push(Price {
+                asset: "SOL".into(),
+                timestamp: time,
+                usd: 10.into(),
+                granularity: "minute".into(),
+                source: "fixture historical price".into(),
+            });
+        }
+        let mut a = accounting::analyze(&s, 10000);
+        assert_eq!(a.positions[0].quantity, Decimal::ZERO);
+        assert_eq!(a.positions[0].realized_usd, Some(Decimal::from(-10)));
+        let windows = serde_json::to_value(&a.windows).unwrap();
+        let activity = serde_json::to_value(&a.activity).unwrap();
+        let status = a.status.clone();
+        enrich(&mut a, &s, BTreeMap::new(), 10000);
+        retain_current_positions(&mut a);
+        assert!(a.positions.is_empty());
+        assert_eq!(current_positions_count(&a), 0);
+        assert_eq!(serde_json::to_value(&a.windows).unwrap(), windows);
+        assert_eq!(serde_json::to_value(&a.activity).unwrap(), activity);
+        assert_eq!(a.status, status);
+        assert_eq!(a.records, 2);
+        assert_eq!(s.records.len(), 2);
     }
     #[test]
     fn every_pending_record_is_pageable_and_changed_evidence_rejects_old_cursors() {

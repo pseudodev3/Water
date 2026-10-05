@@ -35,6 +35,7 @@ import {
   WalletResponse,
   WalletSummary,
   walletId,
+  currentPositions,
 } from "@/lib/wallets";
 import {
   CopyAddress,
@@ -842,13 +843,9 @@ function WalletDetail({
   const tabs = useResearchTabs<
     "activity" | "positions" | "performance" | "evidence"
   >("activity");
-  const positions = [...w.positions]
-    .sort(
-      (a, b) =>
-        Number(Number(b.valuation?.quantity ?? b.quantity) > 0) -
-          Number(Number(a.valuation?.quantity ?? a.quantity) > 0) ||
-        (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0),
-    )
+  const holdings = currentPositions(w.positions);
+  const positions = [...holdings]
+    .sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))
     .filter((p) =>
       [p.asset, tokenLabel(p.asset, w.markets)]
         .join(" ")
@@ -899,8 +896,8 @@ function WalletDetail({
           <strong>{w.unresolved_records.toLocaleString()}</strong>
         </div>
         <div>
-          <span>Assets recorded</span>
-          <strong>{w.positions.length.toLocaleString()}</strong>
+          <span>Current positions</span>
+          <strong>{holdings.length.toLocaleString()}</strong>
         </div>
         <div>
           <span>History</span>
@@ -916,7 +913,7 @@ function WalletDetail({
         label="Wallet profile views"
         tabs={[
           { id: "activity", label: "Activity" },
-          { id: "positions", label: "Positions", count: w.positions.length },
+          { id: "positions", label: "Positions", count: holdings.length },
           { id: "performance", label: "Performance" },
           { id: "evidence", label: "Evidence" },
         ]}
@@ -1013,12 +1010,12 @@ function WalletDetail({
           <div className="view-heading">
             <h3>Positions</h3>
             <span>
-              {positions.length} of {w.positions.length} assets
+              {positions.length} of {holdings.length} assets
             </span>
           </div>
           <p className="view-description">
-            Current value, received quantity and saved cost basis. Unpriced
-            assets remain unavailable.
+            Non-zero token balances at their stated read times. Closed trades
+            remain in Activity and Performance; missing prices stay unavailable.
           </p>
           <label className="wallet-search position-search">
             <Search size={15} aria-hidden="true" />
@@ -1128,7 +1125,9 @@ function WalletDetail({
             <p>
               {assetSearch.trim()
                 ? "No assets match this search."
-                : "No positions can be reconstructed yet."}
+                : w.records || w.coverage.last_state_checked_at
+                  ? "No non-zero token balances in the saved evidence."
+                  : "No token balances have been collected yet."}
             </p>
           )}
           {positions.length > positionLimit && (

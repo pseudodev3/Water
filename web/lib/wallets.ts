@@ -98,8 +98,20 @@ export type WalletAnalysis = {
   }>;
 };
 export type WalletSummary = Omit<WalletAnalysis, "positions" | "notes"> & {
+  /** Non-zero token holdings at their recorded balance/history times. */
   positions_count?: number;
 };
+
+/** Also handles older cached responses that include closed positions. */
+export function currentPositions(positions: WalletAnalysis["positions"]) {
+  return positions.filter((position) => {
+    const quantity = position.valuation?.quantity ?? position.quantity;
+    // Missing or malformed evidence is not a received zero balance.
+    if (quantity == null || quantity.trim() === "") return true;
+    const value = Number(quantity);
+    return !Number.isFinite(value) || value > 0;
+  });
+}
 export type WalletResponse = {
   status: {
     enabled: boolean;
@@ -316,7 +328,7 @@ export const getWalletTransaction = (
     signal,
   );
 export function unitPrice(value: string | null, usd = false) {
-  if (value === null) return "Unavailable";
+  if (value == null || value.trim() === "") return "Unavailable";
   const n = Number(value);
   if (!Number.isFinite(n)) return "Unavailable";
   return new Intl.NumberFormat("en-US", {
