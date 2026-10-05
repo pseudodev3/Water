@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ExternalLink,
   RefreshCw,
+  Search,
   ShieldCheck,
   Star,
   Users,
@@ -35,6 +36,11 @@ import {
   WalletSummary,
   walletId,
 } from "@/lib/wallets";
+import {
+  CopyAddress,
+  ResearchTabs,
+  useResearchTabs,
+} from "@/components/research-ui";
 
 const FOLLOW_KEY = "water:followed-wallets:v1";
 function date(timestamp: number | null) {
@@ -80,6 +86,8 @@ export function WalletTracker() {
     "research",
   );
   const [source, setSource] = useState("all");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("latest");
   const [followed, setFollowed] = useState<string[]>([]);
   const [detail, setDetail] = useState<WalletAnalysis | null>(null);
   const [detailLoading, setDetailLoading] = useState("");
@@ -217,14 +225,16 @@ export function WalletTracker() {
   useEffect(() => {
     if (!detail || !scrollDetail.current) return;
     scrollDetail.current = false;
-    const frame = window.requestAnimationFrame(() =>
-      detailView.current?.scrollIntoView({
+    const frame = window.requestAnimationFrame(() => {
+      detailView.current?.focus({ preventScroll: true });
+      const target = window.matchMedia("(max-width: 800px)").matches
+        ? detailView.current
+        : detailView.current?.closest(".wallet-workspace");
+      target?.scrollIntoView({
         block: "start",
-        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "auto"
-          : "smooth",
-      }),
-    );
+        behavior: "auto",
+      });
+    });
     return () => window.cancelAnimationFrame(frame);
   }, [detail]);
 
@@ -268,20 +278,39 @@ export function WalletTracker() {
       collection.daily_request_limit !== undefined &&
       collection.requests_today >= collection.daily_request_limit);
   const qualified = wallets.filter((w) => w.status.startsWith("qualified_"));
-  const visible = wallets.filter(
-    (w) =>
-      (chain === "all" || w.candidate.chain === chain) &&
-      (view === "qualified"
-        ? w.status.startsWith("qualified_")
-        : view === "followed"
-          ? followed.includes(walletId(w.candidate))
-          : true) &&
-      (source === "all" ||
-        w.candidate.sources.some((s) => s.name.toLowerCase().includes(source))),
-  );
+  const visible = wallets
+    .filter(
+      (w) =>
+        (chain === "all" || w.candidate.chain === chain) &&
+        (view === "qualified"
+          ? w.status.startsWith("qualified_")
+          : view === "followed"
+            ? followed.includes(walletId(w.candidate))
+            : true) &&
+        (source === "all" ||
+          w.candidate.sources.some((s) =>
+            s.name.toLowerCase().includes(source),
+          )) &&
+        [w.candidate.wallet, ...w.candidate.sources.map((s) => s.name)]
+          .join(" ")
+          .toLowerCase()
+          .includes(search.trim().toLowerCase()),
+    )
+    .sort((a, b) =>
+      sort === "records"
+        ? b.records - a.records
+        : (b.coverage.last_collected_at ?? 0) -
+          (a.coverage.last_collected_at ?? 0),
+    );
   const feed = wallets
     .filter((w) => followed.includes(walletId(w.candidate)))
-    .flatMap((w) => w.activity.map((a) => ({ ...a, candidate: w.candidate })))
+    .flatMap((w) =>
+      w.activity.map((a) => ({
+        ...a,
+        candidate: w.candidate,
+        markets: w.markets,
+      })),
+    )
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, 20);
 
@@ -292,12 +321,8 @@ export function WalletTracker() {
           <Users size={14} strokeWidth={1.5} />
           Wallet intelligence
         </div>
-        <h1 id="wallet-title">
-          A record worth
-          <br />
-          <span>paying attention to.</span>
-        </h1>
-        <p>Discover wallets. Check both months. Follow what they do next.</p>
+        <h1 id="wallet-title">Wallet tracker</h1>
+        <p>Inspect activity, positions and the record behind each wallet.</p>
         <div className="wallet-method">
           <ShieldCheck size={16} strokeWidth={1.5} />
           <span>
@@ -314,7 +339,7 @@ export function WalletTracker() {
           <strong>{response ? qualified.length : "—"}</strong>
         </div>
         <div>
-          <span>Wallets under research</span>
+          <span>Collected wallets</span>
           <strong>{response ? wallets.length : "—"}</strong>
         </div>
         <div>
@@ -324,7 +349,9 @@ export function WalletTracker() {
         <div>
           <span>Discovery attempted</span>
           <strong className="wallet-summary-date">
-            {date(response?.status.last_discovery_at ?? null)}
+            {response
+              ? date(response.status.last_discovery_at ?? null)
+              : "Unavailable"}
           </strong>
         </div>
       </section>
@@ -404,6 +431,17 @@ export function WalletTracker() {
                   : v === "research"
                     ? "Under research"
                     : "Following"}
+                {response && (
+                  <span className="tab-count">
+                    {v === "qualified"
+                      ? qualified.length
+                      : v === "research"
+                        ? wallets.length
+                        : wallets.filter((w) =>
+                            followed.includes(walletId(w.candidate)),
+                          ).length}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -455,10 +493,27 @@ export function WalletTracker() {
               <option value="onchain">Onchain activity</option>
             </select>
           </label>
-          <p>
-            30-day record required. 60 days preferred. Each month assessed
-            separately.
-          </p>
+          <label className="wallet-search">
+            <Search size={15} aria-hidden="true" />
+            <input
+              aria-label="Search collected wallets"
+              placeholder="Search address or source"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              type="search"
+            />
+          </label>
+          <label>
+            Sort
+            <select
+              aria-label="Sort wallets"
+              value={sort}
+              onChange={(event) => setSort(event.target.value)}
+            >
+              <option value="latest">Last checked</option>
+              <option value="records">Records saved</option>
+            </select>
+          </label>
         </div>
         {error && (
           <div className="error-line" role="alert">
@@ -491,127 +546,171 @@ export function WalletTracker() {
             is retained; Solana collection resumes as credits become available.
           </p>
         )}
-        {loading && !response ? (
-          <div className="wallet-empty" role="status">
-            <Activity size={22} className="spin" />
-            <h2>Reading wallet evidence…</h2>
-          </div>
-        ) : visible.length === 0 ? (
-          <div className="wallet-empty">
-            <ShieldCheck size={25} strokeWidth={1.4} />
-            <h2>
-              {view === "qualified"
-                ? "The record comes first."
-                : view === "followed"
-                  ? "Your watch begins here."
-                  : "Waiting for wallet history."}
-            </h2>
-            <p>
-              {view === "qualified"
-                ? "No collected wallet meets these filters and the qualification checks yet. Incomplete history stays under research."
-                : view === "followed"
-                  ? "Follow a wallet from the research list to bring its activity together here. Following does not verify performance."
-                  : "Automatic discovery adds candidates as evidence arrives. Collection continues independently of this page."}
-            </p>
-            {view === "qualified" && (
-              <button
-                type="button"
-                className="wallet-inline-button"
-                onClick={() => setView("research")}
-              >
-                See wallets under research <ArrowRight size={15} />
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="wallet-list">
-            <div className="wallet-list-head">
-              <span>Execution wallet / discovery</span>
-              <span>Record</span>
-              <span>Latest evidence</span>
-              <span>Last collected</span>
-            </div>
-            {visible.map((w) => (
-              <div className="wallet-row" key={walletId(w.candidate)}>
+        <div className={`wallet-master-detail ${detail ? "has-detail" : ""}`}>
+          <div className="wallet-master">
+            {loading && !response ? (
+              <div className="wallet-empty" role="status">
+                <Activity size={22} className="spin" />
+                <h2>Reading wallet evidence…</h2>
+              </div>
+            ) : !response && error ? (
+              <div className="wallet-empty wallet-unavailable">
+                <Activity size={25} aria-hidden="true" />
+                <h2>Wallet service unavailable</h2>
+                <p>
+                  The API did not return wallet data. This does not tell us
+                  whether saved wallets or history exist. Retry when the service
+                  is responding.
+                </p>
                 <button
-                  className="wallet-row-main"
                   type="button"
-                  onClick={(event) => {
-                    openingButton.current = event.currentTarget;
-                    void open(w);
-                  }}
-                  aria-busy={detailLoading === walletId(w.candidate)}
-                  aria-expanded={
-                    detail?.candidate.wallet === w.candidate.wallet &&
-                    detail.candidate.chain === w.candidate.chain
-                  }
+                  className="wallet-inline-button"
+                  onClick={() => void refresh()}
+                  disabled={loading}
                 >
-                  <span className="wallet-identity">
-                    <strong>{shortAddress(w.candidate.wallet)}</strong>
-                    <small>
-                      {chainLabel(w.candidate.chain)} ·{" "}
-                      {w.candidate.sources.map((s) => s.name).join(" / ")}
-                    </small>
-                  </span>
-                  <span
-                    className={`wallet-record ${w.status.startsWith("qualified_") ? "qualified" : ""}`}
-                  >
-                    {statusLabel(w.status)}
-                    <small className="wallet-record-progress">
-                      {w.records.toLocaleString()} saved ·{" "}
-                      {w.coverage.pending_records.toLocaleString()} awaiting
-                      reconstruction
-                    </small>
-                  </span>
-                  <span className="wallet-pnl">
-                    {w.status.startsWith("qualified_")
-                      ? amount(w.windows[1]?.total_usd ?? null, true)
-                      : w.coverage.newest_record_at
-                        ? `Latest execution ${date(w.coverage.newest_record_at)}`
-                        : "No execution received"}
-                  </span>
-                  <span className="wallet-last">
-                    {date(w.coverage.last_collected_at)}
-                    {detailLoading === walletId(w.candidate) ? (
-                      <Activity size={14} className="spin" />
-                    ) : (
-                      <ChevronDown size={14} />
-                    )}
-                  </span>
-                </button>
-                <button
-                  className={`wallet-follow ${followed.includes(walletId(w.candidate)) ? "active" : ""}`}
-                  type="button"
-                  aria-pressed={followed.includes(walletId(w.candidate))}
-                  aria-label={`${followed.includes(walletId(w.candidate)) ? "Unfollow" : "Follow"} ${w.candidate.wallet}`}
-                  onClick={() => follow(w.candidate)}
-                >
-                  <Star size={17} />
+                  Retry connection <RefreshCw size={15} aria-hidden="true" />
                 </button>
               </div>
-            ))}
+            ) : visible.length === 0 ? (
+              <div className="wallet-empty">
+                <ShieldCheck size={25} strokeWidth={1.4} />
+                <h2>
+                  {search.trim()
+                    ? "No matching wallets"
+                    : view === "qualified"
+                      ? "The record comes first."
+                      : view === "followed"
+                        ? "Your watch begins here."
+                        : "Waiting for wallet history."}
+                </h2>
+                <p>
+                  {search.trim()
+                    ? "Try another address or clear the search. Chain and discovery filters still apply."
+                    : view === "qualified"
+                      ? "No collected wallet meets these filters and the qualification checks yet. Incomplete history stays under research."
+                      : view === "followed"
+                        ? "Follow a wallet from the research list to bring its activity together here. Following does not verify performance."
+                        : "Automatic discovery adds candidates as evidence arrives. Collection continues independently of this page."}
+                </p>
+                {view === "qualified" && (
+                  <button
+                    type="button"
+                    className="wallet-inline-button"
+                    onClick={() => setView("research")}
+                  >
+                    See wallets under research <ArrowRight size={15} />
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="wallet-list">
+                <div className="wallet-list-head">
+                  <span>Wallet / source</span>
+                  <span>History status</span>
+                  <span>Latest activity</span>
+                  <span>Last checked</span>
+                </div>
+                {visible.map((w) => (
+                  <div className="wallet-row" key={walletId(w.candidate)}>
+                    <button
+                      className="wallet-row-main"
+                      type="button"
+                      onClick={(event) => {
+                        openingButton.current = event.currentTarget;
+                        void open(w);
+                      }}
+                      aria-busy={detailLoading === walletId(w.candidate)}
+                      aria-expanded={
+                        detail?.candidate.wallet === w.candidate.wallet &&
+                        detail.candidate.chain === w.candidate.chain
+                      }
+                      data-selected={
+                        detail?.candidate.wallet === w.candidate.wallet &&
+                        detail.candidate.chain === w.candidate.chain
+                      }
+                    >
+                      <span className="wallet-identity">
+                        <strong>{shortAddress(w.candidate.wallet)}</strong>
+                        <small>
+                          {chainLabel(w.candidate.chain)} ·{" "}
+                          {w.candidate.sources.map((s) => s.name).join(" / ")}
+                        </small>
+                      </span>
+                      <span
+                        className={`wallet-record ${w.status.startsWith("qualified_") ? "qualified" : ""}`}
+                      >
+                        {statusLabel(w.status)}
+                        <small className="wallet-record-progress">
+                          {w.records.toLocaleString()} saved ·{" "}
+                          {w.coverage.pending_records.toLocaleString()} awaiting
+                          reconstruction
+                        </small>
+                      </span>
+                      <span className="wallet-pnl">
+                        <small className="mobile-field-label">
+                          {w.status.startsWith("qualified_")
+                            ? "Latest 30-day result"
+                            : "Latest execution"}
+                        </small>
+                        {w.status.startsWith("qualified_")
+                          ? amount(w.windows[1]?.total_usd ?? null, true)
+                          : w.coverage.newest_record_at
+                            ? date(w.coverage.newest_record_at)
+                            : "No execution received"}
+                      </span>
+                      <span className="wallet-last">
+                        <small className="mobile-field-label">
+                          Last checked
+                        </small>
+                        {date(w.coverage.last_collected_at)}
+                        {detailLoading === walletId(w.candidate) ? (
+                          <Activity size={14} className="spin" />
+                        ) : (
+                          <ChevronDown size={14} />
+                        )}
+                      </span>
+                    </button>
+                    <button
+                      className={`wallet-follow ${followed.includes(walletId(w.candidate)) ? "active" : ""}`}
+                      type="button"
+                      aria-pressed={followed.includes(walletId(w.candidate))}
+                      aria-label={`${followed.includes(walletId(w.candidate)) ? "Unfollow" : "Follow"} ${w.candidate.wallet}`}
+                      onClick={() => follow(w.candidate)}
+                    >
+                      <Star size={17} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {detailLoading && (
+              <p className="wallet-detail-loading" role="status">
+                <Activity size={15} className="spin" />
+                Loading saved wallet evidence…
+              </p>
+            )}
           </div>
-        )}
-        {detailLoading && (
-          <p className="wallet-detail-loading" role="status">
-            <Activity size={15} className="spin" />
-            Loading saved wallet evidence…
-          </p>
-        )}
-        {detail && (
-          <div ref={detailView}>
-            <WalletDetail
-              wallet={detail}
-              onClose={() => {
-                detailRequest.current?.abort();
-                setDetail(null);
-                window.requestAnimationFrame(() =>
-                  openingButton.current?.focus(),
-                );
-              }}
-            />
-          </div>
-        )}
+          {detail && (
+            <div
+              ref={detailView}
+              tabIndex={-1}
+              role="group"
+              aria-label={`Wallet profile ${shortAddress(detail.candidate.wallet)}`}
+            >
+              <WalletDetail
+                key={walletId(detail.candidate)}
+                wallet={detail}
+                onClose={() => {
+                  detailRequest.current?.abort();
+                  setDetail(null);
+                  window.requestAnimationFrame(() =>
+                    openingButton.current?.focus(),
+                  );
+                }}
+              />
+            </div>
+          )}
+        </div>
         {response?.status.nomination_enabled && (
           <details className="wallet-nominate">
             <summary>Nominate an execution wallet</summary>
@@ -680,10 +779,19 @@ export function WalletTracker() {
                   <small>
                     {shortAddress(a.candidate.wallet)} ·{" "}
                     {chainLabel(a.candidate.chain)} ·{" "}
-                    {a.asset ? shortAddress(a.asset) : "Amounts unverified"}
+                    {a.asset
+                      ? tokenLabel(a.asset, a.markets)
+                      : "Amounts unverified"}
                   </small>
                 </div>
-                <span>{amount(a.quantity)}</span>
+                <span>
+                  {unitPrice(a.quantity)}
+                  <small>
+                    {a.value_usd === null
+                      ? "USD value unavailable"
+                      : `Est. ${unitPrice(a.value_usd, true)}`}
+                  </small>
+                </span>
                 <a
                   href={evidenceLink(a.candidate.chain, a.tx, "tx")}
                   target="_blank"
@@ -702,7 +810,8 @@ export function WalletTracker() {
           )}
         </section>
       )}
-      <section className="wallet-principles">
+      <details className="wallet-principles">
+        <summary>How wallet qualification works</summary>
         <h2>Consistency has a paper trail.</h2>
         <p>
           Two profitable months, enough completed positions, losses included,
@@ -715,7 +824,7 @@ export function WalletTracker() {
           past profit does not measure the price or liquidity available to
           someone following later.
         </p>
-      </section>
+      </details>
     </>
   );
 }
@@ -729,12 +838,23 @@ function WalletDetail({
 }) {
   const chain = w.candidate.chain;
   const [positionLimit, setPositionLimit] = useState(20);
-  const positions = [...w.positions].sort(
-    (a, b) =>
-      Number(Number(b.valuation?.quantity ?? b.quantity) > 0) -
-        Number(Number(a.valuation?.quantity ?? a.quantity) > 0) ||
-      (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0),
-  );
+  const [assetSearch, setAssetSearch] = useState("");
+  const tabs = useResearchTabs<
+    "activity" | "positions" | "performance" | "evidence"
+  >("activity");
+  const positions = [...w.positions]
+    .sort(
+      (a, b) =>
+        Number(Number(b.valuation?.quantity ?? b.quantity) > 0) -
+          Number(Number(a.valuation?.quantity ?? a.quantity) > 0) ||
+        (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0),
+    )
+    .filter((p) =>
+      [p.asset, tokenLabel(p.asset, w.markets)]
+        .join(" ")
+        .toLowerCase()
+        .includes(assetSearch.trim().toLowerCase()),
+    );
   return (
     <section
       className="wallet-detail"
@@ -742,7 +862,7 @@ function WalletDetail({
     >
       <div className="wallet-detail-title">
         <div>
-          <div className="eyebrow">Execution record · {chainLabel(chain)}</div>
+          <div className="eyebrow">Wallet profile · {chainLabel(chain)}</div>
           <h2>{shortAddress(w.candidate.wallet)}</h2>
         </div>
         <button
@@ -754,230 +874,347 @@ function WalletDetail({
           <X size={19} />
         </button>
       </div>
-      <a
-        className="wallet-full-address"
-        href={evidenceLink(chain, w.candidate.wallet)}
-        target="_blank"
-        rel="noreferrer"
-      >
-        {w.candidate.wallet}
-        <ExternalLink size={14} />
-      </a>
+      <div className="wallet-address-line">
+        <a
+          className="wallet-full-address"
+          href={evidenceLink(chain, w.candidate.wallet)}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {w.candidate.wallet}
+          <ExternalLink size={14} />
+        </a>
+        <CopyAddress value={w.candidate.wallet} label="wallet address" />
+      </div>
       <p className="wallet-detail-status">
         {statusLabel(w.status)} · As of {date(w.analyzed_at)}
       </p>
-      <WalletTransactions key={walletId(w.candidate)} wallet={w} />
-      <div className="wallet-window-grid">
-        {w.windows.map((window, i) => (
-          <section key={window.start} className="wallet-window">
-            <div className="eyebrow">
-              {i === 0 ? "Previous 30 days" : "Latest 30 days"}
-            </div>
-            <h3>
-              {window.qualified ? "Checks passed" : "Record under review"}
-            </h3>
-            <p>
-              {date(window.start)} — {date(window.end)}
-            </p>
-            <dl>
-              <div>
-                <dt>Realized result</dt>
-                <dd>{amount(window.realized_usd, true)}</dd>
-              </div>
-              <div>
-                <dt>Change in open PnL</dt>
-                <dd>{amount(window.open_change_usd, true)}</dd>
-              </div>
-              <div>
-                <dt>Network fees</dt>
-                <dd>{amount(window.fees_usd, true)}</dd>
-              </div>
-              <div>
-                <dt>Total after fees</dt>
-                <dd>{amount(window.total_usd, true)}</dd>
-              </div>
-              <div>
-                <dt>Completed episodes</dt>
-                <dd>{window.episodes}</dd>
-              </div>
-              <div>
-                <dt>Profit factor</dt>
-                <dd>{amount(window.profit_factor)}</dd>
-              </div>
-            </dl>
-            <p className="wallet-value-note">
-              Available values describe reconstructed evidence. A rank requires
-              every check below.
-            </p>
-            <details className="wallet-qualification-checks">
-              <summary>
-                {window.gates.filter((g) => g.passed).length} /{" "}
-                {window.gates.length} qualification checks passed
-              </summary>
-              <ul className="wallet-gates">
-                {window.gates.map((g) => (
-                  <li key={g.name}>
-                    <span className={g.passed ? "pass" : "pending"}>
-                      {g.passed ? (
-                        <Check size={14} />
-                      ) : (
-                        <span aria-hidden="true">—</span>
-                      )}
-                    </span>
-                    <div>
-                      <strong>{g.name}</strong>
-                      <p>{g.detail}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          </section>
-        ))}
+      <div className="profile-metrics">
+        <div>
+          <span>Saved records</span>
+          <strong>{w.records.toLocaleString()}</strong>
+        </div>
+        <div>
+          <span>Unresolved</span>
+          <strong>{w.unresolved_records.toLocaleString()}</strong>
+        </div>
+        <div>
+          <span>Assets recorded</span>
+          <strong>{w.positions.length.toLocaleString()}</strong>
+        </div>
+        <div>
+          <span>History</span>
+          <strong className="metric-word">
+            {w.coverage.history_complete ? "Complete" : "Incomplete"}
+          </strong>
+        </div>
       </div>
-      <div className="wallet-coverage">
-        <h3>What the history covers.</h3>
-        <dl>
-          <div>
-            <dt>Current history checked</dt>
-            <dd>{date(w.coverage.last_collected_at)}</dd>
-          </div>
-          <div>
-            <dt>Account and balances checked</dt>
-            <dd>{date(w.coverage.last_state_checked_at ?? null)}</dd>
-          </div>
-          <div>
-            <dt>Records saved</dt>
-            <dd>{w.records}</dd>
-          </div>
-          <div>
-            <dt>Unresolved records</dt>
-            <dd>{w.unresolved_records}</dd>
-          </div>
-          <div>
-            <dt>Oldest execution</dt>
-            <dd>{date(w.coverage.oldest_record_at)}</dd>
-          </div>
-          <div>
-            <dt>Latest execution</dt>
-            <dd>{date(w.coverage.newest_record_at)}</dd>
-          </div>
-          <div>
-            <dt>History</dt>
-            <dd>{w.coverage.history_complete ? "Complete" : "Incomplete"}</dd>
-          </div>
-          <div>
-            <dt>Execution account</dt>
-            <dd>
-              {w.coverage.execution_account_verified
-                ? "Supported wallet"
-                : "Unverified"}
-            </dd>
-          </div>
-          <div>
-            <dt>Ending balances</dt>
-            <dd>
-              {w.coverage.balances_reconciled ? "Reconciled" : "Unverified"}
-            </dd>
-          </div>
-        </dl>
-        {w.coverage.state_error && (
-          <p>Latest balance read: {w.coverage.state_error}</p>
-        )}
-        {w.coverage.notes.map((note, i) => (
-          <p key={i}>{note}</p>
-        ))}
+      <ResearchTabs
+        id={tabs.id}
+        active={tabs.active}
+        onChange={tabs.select}
+        label="Wallet profile views"
+        tabs={[
+          { id: "activity", label: "Activity" },
+          { id: "positions", label: "Positions", count: w.positions.length },
+          { id: "performance", label: "Performance" },
+          { id: "evidence", label: "Evidence" },
+        ]}
+      />
+      <div {...tabs.panel("activity")}>
+        <WalletTransactions key={walletId(w.candidate)} wallet={w} />
       </div>
-      <div className="wallet-positions">
-        <h3>Positions, including the losses.</h3>
-        {w.positions.length ? (
-          positions.slice(0, positionLimit).map((p) => (
-            <div className="wallet-position-row" key={p.asset}>
-              <a
-                href={evidenceLink(chain, p.asset)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <span>
-                  {tokenLabel(p.asset, w.markets)}
-                  <small>{shortAddress(p.asset)}</small>
-                </span>
-                <ExternalLink size={12} />
-              </a>
-              <span>
-                {unitPrice(p.valuation?.quantity ?? p.quantity)} tokens
-                <small>
-                  {p.valuation?.quantity_source ?? "Reconstructed quantity"} ·{" "}
-                  {date(p.valuation?.quantity_observed_at ?? w.analyzed_at)}
-                </small>
-                {p.valuation?.quantity_block && (
-                  <small>{p.valuation.quantity_block}</small>
-                )}
-              </span>
-              <span>
-                Value{" "}
-                {p.market_value_usd === null
-                  ? "Unavailable"
-                  : unitPrice(p.market_value_usd, true)}
-                <small>
-                  {p.valuation?.price_usd
-                    ? `${unitPrice(p.valuation.price_usd, true)} / token`
-                    : "Price unavailable"}
-                </small>
-                <small>
-                  {p.valuation?.source}{" "}
-                  {p.valuation?.price_observed_at
-                    ? `· ${date(p.valuation.price_observed_at)}`
-                    : ""}
-                </small>
-                <small>{p.valuation?.detail}</small>
-              </span>
-              <span>
-                Basis {amount(String(Number(p.basis_coverage) * 100))}%
-                <small>
-                  Average open entry{" "}
-                  {unitPrice(p.average_entry_usd ?? null, true)}
-                </small>
+      <div {...tabs.panel("performance")}>
+        <p className="view-description">
+          Each 30-day window is assessed separately. Incomplete records do not
+          establish profitability.
+        </p>
+        <div className="wallet-window-grid">
+          {w.windows.map((window, i) => (
+            <section key={window.start} className="wallet-window">
+              <div className="eyebrow">
+                {i === 0 ? "Previous 30 days" : "Latest 30 days"}
+              </div>
+              <h3>
+                {window.qualified ? "Checks passed" : "Record under review"}
+              </h3>
+              <p>
+                {date(window.start)} — {date(window.end)}
+              </p>
+              <dl>
+                <div>
+                  <dt>Realized result</dt>
+                  <dd>{amount(window.realized_usd, true)}</dd>
+                </div>
+                <div>
+                  <dt>Change in open PnL</dt>
+                  <dd>{amount(window.open_change_usd, true)}</dd>
+                </div>
+                <div>
+                  <dt>Network fees</dt>
+                  <dd>{amount(window.fees_usd, true)}</dd>
+                </div>
+                <div>
+                  <dt>Total after fees</dt>
+                  <dd>{amount(window.total_usd, true)}</dd>
+                </div>
+                <div>
+                  <dt>Completed episodes</dt>
+                  <dd>{window.episodes}</dd>
+                </div>
+                <div>
+                  <dt>Winning / losing episodes</dt>
+                  <dd>
+                    {window.wins} / {window.losses}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Active days</dt>
+                  <dd>{window.active_days}</dd>
+                </div>
+                <div>
+                  <dt>Profit factor</dt>
+                  <dd>{amount(window.profit_factor)}</dd>
+                </div>
+              </dl>
+              <p className="wallet-value-note">
+                Available values describe reconstructed evidence. A rank
+                requires every check below.
+              </p>
+              <details className="wallet-qualification-checks">
+                <summary>
+                  {window.gates.filter((g) => g.passed).length} /{" "}
+                  {window.gates.length} qualification checks passed
+                </summary>
+                <ul className="wallet-gates">
+                  {window.gates.map((g) => (
+                    <li key={g.name}>
+                      <span className={g.passed ? "pass" : "pending"}>
+                        {g.passed ? (
+                          <Check size={14} />
+                        ) : (
+                          <span aria-hidden="true">—</span>
+                        )}
+                      </span>
+                      <div>
+                        <strong>{g.name}</strong>
+                        <p>{g.detail}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </section>
+          ))}
+        </div>
+      </div>
+      <div {...tabs.panel("positions")}>
+        <div className="wallet-positions">
+          <div className="view-heading">
+            <h3>Positions</h3>
+            <span>
+              {positions.length} of {w.positions.length} assets
+            </span>
+          </div>
+          <p className="view-description">
+            Current value, received quantity and saved cost basis. Unpriced
+            assets remain unavailable.
+          </p>
+          <label className="wallet-search position-search">
+            <Search size={15} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="Search wallet assets"
+              placeholder="Search token, ticker or address"
+              value={assetSearch}
+              onChange={(event) => {
+                setAssetSearch(event.target.value);
+                setPositionLimit(20);
+              }}
+            />
+          </label>
+          <div className="wallet-position-head" aria-hidden="true">
+            <span>Token</span>
+            <span>Quantity</span>
+            <span>Current value</span>
+            <span>Basis coverage</span>
+          </div>
+          {positions.length ? (
+            positions.slice(0, positionLimit).map((p) => (
+              <div className="wallet-position-row" key={p.asset}>
                 <a
-                  className="wallet-inspect-token"
-                  href={`/?chain=${chain}&address=${encodeURIComponent(p.asset)}`}
+                  href={evidenceLink(chain, p.asset)}
+                  target="_blank"
+                  rel="noreferrer"
                 >
-                  Inspect token <ArrowRight size={12} />
+                  <span>
+                    {tokenLabel(p.asset, w.markets)}
+                    <small>{shortAddress(p.asset)}</small>
+                  </span>
+                  <ExternalLink size={12} />
                 </a>
-              </span>
+                <span>
+                  <small className="mobile-field-label">Quantity</small>
+                  {unitPrice(p.valuation?.quantity ?? p.quantity)} tokens
+                </span>
+                <span>
+                  <small className="mobile-field-label">Current value</small>
+                  Value{" "}
+                  {p.market_value_usd === null
+                    ? "Unavailable"
+                    : unitPrice(p.market_value_usd, true)}
+                  <small>
+                    {p.valuation?.price_usd
+                      ? `${unitPrice(p.valuation.price_usd, true)} / token`
+                      : "Price unavailable"}
+                  </small>
+                </span>
+                <span>
+                  <small className="mobile-field-label">Basis coverage</small>
+                  {amount(String(Number(p.basis_coverage) * 100))}% known
+                  <small>
+                    Average open entry{" "}
+                    {unitPrice(p.average_entry_usd ?? null, true)}
+                  </small>
+                  <a
+                    className="wallet-inspect-token"
+                    href={`/?chain=${chain}&address=${encodeURIComponent(p.asset)}`}
+                  >
+                    Inspect token <ArrowRight size={12} />
+                  </a>
+                </span>
+                <details className="position-evidence">
+                  <summary>Balance &amp; price evidence</summary>
+                  <dl>
+                    <div>
+                      <dt>Quantity source</dt>
+                      <dd>
+                        {p.valuation?.quantity_source ??
+                          "Reconstructed from saved transactions"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Quantity observed</dt>
+                      <dd>
+                        {date(
+                          p.valuation?.quantity_observed_at ?? w.analyzed_at,
+                        )}
+                      </dd>
+                    </div>
+                    {p.valuation?.quantity_block && (
+                      <div>
+                        <dt>Block / slot</dt>
+                        <dd>{p.valuation.quantity_block}</dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt>Price source</dt>
+                      <dd>{p.valuation?.source ?? "Not received"}</dd>
+                    </div>
+                    <div>
+                      <dt>Price observed</dt>
+                      <dd>
+                        {p.valuation?.price_observed_at
+                          ? date(p.valuation.price_observed_at)
+                          : "Not received"}
+                      </dd>
+                    </div>
+                  </dl>
+                  {p.valuation?.detail && <p>{p.valuation.detail}</p>}
+                </details>
+              </div>
+            ))
+          ) : (
+            <p>
+              {assetSearch.trim()
+                ? "No assets match this search."
+                : "No positions can be reconstructed yet."}
+            </p>
+          )}
+          {positions.length > positionLimit && (
+            <button
+              type="button"
+              className="wallet-inline-button"
+              onClick={() => setPositionLimit((n) => n + 20)}
+            >
+              Show more assets ({positionLimit} of {positions.length}){" "}
+              <ArrowRight size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+      <div {...tabs.panel("evidence")}>
+        <div className="wallet-coverage">
+          <h3>What the history covers.</h3>
+          <dl>
+            <div>
+              <dt>Current history checked</dt>
+              <dd>{date(w.coverage.last_collected_at)}</dd>
             </div>
-          ))
-        ) : (
-          <p>No positions can be reconstructed yet.</p>
-        )}
-        {positions.length > positionLimit && (
-          <button
-            type="button"
-            className="wallet-inline-button"
-            onClick={() => setPositionLimit((n) => n + 20)}
-          >
-            Show more assets ({positionLimit} of {positions.length}){" "}
-            <ArrowRight size={14} />
-          </button>
-        )}
-      </div>
-      <div className="wallet-sources">
-        <h3>Discovery evidence.</h3>
-        {w.candidate.sources.map((s, i) => (
-          <div key={i}>
-            <strong>
-              {s.name}
-              {s.profile ? ` · ${s.profile}` : ""}
-            </strong>
-            <p>{s.detail}</p>
-            <small>{date(s.observed_at)}</small>
-          </div>
-        ))}
-      </div>
-      <div className="wallet-detail-notes">
-        {w.notes.map((note) => (
-          <p key={note}>{note}</p>
-        ))}
+            <div>
+              <dt>Account and balances checked</dt>
+              <dd>{date(w.coverage.last_state_checked_at ?? null)}</dd>
+            </div>
+            <div>
+              <dt>Records saved</dt>
+              <dd>{w.records}</dd>
+            </div>
+            <div>
+              <dt>Unresolved records</dt>
+              <dd>{w.unresolved_records}</dd>
+            </div>
+            <div>
+              <dt>Oldest execution</dt>
+              <dd>{date(w.coverage.oldest_record_at)}</dd>
+            </div>
+            <div>
+              <dt>Latest execution</dt>
+              <dd>{date(w.coverage.newest_record_at)}</dd>
+            </div>
+            <div>
+              <dt>History</dt>
+              <dd>{w.coverage.history_complete ? "Complete" : "Incomplete"}</dd>
+            </div>
+            <div>
+              <dt>Execution account</dt>
+              <dd>
+                {w.coverage.execution_account_verified
+                  ? "Supported wallet"
+                  : "Unverified"}
+              </dd>
+            </div>
+            <div>
+              <dt>Ending balances</dt>
+              <dd>
+                {w.coverage.balances_reconciled ? "Reconciled" : "Unverified"}
+              </dd>
+            </div>
+          </dl>
+          {w.coverage.state_error && (
+            <p>Latest balance read: {w.coverage.state_error}</p>
+          )}
+          {w.coverage.notes.map((note, i) => (
+            <p key={i}>{note}</p>
+          ))}
+        </div>
+        <div className="wallet-sources">
+          <h3>Discovery evidence.</h3>
+          {w.candidate.sources.map((s, i) => (
+            <div key={i}>
+              <strong>
+                {s.name}
+                {s.profile ? ` · ${s.profile}` : ""}
+              </strong>
+              <p>{s.detail}</p>
+              <small>{date(s.observed_at)}</small>
+            </div>
+          ))}
+        </div>
+        <div className="wallet-detail-notes">
+          {w.notes.map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </div>
       </div>
     </section>
   );
@@ -1169,7 +1406,7 @@ function TransactionRow({
     }
   }
   return (
-    <details className="wallet-transaction">
+    <details className="wallet-transaction" data-kind={kind}>
       <summary>
         <span>
           <strong>
@@ -1193,7 +1430,7 @@ function TransactionRow({
             {trade && (
               <small>
                 {trade.pricing?.unit_price_usd
-                  ? `${unitPrice(trade.pricing.unit_price_usd, true)} / token`
+                  ? `Est. ${unitPrice(trade.pricing.unit_price_usd, true)} / token`
                   : `${unitPrice(trade.pricing?.unit_price_quote ?? null)} ${trade.quote_asset ?? ""} / token`}
               </small>
             )}
