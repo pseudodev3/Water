@@ -38,7 +38,7 @@ pub struct Page {
     pub scan_range: Option<(u64, u64)>,
 }
 
-pub fn record_priority(record: &Record) -> u64 {
+pub fn record_timestamp(record: &Record) -> Option<u64> {
     record
         .transaction
         .as_ref()
@@ -50,6 +50,9 @@ pub fn record_priority(record: &Record) -> u64 {
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .and_then(|d| u64::try_from(d.timestamp()).ok())
         })
+}
+pub fn record_priority(record: &Record) -> u64 {
+    record_timestamp(record)
         .or_else(|| record.raw["block_number"].as_u64())
         .unwrap_or(0)
 }
@@ -134,10 +137,10 @@ impl Providers {
             .as_deref()
             == Some("mainnet.helius-rpc.com")
         {
-            self.store.reserve_http_in_lane(
+            self.store.reserve_work(
                 now(),
                 self.daily_limit,
-                Some(self.helius_credit_limit),
+                Some((self.helius_credit_limit, helius_cost(method, &params))),
                 self.lane,
             )?;
         } else {
@@ -235,6 +238,17 @@ impl Providers {
             }
         }
         Err("Helius rejected the configured credentials; saved history is retained.".into())
+    }
+
+    pub async fn token_metadata(
+        &self,
+        assets: &[String],
+    ) -> Result<Vec<crate::model::TokenQuote>, String> {
+        if self.helius_keys.is_empty() || assets.is_empty() {
+            return Ok(Vec::new());
+        }
+        let value=self.helius_rpc("getAssetBatch",json!({"ids":assets.iter().take(1000).collect::<Vec<_>>(),"options":{"showFungible":true}})).await?;
+        Ok(das_metadata(&value, assets, now()))
     }
 
     async fn solana_rpc(&self, method: &str, params: Value) -> Result<Value, String> {
@@ -758,8 +772,7 @@ impl Providers {
                 let trace_error = trace_result.as_ref().err().cloned();
                 let trace = match trace_result {
                     Ok(value) => value,
-                    Err(_) if matches!(candidate.chain, Chain::Bnb) => Value::Null,
-                    Err(error) => return Err(error),
+                    Err(_) => Value::Null,
                 };
                 let mut decimals = BTreeMap::new();
                 let mut verified_pairs = Vec::new();
@@ -840,8 +853,7 @@ impl Providers {
                                 let result=self.evm_archive(candidate.chain,"eth_call",json!([{"to":address,"data":"0x313ce567"},tx["blockNumber"]])).await;
                                 let value = match result {
                                     Ok(value) => value,
-                                    Err(_) if matches!(candidate.chain, Chain::Bnb) => continue,
-                                    Err(error) => return Err(error),
+                                    Err(_) => continue,
                                 };
                                 let value =
                                     hex(value.as_str().ok_or("Token decimals were not hex.")?)?;
@@ -954,11 +966,28 @@ impl Providers {
         candidate: &Candidate,
         assets: &BTreeSet<String>,
     ) -> Result<BTreeMap<String, Decimal>, String> {
+        self.balance_read(candidate, assets)
+            .await
+            .map(|(balances, _)| balances)
+    }
+
+    pub async fn balance_read(
+        &self,
+        candidate: &Candidate,
+        assets: &BTreeSet<String>,
+    ) -> Result<(BTreeMap<String, Decimal>, String), String> {
         let mut balances = BTreeMap::new();
+        let block_reference;
         match candidate.chain {
             Chain::Solana => {
+                let mut slots = Vec::new();
                 for program in [TOKEN_PROGRAM, TOKEN_2022] {
                     let value=self.solana_rpc("getTokenAccountsByOwner",json!([candidate.wallet,{"programId":program},{"encoding":"jsonParsed","commitment":"finalized"}])).await?;
+                    slots.push(
+                        value["context"]["slot"]
+                            .as_u64()
+                            .ok_or("Solana balance response omitted its slot.")?,
+                    );
                     let rows = value["value"]
                         .as_array()
                         .ok_or("Solana balances omitted value.")?;
@@ -972,9 +1001,15 @@ impl Providers {
                         *balances.entry(mint.into()).or_default() += amount;
                     }
                 }
+                block_reference =
+                    format!("finalized token-account slots {} / {}", slots[0], slots[1]);
             }
             Chain::Robinhood | Chain::Bnb => {
                 let block = self.finalized_evm_block(candidate.chain).await?;
+                block_reference = block["number"]
+                    .as_str()
+                    .ok_or("Finalized balance block omitted its number.")?
+                    .to_string();
                 for asset in assets.iter().filter(|a| !quote(candidate.chain, a)) {
                     let data = format!(
                         "0x70a08231000000000000000000000000{}",
@@ -1007,7 +1042,7 @@ impl Providers {
                 }
             }
         }
-        Ok(balances)
+        Ok((balances, block_reference))
     }
 }
 
@@ -1515,11 +1550,8 @@ fn parse_evm(
             .ok_or("Transfer contract missing.")?
             .to_ascii_lowercase();
         let Some(decimals) = decimals.get(&asset) else {
-            if matches!(chain, Chain::Bnb) {
-                complete = false;
-                continue;
-            }
-            return Err("Historical token decimals missing.".into());
+            complete = false;
+            continue;
         };
         let amount = scaled_hex(
             log["data"].as_str().ok_or("Transfer amount missing.")?,
@@ -2122,6 +2154,43 @@ mod tests {
         task.abort();
     }
     #[test]
+    fn robinhood_missing_trace_or_decimals_retains_fees_without_inventing_a_trade_price() {
+        let v: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/tracker-rh-native-swap.json"
+        ))
+        .unwrap();
+        let decimals = serde_json::from_value(v["decimals"].clone()).unwrap();
+        let parsed = parse_evm(
+            Chain::Robinhood,
+            v["id"].as_str().unwrap(),
+            v["wallet"].as_str().unwrap(),
+            &v["transaction"],
+            &v["receipt"],
+            &Value::Null,
+            &v["block"],
+            &decimals,
+            u64::MAX,
+        )
+        .unwrap();
+        assert!(!parsed.movement_complete && !parsed.swap_evidence);
+        assert!(parsed.fee_quantity.is_some());
+        assert!(!parsed.assets.is_empty());
+        let no_units = parse_evm(
+            Chain::Robinhood,
+            v["id"].as_str().unwrap(),
+            v["wallet"].as_str().unwrap(),
+            &v["transaction"],
+            &v["receipt"],
+            &Value::Null,
+            &v["block"],
+            &BTreeMap::new(),
+            u64::MAX,
+        )
+        .unwrap();
+        assert!(!no_units.movement_complete);
+        assert!(no_units.assets.iter().all(|d| d.asset == "ETH"));
+    }
+    #[test]
     fn bnb_missing_trace_retains_receipt_evidence_and_exact_bnb_fee_without_complete_economics() {
         let v: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/tracker-bnb-observed.json"
@@ -2331,5 +2400,106 @@ mod tests {
         assert!(!standard_evm_account("0x00"));
         assert!(!standard_evm_account("0x60006000"));
         assert!(!standard_evm_account("0xef0100"));
+    }
+}
+
+// Helius billing checked 2026-10-05. Keep unknown indexed methods conservative.
+fn helius_cost(method: &str, params: &Value) -> u64 {
+    match method {
+        "getTransactionsForAddress" => {
+            if params
+                .pointer("/1/transactionDetails")
+                .and_then(Value::as_str)
+                == Some("signatures")
+            {
+                10
+            } else {
+                params
+                    .pointer("/1/limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100)
+                    .div_ceil(100)
+                    .max(1)
+                    * 10
+            }
+        }
+        "getAsset" | "getAssetBatch" => 10,
+        "getAccountInfo"
+        | "getSignaturesForAddress"
+        | "getSlot"
+        | "getTokenAccountsByOwner"
+        | "getTransaction" => 1,
+        _ => 100,
+    }
+}
+
+fn das_metadata(value: &Value, assets: &[String], at: u64) -> Vec<crate::model::TokenQuote> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let asset = row["id"].as_str()?;
+            if !assets.iter().any(|a| a == asset)
+                || !matches!(
+                    row["interface"].as_str(),
+                    Some("FungibleAsset" | "FungibleToken")
+                )
+            {
+                return None;
+            }
+            Some(crate::model::TokenQuote {
+                asset: asset.into(),
+                name: row
+                    .pointer("/content/metadata/name")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                symbol: row
+                    .pointer("/token_info/symbol")
+                    .or_else(|| row.pointer("/content/metadata/symbol"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                decimals: row
+                    .pointer("/token_info/decimals")
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok()),
+                price_usd: None,
+                observed_at: at,
+                source: "Helius DAS fungible-token metadata".into(),
+                detail: "Token identity received; a current USD market mark is unavailable.".into(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod credit_metadata_tests {
+    use super::*;
+    #[test]
+    fn billing_is_weighted_and_unknown_methods_are_conservative() {
+        assert_eq!(helius_cost("getTransaction", &json!([])), 1);
+        assert_eq!(
+            helius_cost("getTransactionsForAddress", &json!(["test",{"limit":100}])),
+            10
+        );
+        assert_eq!(
+            helius_cost("getTransactionsForAddress", &json!(["test",{"limit":1000}])),
+            100
+        );
+        assert_eq!(helius_cost("getAssetBatch", &json!({})), 10);
+        assert_eq!(helius_cost("getUnknownIndexedMethod", &json!({})), 100);
+    }
+    #[test]
+    fn fungible_metadata_does_not_invent_identity_or_nft_market_values() {
+        let value = json!([
+            {"id":"test-token","interface":"FungibleToken","content":{"metadata":{"name":"Synthetic","symbol":"TEST"}},"token_info":{"decimals":9,"price_info":{"currency":"USD","price_per_token":999}}},
+            {"id":"nft","interface":"V1_NFT","content":{"metadata":{"name":"NFT"}}},
+            {"id":"other-chain-asset","interface":"FungibleToken"}
+        ]);
+        let result = das_metadata(&value, &["test-token".into(), "nft".into()], 123);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name.as_deref(), Some("Synthetic"));
+        assert_eq!(result[0].decimals, Some(9));
+        assert_eq!(result[0].price_usd, None);
     }
 }

@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+/// Received token identity and a current market mark. Never a historical fill.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TokenQuote {
+    pub asset: String,
+    pub name: Option<String>,
+    pub symbol: Option<String>,
+    pub decimals: Option<u32>,
+    pub price_usd: Option<rust_decimal::Decimal>,
+    pub observed_at: u64,
+    pub source: String,
+    pub detail: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Chain {

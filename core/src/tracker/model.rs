@@ -114,11 +114,22 @@ pub struct Coverage {
     pub fees_complete: bool,
     pub last_collected_at: Option<u64>,
     pub last_state_checked_at: Option<u64>,
+    pub balances_observed_at: Option<u64>,
+    pub state_error: Option<String>,
+    pub balance_observations: BTreeMap<String, BalanceObservation>,
     pub oldest_record_at: Option<u64>,
     pub newest_record_at: Option<u64>,
     pub pages: usize,
     pub pending_records: usize,
     pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BalanceObservation {
+    pub quantity: Decimal,
+    pub observed_at: u64,
+    pub block: String,
+    pub source: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -199,6 +210,10 @@ pub struct Position {
     pub realized_usd: Option<Decimal>,
     pub first_acquired_at: Option<u64>,
     pub last_activity_at: Option<u64>,
+    #[serde(default)]
+    pub valuation: Option<PositionValuation>,
+    #[serde(default)]
+    pub average_entry_usd: Option<Decimal>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -213,6 +228,32 @@ pub struct Activity {
     pub value_usd: Option<Decimal>,
     pub finalized: bool,
     pub counterparties: Vec<String>,
+    #[serde(default)]
+    pub pricing: ActivityPricing,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ActivityPricing {
+    pub unit_price_quote: Option<Decimal>,
+    pub unit_price_usd: Option<Decimal>,
+    pub quote_conversion: Option<Price>,
+    pub fee_asset: Option<String>,
+    pub fee_quantity: Option<Decimal>,
+    pub fee_usd: Option<Decimal>,
+    pub fee_conversion: Option<Price>,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PositionValuation {
+    pub quantity: Decimal,
+    pub quantity_source: String,
+    pub quantity_observed_at: Option<u64>,
+    pub quantity_block: Option<String>,
+    pub price_usd: Option<Decimal>,
+    pub price_observed_at: Option<u64>,
+    pub source: Option<String>,
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -228,6 +269,8 @@ pub struct Analysis {
     pub unresolved_records: usize,
     pub records: usize,
     pub notes: Vec<String>,
+    #[serde(default)]
+    pub markets: BTreeMap<String, crate::model::TokenQuote>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -262,4 +305,13 @@ mod tests {
             "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
         );
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActivityRequest {
+    pub chain: Chain,
+    pub wallet: String,
+    pub cursor: Option<String>,
+    pub limit: Option<usize>,
+    pub transaction: Option<String>,
 }

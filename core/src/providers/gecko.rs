@@ -103,6 +103,63 @@ pub enum GeckoError {
 }
 
 impl GeckoClient {
+    pub async fn token_quotes(
+        &self,
+        chain: Chain,
+        assets: &[String],
+        at: u64,
+    ) -> Result<Vec<crate::model::TokenQuote>, GeckoError> {
+        let addresses: Vec<_> = assets
+            .iter()
+            .take(30)
+            .map(|asset| market_asset_id(chain, asset))
+            .collect();
+        let payload = self
+            .get_json(&format!(
+                "{}/networks/{}/tokens/multi/{}",
+                self.host,
+                chain.market_network(),
+                addresses.join(",")
+            ))
+            .await?;
+        let rows = payload["data"]
+            .as_array()
+            .ok_or(GeckoError::InvalidResponse)?;
+        Ok(assets
+            .iter()
+            .take(30)
+            .filter_map(|asset| {
+                let address = market_asset_id(chain, asset);
+                let row = rows.iter().find(|row| {
+                    let received = row["attributes"]["address"].as_str().unwrap_or("");
+                    super::market::asset_key(chain, received)
+                        == super::market::asset_key(chain, address)
+                        && row["id"].as_str().is_some_and(|id| {
+                            id.starts_with(&format!("{}_", chain.market_network()))
+                        })
+                })?;
+                let attributes = &row["attributes"];
+                let price = decimal_value(&attributes["price_usd"]).filter(|p| *p > Decimal::ZERO);
+                Some(crate::model::TokenQuote {
+                    asset: asset.clone(),
+                    name: attributes["name"].as_str().map(str::to_owned),
+                    symbol: attributes["symbol"].as_str().map(str::to_owned),
+                    decimals: attributes["decimals"]
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok()),
+                    price_usd: price,
+                    observed_at: at,
+                    source: "GeckoTerminal token market data".into(),
+                    detail: if price.is_some() {
+                        "Current indexed market mark; not an executable or historical trade price."
+                    } else {
+                        "Token identity received; GeckoTerminal returned no current USD price."
+                    }
+                    .into(),
+                })
+            })
+            .collect())
+    }
     pub fn new(http: reqwest::Client, host: String) -> Self {
         Self {
             http,
@@ -529,11 +586,13 @@ fn market_snapshot_from_payload(payload: &Value) -> Result<MarketSnapshot, Gecko
     })
 }
 
-fn market_asset_id(chain: Chain, asset_id: &str) -> &str {
+pub(crate) fn market_asset_id(chain: Chain, asset_id: &str) -> &str {
     match chain {
         Chain::Solana if asset_id == "SOL" => SOL_WRAPPED_NATIVE,
         Chain::Robinhood if asset_id.eq_ignore_ascii_case("ETH") => ROBINHOOD_WRAPPED_NATIVE,
-        Chain::Bnb if asset_id.eq_ignore_ascii_case("BNB") => "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        Chain::Bnb if asset_id.eq_ignore_ascii_case("BNB") => {
+            "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+        }
         _ => asset_id,
     }
 }

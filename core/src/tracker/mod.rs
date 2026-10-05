@@ -1,6 +1,7 @@
 mod accounting;
 mod bnb;
 mod budget;
+mod evidence;
 pub mod model;
 mod providers;
 mod store;
@@ -17,6 +18,7 @@ pub struct Tracker {
     store: Option<Arc<Store>>,
     providers: Option<Providers>,
     gecko: GeckoClient,
+    native_prices: crate::providers::native_prices::NativePriceClient,
     error: Option<String>,
     interval: u64,
     current_interval: u64,
@@ -115,8 +117,13 @@ mod config_tests {
             Json, Router,
         };
         async fn rpc(Json(request): Json<Value>) -> Json<Value> {
-            assert_eq!(request["method"], "eth_chainId");
-            Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1237"}))
+            if request["method"] == "eth_chainId" {
+                Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1237"}))
+            } else {
+                Json(
+                    json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"This test source does not provide transaction or balance bodies"}}),
+                )
+            }
         }
         async fn bnb_rpc(Json(request): Json<Value>) -> Json<Value> {
             assert_eq!(request["method"], "eth_chainId");
@@ -182,10 +189,10 @@ mod config_tests {
             )
             .unwrap();
         store
-            .set_state(&format!("lane:history:{}", now() / DAY), "500")
+            .set_state(&format!("lane:history:{}", now() / DAY), "1900")
             .unwrap();
         store
-            .set_state(&format!("requests:{}", now() / DAY), "500")
+            .set_state(&format!("requests:{}", now() / DAY), "1900")
             .unwrap();
         let providers = Providers {
             http: http.clone(),
@@ -202,7 +209,11 @@ mod config_tests {
         let tracker = Tracker {
             store: Some(store.clone()),
             providers: Some(providers),
-            gecko: GeckoClient::new(http, url),
+            gecko: GeckoClient::new(http.clone(), url),
+            native_prices: crate::providers::native_prices::NativePriceClient::new(
+                http,
+                "http://127.0.0.1:1".into(),
+            ),
             error: None,
             interval: 60,
             current_interval: 2400,
@@ -219,10 +230,14 @@ mod config_tests {
         assert_eq!(snapshot.records.len(), 1);
         assert!(snapshot.coverage.last_collected_at.unwrap() >= started);
         assert_eq!(snapshot.coverage.last_state_checked_at, Some(old));
-        assert_eq!(store.lane_used(budget::Lane::Current, now()).unwrap(), 4);
+        let current_used = store.lane_used(budget::Lane::Current, now()).unwrap();
+        assert_eq!(current_used, 7); // Four head routes plus bounded execution/state attempts.
         tracker.tick().await.unwrap();
-        assert_eq!(store.lane_used(budget::Lane::Current, now()).unwrap(), 4);
-        assert_eq!(store.lane_used(budget::Lane::History, now()).unwrap(), 500);
+        assert_eq!(
+            store.lane_used(budget::Lane::Current, now()).unwrap(),
+            current_used
+        );
+        assert_eq!(store.lane_used(budget::Lane::History, now()).unwrap(), 1900);
         assert!(!tracker
             .detail(candidate.chain, &candidate.wallet)
             .unwrap()
@@ -257,15 +272,169 @@ mod config_tests {
         assert!(!bnb.coverage.head_complete);
         assert!(bnb.records.is_empty());
         store
-            .set_state(&format!("requests:{}", now() / DAY), "2000")
+            .set_state(
+                &format!("requests:{}", now() / DAY),
+                &(2000 + store.lane_used(budget::Lane::Current, now()).unwrap()).to_string(),
+            )
             .unwrap();
         let status = tracker.status();
-        assert_eq!(status["collection_state"], "budget_paused");
+        assert_eq!(status["collection_state"], "background_paused");
         for lane in status["request_allocations"].as_array().unwrap() {
+            if lane["purpose"] == "current" {
+                assert!(lane["available_now"].as_u64().unwrap() > 0);
+                continue;
+            }
             assert_eq!(lane["available_now"], 0);
             assert_eq!(lane["next_attempt_at"], status["budget_resets_at"]);
         }
         task.abort();
+    }
+    #[tokio::test]
+    async fn current_solana_balances_replace_old_reconstruction_even_when_background_is_paused() {
+        use axum::{routing::post, Json, Router};
+        use rust_decimal::Decimal;
+        async fn rpc(Json(request): Json<Value>) -> Json<Value> {
+            let result = match request["method"].as_str().unwrap() {
+                "getSignaturesForAddress" => json!([]),
+                "getTokenAccountsByOwner" => {
+                    let rows = if request["params"][1]["programId"]
+                        == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                    {
+                        json!([{"account":{"data":{"parsed":{"info":{"mint":"synthetic-token","tokenAmount":{"amount":"125","decimals":2}}}}}}])
+                    } else {
+                        json!([])
+                    };
+                    json!({"context":{"slot":123},"value":rows})
+                }
+                "getAccountInfo" => {
+                    json!({"context":{"slot":123},"value":{"owner":"11111111111111111111111111111111"}})
+                }
+                other => panic!("Unexpected source method {other}"),
+            };
+            Json(json!({"jsonrpc":"2.0","id":1,"result":result}))
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, Router::new().route("/", post(rpc)))
+                .await
+                .unwrap();
+        });
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut config = Config::from_env();
+        config.solana_fallback_rpc_url = url.clone();
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let at = now();
+        let candidate = Candidate {
+            chain: Chain::Solana,
+            wallet: "76CzYNKfkKqLuVANS1B43DBwvHtSLxqoYwZdTnmm3Z82".into(),
+            discovered_at: at,
+            sources: vec![],
+            observed_tokens: vec![],
+        };
+        store.nominate(candidate.clone(), 1).unwrap();
+        let record = Record {
+            id: "synthetic-old-record".into(),
+            raw: json!({"synthetic":true}),
+            error: None,
+            transaction: Some(Transaction {
+                id: "synthetic-old-record".into(),
+                timestamp: at - 100,
+                block: 1,
+                index: Some(0),
+                finalized: true,
+                succeeded: true,
+                assets: vec![Delta {
+                    asset: "synthetic-token".into(),
+                    quantity: Decimal::from(9),
+                }],
+                fee_asset: "SOL".into(),
+                fee_quantity: Some(Decimal::ZERO),
+                movement_complete: true,
+                swap_evidence: false,
+                notes: vec![],
+                counterparties: vec![],
+            }),
+        };
+        store
+            .save_page(
+                &candidate,
+                &[record],
+                &Coverage::default(),
+                &Default::default(),
+            )
+            .unwrap();
+        store
+            .save_token_quotes(
+                Chain::Solana,
+                &[crate::model::TokenQuote {
+                    asset: "synthetic-token".into(),
+                    price_usd: Some(Decimal::from(2)),
+                    observed_at: at,
+                    source: "Synthetic test mark".into(),
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        store
+            .set_state(&format!("requests:{}", at / DAY), "2000")
+            .unwrap();
+        let providers = Providers {
+            http: http.clone(),
+            config,
+            store: store.clone(),
+            helius_keys: vec![],
+            helius_credit_limit: 800000,
+            fomo_key: None,
+            rh_trace_url: url.clone(),
+            bnb_trace_url: url.clone(),
+            daily_limit: 2000,
+            lane: Some(budget::Lane::Current),
+        };
+        let tracker = Tracker {
+            store: Some(store.clone()),
+            providers: Some(providers),
+            gecko: GeckoClient::new(http.clone(), url.clone()),
+            native_prices: crate::providers::native_prices::NativePriceClient::new(http, url),
+            error: None,
+            interval: 60,
+            current_interval: 360,
+            cohort_limit: 1,
+            record_limit: 10000,
+            public_nominations: false,
+        };
+        tracker.tick().await.unwrap();
+        let detail = tracker
+            .detail(Chain::Solana, &candidate.wallet)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.positions[0].quantity, Decimal::from(9));
+        assert_eq!(
+            detail.positions[0].valuation.as_ref().unwrap().quantity,
+            Decimal::new(125, 2)
+        );
+        assert_eq!(
+            detail.positions[0].market_value_usd,
+            Some(Decimal::new(25, 1))
+        );
+        assert!(detail.positions[0]
+            .valuation
+            .as_ref()
+            .unwrap()
+            .quantity_block
+            .as_ref()
+            .unwrap()
+            .contains("123"));
+        assert!(!detail.status.starts_with("qualified_"));
+        assert_eq!(tracker.status()["collection_state"], "background_paused");
+        assert_eq!(
+            store
+                .state(&format!("requests:{}", at / DAY))
+                .unwrap()
+                .as_deref(),
+            Some("2004")
+        );
+        server.abort();
     }
 }
 
@@ -341,6 +510,10 @@ impl Tracker {
                 ),
             ),
         };
+        let native_prices = crate::providers::native_prices::NativePriceClient::new(
+            http.clone(),
+            "https://api.kraken.com".into(),
+        );
         let providers = store.as_ref().map(|store| Providers {
             http,
             config,
@@ -360,9 +533,10 @@ impl Tracker {
             store,
             providers,
             gecko,
+            native_prices,
             error,
             interval: env_number("WATER_TRACKER_INTERVAL_SECONDS", 60, 30, 3600) as u64,
-            current_interval: env_number("WATER_TRACKER_REFRESH_SECONDS", 2400, 300, 3000) as u64,
+            current_interval: env_number("WATER_TRACKER_REFRESH_SECONDS", 360, 300, 3000) as u64,
             cohort_limit: env_number("WATER_TRACKER_COHORT_LIMIT", 12, 2, 48),
             record_limit: env_number("WATER_TRACKER_RECORD_LIMIT", 10000, 100, 50000),
             public_nominations: std::env::var("WATER_TRACKER_ALLOW_PUBLIC_NOMINATIONS").as_deref()
@@ -374,6 +548,30 @@ impl Tracker {
         if self.store.is_none() {
             return;
         }
+        let market_tracker = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(45),
+                    market_tracker.enrich_tick(),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        let _ = market_tracker
+                            .store
+                            .as_ref()
+                            .unwrap()
+                            .set_state("market_error", &error);
+                    }
+                    Err(_) => {
+                        let _=market_tracker.store.as_ref().unwrap().set_state("market_error","Market enrichment exceeded its work time budget; received marks are retained.");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        });
         let tracker = self.clone();
         tokio::spawn(async move {
             loop {
@@ -401,11 +599,63 @@ impl Tracker {
             .flatten()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
-        let lanes:Vec<_> = [budget::Lane::Current,budget::Lane::History,budget::Lane::Discovery].into_iter().map(|lane| {
+        let current_used = store
+            .lane_used(budget::Lane::Current, timestamp)
+            .unwrap_or(0);
+        let background_used = used.saturating_sub(current_used);
+        let background_paused = background_used >= providers.daily_limit;
+        let current_paused = current_used >= store.current_limit;
+        let lanes:Vec<_>=[budget::Lane::Current,budget::Lane::History,budget::Lane::Discovery].into_iter().map(|lane|{
+            let current=matches!(lane,budget::Lane::Current);
+            let daily=if current {store.current_limit}else{providers.daily_limit};
             let count=store.lane_used(lane,timestamp).unwrap_or(0);
-            json!({"purpose":lane.key(),"used":count,"limit":lane.limit(providers.daily_limit),"available_now":lane.allowance(timestamp,providers.daily_limit).saturating_sub(count).min(providers.daily_limit.saturating_sub(used)),"next_attempt_at":if used>=providers.daily_limit {resets_at}else{lane.next_attempt(timestamp,providers.daily_limit,count)}})
+            let paused=if current {current_paused}else{background_paused};
+            json!({"purpose":lane.key(),"used":count,"limit":lane.limit(daily),"available_now":if paused {0}else{lane.allowance(timestamp,daily).saturating_sub(count)},"next_attempt_at":if paused {resets_at}else{lane.next_attempt(timestamp,daily,count)}})
         }).collect();
-        json!({"collection_state":if used>=providers.daily_limit {"budget_paused"}else{"scheduled"},"budget_resets_at":resets_at,"current_refresh_seconds":self.current_interval,"request_allocations":lanes,"history_detail":store.state("history_error").ok().flatten(),"enabled":true,"nomination_enabled":self.public_nominations,"detail":store.state("collector_error").ok().flatten(),"policy":POLICY,"interval_seconds":self.interval,"cohort_limit":self.cohort_limit,"requests_today":used,"daily_request_limit":providers.daily_limit,"solana_indexed_access":!providers.helius_keys.is_empty(),"rh_indexed_access":providers.config.blockscout_api_key.is_some(),"helius_key_count":providers.helius_keys.len(),"helius_credits_reserved_31d":store.helius_credits(now()).unwrap_or(0),"helius_credit_limit_31d":providers.helius_credit_limit,"bnb_history_scope":"Public token-transfer discovery; complete wallet/native-history coverage is unproved.","fomo_discovery_access":providers.fomo_key.is_some(),"last_discovery_at":store.state("discovery_time").ok().flatten().and_then(|v|v.parse::<u64>().ok()),"discovery_notes":store.state("discovery_notes").ok().flatten().and_then(|v|serde_json::from_str::<Value>(&v).ok()),"storage_configured":!store.path.is_empty(),"storage_durability":"Requires a persistent deployment volume; path configuration does not prove durability."})
+        let credit_paused =
+            store.helius_credits(timestamp).unwrap_or(0) >= providers.helius_credit_limit;
+        json!({"collection_state":if current_paused {"budget_paused"}else if background_paused {"background_paused"}else{"scheduled"},"budget_resets_at":resets_at,"current_refresh_seconds":self.effective_interval(),"request_allocations":lanes,"background_requests_today":background_used,"current_request_limit":store.current_limit,"history_detail":store.state("history_error").ok().flatten(),"market_detail":store.state("market_error").ok().flatten(),"helius_budget_paused":credit_paused,"enabled":true,"nomination_enabled":self.public_nominations,"detail":store.state("collector_error").ok().flatten(),"policy":POLICY,"interval_seconds":self.interval,"cohort_limit":self.cohort_limit,"requests_today":used,"daily_request_limit":providers.daily_limit,"solana_indexed_access":!providers.helius_keys.is_empty(),"rh_indexed_access":providers.config.blockscout_api_key.is_some(),"helius_key_count":providers.helius_keys.len(),"helius_credits_reserved_31d":store.helius_credits(timestamp).unwrap_or(0),"helius_credit_limit_31d":providers.helius_credit_limit,"bnb_history_scope":"Public token-transfer discovery; complete wallet/native-history coverage is unproved.","fomo_discovery_access":providers.fomo_key.is_some(),"last_discovery_at":store.state("discovery_time").ok().flatten().and_then(|v|v.parse::<u64>().ok()),"discovery_notes":store.state("discovery_notes").ok().flatten().and_then(|v|serde_json::from_str::<Value>(&v).ok()),"storage_configured":!store.path.is_empty(),"storage_durability":"Requires a persistent deployment volume; path configuration does not prove durability."})
+    }
+
+    fn effective_interval(&self) -> u64 {
+        let Some(store) = &self.store else {
+            return self.current_interval;
+        };
+        // Worst-case SOL head = 10 indexed + 1 standard RPC credit. Scale the
+        // cadence with cohort size instead of exhausting a free monthly plan.
+        let analyses = store.analyses().unwrap_or_default();
+        let count = store.wallet_count().unwrap_or(self.cohort_limit) as u64;
+        let sol = analyses
+            .iter()
+            .filter(|a| matches!(a.candidate.chain, Chain::Solana))
+            .count() as u64;
+        let evm = count.saturating_sub(sol);
+        let head_http = sol * 5 + evm * 28;
+        let credits = self.providers.as_ref().unwrap().helius_credit_limit / 32 * 80 / 100;
+        let at = now();
+        let spent = store.lane_used(budget::Lane::Current, at).unwrap_or(0);
+        let checks = store
+            .state(&format!("current-checks:{}", at / DAY))
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let measured = if checks > 0 {
+            (spent * count * 11).div_ceil(checks * 10)
+        } else {
+            head_http
+        };
+        let remaining = store.current_limit.saturating_sub(spent);
+        let paced = if remaining > 0 {
+            (head_http.max(measured) * (DAY - at % DAY)).div_ceil(remaining)
+        } else {
+            3600
+        };
+        self.current_interval
+            .max((sol * 14 * DAY).div_ceil(credits.max(1)))
+            .max((head_http * DAY).div_ceil(store.current_limit.max(1)))
+            .max(paced)
+            .min(3600)
     }
 
     pub fn list(&self) -> Result<Value, String> {
@@ -456,9 +706,26 @@ impl Tracker {
             return Ok(None);
         };
         let end = snapshot.coverage.last_collected_at.unwrap_or_else(now);
-        let mut analysis = accounting::analyze(snapshot, end);
+        let mut analysis = accounting::analyze(snapshot.clone(), end.saturating_add(1));
+        evidence::enrich(&mut analysis, &snapshot, store.token_quotes(chain)?, now());
+        analysis.activity.truncate(100);
         demote_stale(&mut analysis);
         Ok(Some(analysis))
+    }
+
+    pub fn activity(&self, request: ActivityRequest) -> Result<Option<Value>, String> {
+        let wallet = wallet_key(request.chain, &request.wallet)?;
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        let Some(snapshot) = store.snapshot(request.chain, &wallet)? else {
+            return Ok(None);
+        };
+        Ok(Some(evidence::activity_page(
+            &snapshot,
+            &store.token_quotes(request.chain)?,
+            &request,
+        )?))
     }
 
     pub fn nominate(&self, request: WalletRequest) -> Result<Analysis, String> {
@@ -532,7 +799,9 @@ impl Tracker {
         let end = snapshot.coverage.last_collected_at.unwrap_or(end);
         let store = self.store.clone().unwrap();
         tokio::task::spawn_blocking(move || {
-            store.save_analysis(&accounting::analyze(snapshot, end))
+            let mut analysis = accounting::analyze(snapshot, end.saturating_add(1));
+            analysis.activity.truncate(100);
+            store.save_analysis(&analysis)
         })
         .await
         .map_err(|_| "Wallet accounting worker failed.")?
@@ -545,21 +814,37 @@ impl Tracker {
             .state(&format!("requests:{}", now() / DAY))?
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
-        if used >= base.daily_limit {
-            return Err("Wallet collection reached its daily free request budget; it resumes after UTC midnight.".into());
-        }
-        // Current evidence has priority. Historical work cannot spend its allocation.
-        if store.lane_used(budget::Lane::Current, now())?
-            < budget::Lane::Current.limit(base.daily_limit)
-        {
-            if let Some(candidate) = store.next_wallet(now(), self.current_interval)? {
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    self.collect_current(&candidate),
-                )
-                .await;
-                return result.map_err(|_|"Current wallet check exceeded its collection time budget; saved evidence is retained.")?;
+        // Current work owns a separate allocation, including during a legacy
+        // background-budget pause. Different wallets may be checked together;
+        // history runs afterwards to avoid concurrent coverage/cursor writes.
+        if store.lane_used(budget::Lane::Current, now())? < store.current_limit {
+            let mut candidates = Vec::new();
+            for _ in 0..4 {
+                if let Some(c) = store.next_wallet(now(), self.effective_interval())? {
+                    candidates.push(c);
+                } else {
+                    break;
+                }
             }
+            if !candidates.is_empty() {
+                let results=futures::future::join_all(candidates.iter().map(|c|async {
+                    tokio::time::timeout(std::time::Duration::from_secs(30),self.collect_current(c)).await
+                        .map_err(|_|"Current wallet check exceeded its collection time budget; saved evidence is retained.".to_string())?
+                })).await;
+                let key = format!("current-checks:{}", now() / DAY);
+                let previous = store
+                    .state(&key)?
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+                store.set_state(&key, &(previous + candidates.len() as u64).to_string())?;
+                let errors: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+                store.set_state("collector_error", &errors.join(" "))?;
+                return Ok(());
+            }
+        }
+        let current_used = store.lane_used(budget::Lane::Current, now())?;
+        if used.saturating_sub(current_used) >= base.daily_limit {
+            return Ok(());
         }
         if store.wallet_count()? < self.cohort_limit
             && store
@@ -708,7 +993,179 @@ impl Tracker {
         store.save_page(&candidate, &records, &coverage, &snapshot.balances)?;
         self.update_analysis(candidate.chain, &candidate.wallet, now())
             .await?;
+        if received {
+            self.current_details(candidate).await?;
+        }
         store.set_state("collector_error", "")?;
+        Ok(())
+    }
+
+    async fn current_details(&self, candidate: &Candidate) -> Result<(), String> {
+        let store = self.store.as_ref().unwrap();
+        let providers = self.providers.as_ref().unwrap();
+        let mut snapshot = self.snapshot(candidate.chain, &candidate.wallet).await?;
+        // EVM indexes return references, not full executions. Resolve a recent
+        // reference on the current allocation even when backfill is paused.
+        if !matches!(candidate.chain, Chain::Solana) {
+            let cutoff = now().saturating_sub(DAY);
+            let mut pending: Vec<_> = snapshot
+                .records
+                .iter()
+                .filter(|r| r.transaction.is_none())
+                .filter(|r| {
+                    // Block-only references may have no timestamp until fetched.
+                    providers::record_timestamp(r).is_none_or(|t| t >= cutoff)
+                })
+                .collect();
+            pending.sort_by_key(|r| std::cmp::Reverse(providers::record_priority(r)));
+            if let Some(record) = pending.into_iter().find(|r| {
+                store
+                    .state(&format!(
+                        "current-retry:{}:{}:{}",
+                        candidate.chain.key(),
+                        candidate.wallet,
+                        r.id
+                    ))
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .is_none_or(|t| t <= now())
+            }) {
+                let mut failed = record.clone();
+                match providers.fetch_record(candidate, record).await {
+                    Ok(received) => store.save_page(
+                        candidate,
+                        &[received],
+                        &snapshot.coverage,
+                        &snapshot.balances,
+                    )?,
+                    Err(error) => {
+                        failed.error = Some(error);
+                        store.save_page(
+                            candidate,
+                            &[failed],
+                            &snapshot.coverage,
+                            &snapshot.balances,
+                        )?;
+                    }
+                }
+                store.set_state(
+                    &format!(
+                        "current-retry:{}:{}:{}",
+                        candidate.chain.key(),
+                        candidate.wallet,
+                        record.id
+                    ),
+                    &(now() + 900).to_string(),
+                )?;
+                self.update_analysis(candidate.chain, &candidate.wallet, now())
+                    .await?;
+                snapshot = self.snapshot(candidate.chain, &candidate.wallet).await?;
+            }
+        }
+        let state_key = format!(
+            "current-state:{}:{}",
+            candidate.chain.key(),
+            candidate.wallet
+        );
+        if store
+            .state(&state_key)?
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_some_and(|t| now() < t)
+        {
+            return Ok(());
+        }
+        store.set_state(&state_key, &(now() + 1800).to_string())?;
+        let mut assets: BTreeSet<_> = snapshot
+            .records
+            .iter()
+            .filter_map(|r| r.transaction.as_ref())
+            .flat_map(|t| t.assets.iter().map(|d| d.asset.clone()))
+            .filter(|a| !quote(candidate.chain, a))
+            .collect();
+        assets.extend(candidate.observed_tokens.iter().cloned());
+        if !matches!(candidate.chain, Chain::Solana) {
+            // Bounded, oldest balance first. Full-wallet reconciliation stays
+            // separate; each valuation carries this asset's actual read time.
+            let mut sorted: Vec<_> = assets.into_iter().collect();
+            sorted.sort_by_key(|a| {
+                snapshot
+                    .coverage
+                    .balance_observations
+                    .get(a)
+                    .map(|o| o.observed_at)
+                    .unwrap_or(0)
+            });
+            assets = sorted.into_iter().take(2).collect();
+        }
+        let mut coverage = snapshot.coverage.clone();
+        let mut balances = snapshot.balances.clone();
+        match providers.balance_read(candidate, &assets).await {
+            Ok((received, block)) => {
+                let at = now();
+                coverage.state_error = None;
+                let full = matches!(candidate.chain, Chain::Solana);
+                if full {
+                    let mut known = assets.clone();
+                    known.extend(balances.keys().cloned());
+                    known.extend(received.keys().cloned());
+                    for asset in known {
+                        coverage.balance_observations.insert(
+                            asset.clone(),
+                            BalanceObservation {
+                                quantity: received.get(&asset).copied().unwrap_or_default(),
+                                observed_at: at,
+                                block: block.clone(),
+                                source: "Solana finalized token-account RPC".into(),
+                            },
+                        );
+                    }
+                    balances = received;
+                    coverage.balances_observed_at = Some(at);
+                } else {
+                    for (asset, quantity) in received {
+                        balances.insert(asset.clone(), quantity);
+                        coverage.balance_observations.insert(
+                            asset,
+                            BalanceObservation {
+                                quantity,
+                                observed_at: at,
+                                block: block.clone(),
+                                source: format!(
+                                    "{} finalized balanceOf RPC",
+                                    candidate.chain.label()
+                                ),
+                            },
+                        );
+                    }
+                }
+                // Only a full state pass can refresh qualification's state clock.
+                if full {
+                    coverage.balances_reconciled = true;
+                    let paid = snapshot
+                        .records
+                        .iter()
+                        .filter_map(|r| r.transaction.as_ref())
+                        .any(|t| {
+                            t.fee_quantity
+                                .is_some_and(|q| q > rust_decimal::Decimal::ZERO)
+                        });
+                    if let Ok(verified) = providers.execution_account(candidate, paid).await {
+                        coverage.execution_account_verified = verified;
+                        coverage.last_state_checked_at = Some(at);
+                    }
+                }
+                store.save_page(candidate, &[], &coverage, &balances)?;
+                self.update_analysis(candidate.chain, &candidate.wallet, now())
+                    .await?;
+            }
+            Err(error) => {
+                coverage.state_error = Some(error);
+                store.save_page(candidate, &[], &coverage, &balances)?;
+                self.update_analysis(candidate.chain, &candidate.wallet, now())
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -852,7 +1309,9 @@ impl Tracker {
             .filter_map(|r| r.transaction.as_ref())
             .flat_map(|t| t.assets.iter().map(|d| d.asset.clone()))
             .collect();
-        let balances = providers.balances(&candidate, &assets).await;
+        let balance_read = providers.balance_read(&candidate, &assets).await;
+        let balance_block = balance_read.as_ref().ok().map(|(_, block)| block.clone());
+        let balances = balance_read.map(|(balances, _)| balances);
         let paid_fee = refreshed
             .records
             .iter()
@@ -877,6 +1336,29 @@ impl Tracker {
             }
         }
         coverage.balances_reconciled = balances.is_ok();
+        if balances.is_ok() {
+            let at = now();
+            coverage.balances_observed_at = Some(at);
+            if let (Ok(received), Some(block)) = (&balances, &balance_block) {
+                coverage.balance_observations = received
+                    .iter()
+                    .map(|(asset, quantity)| {
+                        (
+                            asset.clone(),
+                            BalanceObservation {
+                                quantity: *quantity,
+                                observed_at: at,
+                                block: block.clone(),
+                                source: format!(
+                                    "{} finalized token balance RPC",
+                                    candidate.chain.label()
+                                ),
+                            },
+                        )
+                    })
+                    .collect();
+            }
+        }
         if let Err(error) = &balances {
             coverage.notes.push(error.clone());
         }
@@ -927,6 +1409,217 @@ impl Tracker {
         self.update_analysis(candidate.chain, &candidate.wallet, valuation_end)
             .await?;
         Ok(())
+    }
+
+    async fn enrich_tick(&self) -> Result<(), String> {
+        use std::collections::BTreeMap;
+        let store = self.store.as_ref().unwrap();
+        let analyses = store.analyses()?;
+        if analyses.is_empty() {
+            return Ok(());
+        }
+        let mut batches = Vec::new();
+        let mut groups = Vec::new();
+        for chain in [Chain::Solana, Chain::Robinhood, Chain::Bnb] {
+            let cached = store.token_quotes(chain)?;
+            let mut assets: BTreeMap<String, (bool, u64)> = BTreeMap::new();
+            assets.insert(native(chain).into(), (true, now()));
+            for analysis in analyses
+                .iter()
+                .filter(|a| a.candidate.chain.key() == chain.key())
+            {
+                for p in &analysis.positions {
+                    let entry = assets.entry(p.asset.clone()).or_default();
+                    entry.0 |= p.quantity > rust_decimal::Decimal::ZERO;
+                    entry.1 = entry.1.max(p.last_activity_at.unwrap_or(0));
+                }
+                for a in &analysis.activity {
+                    for asset in [a.asset.as_ref(), a.quote_asset.as_ref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        assets.entry(asset.clone()).or_insert((false, a.timestamp));
+                    }
+                }
+                for asset in &analysis.candidate.observed_tokens {
+                    assets
+                        .entry(asset.clone())
+                        .or_insert((false, analysis.candidate.discovered_at));
+                }
+            }
+            let mut due: Vec<_> = assets
+                .into_iter()
+                .filter(|(asset, _)| {
+                    cached.get(asset).is_none_or(|mark| {
+                        let key = format!("market-retry:{}:{}", chain.key(), asset);
+                        let retry = store
+                            .state(&key)
+                            .ok()
+                            .flatten()
+                            .and_then(|s| s.parse::<u64>().ok());
+                        now()
+                            >= retry.unwrap_or(
+                                mark.observed_at
+                                    + if mark.price_usd.is_some() { 600 } else { 3600 },
+                            )
+                    })
+                })
+                .collect();
+            // Oldest mark first within priority. The whole cohort shares each
+            // token read; a large wallet cannot monopolize the first 30 assets.
+            due.sort_by_key(|(asset, (held, last))| {
+                (
+                    !*held,
+                    cached.get(asset).map(|m| m.observed_at).unwrap_or(0),
+                    std::cmp::Reverse(*last),
+                    asset.clone(),
+                )
+            });
+            groups.push((
+                chain,
+                due.into_iter()
+                    .map(|(a, _)| a)
+                    .collect::<std::collections::VecDeque<_>>(),
+            ));
+        }
+        // Six batched calls per minute, spread fairly across active chains;
+        // unused chain slots go to the remaining token backlog.
+        while batches.len() < 6 && groups.iter().any(|(_, a)| !a.is_empty()) {
+            for (chain, assets) in &mut groups {
+                if batches.len() == 6 {
+                    break;
+                }
+                let requested: Vec<_> = (0..30).filter_map(|_| assets.pop_front()).collect();
+                if !requested.is_empty() {
+                    batches.push((*chain, requested));
+                }
+            }
+        }
+        let results = futures::future::join_all(
+            batches
+                .iter()
+                .map(|(chain, assets)| self.enrich_batch(*chain, assets)),
+        )
+        .await;
+        let errors: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+        store.set_state("market_error", &errors.join(" "))?;
+        // Historical pricing has its own fair wallet rotation and remains
+        // active during a background HTTP pause. It shares Gecko's rate guard.
+        let offset = store
+            .state("market-wallet-cursor")?
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0)
+            % analyses.len();
+        store.set_state(
+            "market-wallet-cursor",
+            &((offset + 1) % analyses.len()).to_string(),
+        )?;
+        let candidate = &analyses[offset].candidate;
+        let snapshot = self.snapshot(candidate.chain, &candidate.wallet).await?;
+        let assets: BTreeSet<_> = snapshot
+            .records
+            .iter()
+            .filter_map(|r| r.transaction.as_ref())
+            .flat_map(|t| t.assets.iter().map(|d| d.asset.clone()))
+            .collect();
+        self.price(
+            &snapshot,
+            &assets,
+            snapshot.coverage.last_collected_at.unwrap_or_else(now),
+        )
+        .await
+    }
+
+    async fn enrich_batch(&self, chain: Chain, requested: &[String]) -> Result<(), String> {
+        let store = self.store.as_ref().unwrap();
+        let cached = store.token_quotes(chain)?;
+        let at = now();
+        let primary = self.gecko.token_quotes(chain, requested, at).await;
+        let mut errors: Vec<String> = primary
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .into_iter()
+            .collect();
+        let mut quotes = primary.unwrap_or_default();
+        let missing: Vec<_> = requested
+            .iter()
+            .filter(|a| {
+                quotes
+                    .iter()
+                    .find(|q| q.asset == **a)
+                    .is_none_or(|q| q.price_usd.is_none())
+            })
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            let provider = self.providers.as_ref().unwrap();
+            let market = crate::providers::market::MarketClient::new(
+                provider.http.clone(),
+                self.gecko.clone(),
+                provider.config.dexscreener_api_host.clone(),
+            );
+            match market.token_quotes(chain, &missing, at).await {
+                Ok(fallback) => {
+                    for q in fallback {
+                        quotes.retain(|old| old.asset != q.asset);
+                        quotes.push(q);
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        if matches!(chain, Chain::Solana) {
+            let unnamed: Vec<_> = requested
+                .iter()
+                .filter(|a| {
+                    wallet_key(chain, a).is_ok()
+                        && quotes
+                            .iter()
+                            .find(|q| q.asset == **a)
+                            .is_none_or(|q| q.name.is_none() && q.symbol.is_none())
+                })
+                .cloned()
+                .collect();
+            let mut provider = self.providers.as_ref().unwrap().clone();
+            provider.lane = Some(budget::Lane::History);
+            if let Ok(metadata) = provider.token_metadata(&unnamed).await {
+                for q in metadata {
+                    if let Some(old) = quotes.iter_mut().find(|old| old.asset == q.asset) {
+                        old.name = q.name;
+                        old.symbol = q.symbol;
+                        old.decimals = old.decimals.or(q.decimals);
+                    } else {
+                        quotes.push(q);
+                    }
+                }
+            }
+        }
+        for asset in requested {
+            if !quotes.iter().any(|q| q.asset == *asset) {
+                let old = cached.get(asset);
+                quotes.push(crate::model::TokenQuote {asset:asset.clone(),name:old.and_then(|q|q.name.clone()),symbol:old.and_then(|q|q.symbol.clone()),decimals:old.and_then(|q|q.decimals),price_usd:None,observed_at:at,source:"GeckoTerminal / Dexscreener attempted".into(),detail:if errors.is_empty(){"No priced market response was indexed for this token; this does not establish zero value.".into()}else{format!("Current market evidence unavailable: {}",errors.join(" "))}});
+            }
+        }
+        for q in &quotes {
+            if q.price_usd.is_none() {
+                store.set_state(
+                    &format!("market-retry:{}:{}", chain.key(), q.asset),
+                    &(at + if errors.is_empty() { 3600 } else { 120 }).to_string(),
+                )?;
+            } else {
+                store.set_state(
+                    &format!("market-retry:{}:{}", chain.key(), q.asset),
+                    &(at + 600).to_string(),
+                )?;
+            }
+        }
+        store.save_token_quotes(chain, &quotes)?;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join(" "))
+        }
     }
 
     async fn price(
@@ -992,12 +1685,36 @@ impl Tracker {
             .state(&key)?
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0);
-        if !ranked.is_empty() {
-            let count = ranked.len();
-            ranked.rotate_left(offset % count);
-            store.set_state(&key, &((offset + 4) % count).to_string())?;
+        let mut nonquotes: Vec<_> = ranked
+            .iter()
+            .filter(|(a, _)| !quote(snapshot.candidate.chain, a))
+            .cloned()
+            .collect();
+        if !nonquotes.is_empty() {
+            let count = nonquotes.len();
+            nonquotes.rotate_left(offset % count);
+            store.set_state(&key, &((offset + 3) % count).to_string())?;
         }
-        for (asset, times) in ranked.into_iter().take(4) {
+        let mut selected: Vec<_> = ranked
+            .into_iter()
+            .filter(|(a, _)| quote(snapshot.candidate.chain, a))
+            .take(2)
+            .collect();
+        selected.extend(nonquotes.into_iter().take(2));
+        for (asset, times) in selected {
+            let retry = format!(
+                "historical-price-retry:{}:{}",
+                snapshot.candidate.chain.key(),
+                asset
+            );
+            if store
+                .state(&retry)?
+                .and_then(|s| s.parse::<u64>().ok())
+                .is_some_and(|t| t > now())
+            {
+                continue;
+            }
+            store.set_state(&retry, &(now() + 900).to_string())?;
             let times: Vec<_> = times.into_iter().collect();
             if let Ok(prices) = self
                 .gecko
@@ -1012,6 +1729,31 @@ impl Tracker {
                         usd: p.usd_price,
                         granularity: format!("{:?}", p.granularity).to_ascii_lowercase(),
                         source: "GeckoTerminal historical USD candle; estimated conversion".into(),
+                    })
+                    .collect();
+                store.save_prices(snapshot.candidate.chain, &prices)?;
+            }
+            let refreshed = store
+                .snapshot(snapshot.candidate.chain, &snapshot.candidate.wallet)?
+                .ok_or("Wallet evidence disappeared.")?;
+            let index = accounting::PriceIndex::new(&refreshed.prices);
+            let missing: Vec<_> = times
+                .into_iter()
+                .filter(|t| index.get(&asset, *t).is_none())
+                .collect();
+            if let Ok(candles) = self
+                .native_prices
+                .historical(snapshot.candidate.chain, &asset, &missing, now())
+                .await
+            {
+                let prices: Vec<_> = candles
+                    .into_iter()
+                    .map(|(timestamp, c)| Price {
+                        asset: asset.clone(),
+                        timestamp,
+                        usd: c.usd,
+                        granularity: c.granularity,
+                        source: c.source,
                     })
                     .collect();
                 store.save_prices(snapshot.candidate.chain, &prices)?;
