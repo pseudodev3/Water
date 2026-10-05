@@ -1,4 +1,4 @@
-use super::{model::*, store::Store, venues};
+use super::{budget::Lane, model::*, store::Store, venues};
 use crate::{config::Config, model::Chain};
 use num_bigint::BigUint;
 use rust_decimal::Decimal;
@@ -25,6 +25,7 @@ pub struct Providers {
     pub rh_trace_url: String,
     pub bnb_trace_url: String,
     pub daily_limit: u64,
+    pub lane: Option<Lane>,
 }
 
 pub struct Page {
@@ -122,7 +123,8 @@ impl Providers {
     pub fn reserve(&self) -> Result<(), String> {
         // One collector owns this counter. Persisting before sending makes the
         // daily ceiling survive process restarts and failed requests.
-        self.store.reserve_http(now(), self.daily_limit, None)
+        self.store
+            .reserve_http_in_lane(now(), self.daily_limit, None, self.lane)
     }
 
     pub async fn rpc(&self, url: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -132,8 +134,12 @@ impl Providers {
             .as_deref()
             == Some("mainnet.helius-rpc.com")
         {
-            self.store
-                .reserve_http(now(), self.daily_limit, Some(self.helius_credit_limit))?;
+            self.store.reserve_http_in_lane(
+                now(),
+                self.daily_limit,
+                Some(self.helius_credit_limit),
+                self.lane,
+            )?;
         } else {
             self.reserve()?;
         }
@@ -1757,6 +1763,7 @@ mod tests {
                 rh_trace_url: format!("{url}/archive"),
                 bnb_trace_url: format!("{url}/archive"),
                 daily_limit: 100,
+                lane: None,
             },
             requests,
             task,
@@ -2073,6 +2080,7 @@ mod tests {
             rh_trace_url: url.clone(),
             bnb_trace_url: url.clone(),
             daily_limit: 100,
+            lane: None,
         };
         let evidence: Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/tracker-bnb-observed.json"

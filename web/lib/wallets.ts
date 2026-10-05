@@ -48,6 +48,7 @@ export type WalletAnalysis = {
     execution_account_verified: boolean;
     fees_complete: boolean;
     last_collected_at: number | null;
+    last_state_checked_at?: number | null;
     oldest_record_at: number | null;
     newest_record_at: number | null;
     pages: number;
@@ -82,7 +83,7 @@ export type WalletAnalysis = {
     counterparties: string[];
   }>;
 };
-export type WalletSummary = Omit<WalletAnalysis, "positions" | "notes">;
+export type WalletSummary = Omit<WalletAnalysis, "positions" | "notes"> & { positions_count?: number };
 export type WalletResponse = {
   status: {
     enabled: boolean;
@@ -90,6 +91,11 @@ export type WalletResponse = {
     detail?: string | null;
     policy: string;
     interval_seconds?: number;
+    collection_state?: "budget_paused" | "scheduled";
+    budget_resets_at?: number;
+    current_refresh_seconds?: number;
+    history_detail?: string | null;
+    request_allocations?: Array<{purpose: string; used: number; limit: number; available_now: number; next_attempt_at: number}>;
     cohort_limit?: number;
     requests_today?: number;
     daily_request_limit?: number;
@@ -114,7 +120,7 @@ async function request<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();
-  const timer = window.setTimeout(abort, 12_000);
+  const timer = window.setTimeout(abort, 30_000);
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) abort();
   try {

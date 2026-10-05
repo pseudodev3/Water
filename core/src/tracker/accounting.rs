@@ -338,6 +338,8 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
         .count();
     economic_gaps += unparsed;
     let mut coverage = snapshot.coverage.clone();
+    coverage.oldest_record_at = transactions.iter().map(|t| t.timestamp).min();
+    coverage.newest_record_at = transactions.iter().map(|t| t.timestamp).max();
     coverage.pending_records = unparsed
         + transactions
             .iter()
@@ -388,12 +390,16 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
     let fresh = coverage
         .last_collected_at
         .is_some_and(|t| end.saturating_sub(t) <= 3600);
+    let state_fresh = coverage
+        .last_state_checked_at
+        .is_some_and(|t| end.saturating_sub(t) <= 3600);
     for i in 0..2 {
         let (from, to) = (boundaries[i], boundaries[i + 1]);
         let complete_economics = coverage.history_complete
             && coverage.head_complete
             && coverage.ordering_complete
             && coverage.balances_reconciled
+            && state_fresh
             && economic_gaps == 0
             && coverage.fees_complete;
         let realized = if complete_economics {
@@ -482,8 +488,8 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
         gate("Outlier independence",without.is_some_and(|p|p>Decimal::ZERO)&&share.is_some_and(|s|s<=Decimal::new(35,2)),"Positive without the largest winner; that winner contributes at most 35% of gross gains.".into());
         gate(
             "Recent and fresh",
-            recent && fresh,
-            "A trade in seven days and successful collection in one hour are required.".into(),
+            recent && fresh && state_fresh,
+            "A trade in seven days, current history in one hour, and account/balance state checked in one hour are required.".into(),
         );
         let qualified = gates.iter().all(|g| g.passed);
         windows.push(Window {
@@ -570,6 +576,7 @@ mod tests {
                 balances_reconciled: true,
                 execution_account_verified: true,
                 last_collected_at: Some(90 * DAY),
+                last_state_checked_at: Some(90 * DAY),
                 ..Default::default()
             },
             records: vec![],
@@ -679,6 +686,19 @@ mod tests {
         let a = analyze(s, 90 * DAY);
         assert_eq!(a.status, "stale");
         assert!(a.windows.iter().all(|w| !w.qualified));
+    }
+
+    #[test]
+    fn fresh_history_does_not_promote_old_account_and_balance_state() {
+        let mut s = consistent_sample();
+        assert_eq!(analyze(s.clone(), 90 * DAY).status, "qualified_60d");
+        s.coverage.last_state_checked_at = Some(88 * DAY);
+        let a = analyze(s, 90 * DAY);
+        assert!(!a.status.starts_with("qualified_"));
+        assert!(a
+            .windows
+            .iter()
+            .all(|w| !w.qualified && w.total_usd.is_none()));
     }
     fn consistent_sample() -> Snapshot {
         let mut s = base();

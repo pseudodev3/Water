@@ -1,6 +1,6 @@
 # Water — Project Handoff
 
-_Last updated: 2026-10-04_
+_Last updated: 2026-10-05_
 
 This file is the canonical pickup point for a new ChatGPT/Codex session.
 
@@ -22,6 +22,11 @@ The production baseline was verified after PR #23:
 - Railway deployment: green
 - Vercel deployment: green
 - Review branches and open PRs: inspect GitHub; the latest work is below.
+
+Latest follow-up: PR #24 (`fix/tracker-rpc-pump`) adds RPC recovery and the
+2026-10-05 collection/stale-evidence fixes. It remains unmerged at the time of
+this update. Production's daily collection counter was 2,000 / 2,000; a deploy
+does not reset it. See [collection checks](docs/wallet-tracker-collection.md).
 
 If a new session is picking up work:
 1. Read this file.
@@ -1134,3 +1139,33 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   Pending history/price/trace/basis gaps remain separate from repaired state reads.
 - Details and captured evidence:
   [RPC and Pump coverage](docs/wallet-tracker-rpc-pump.md).
+
+## Collection, stale evidence and wallet deadline (2026-10-05; PR #24, not deployed)
+
+- Live check at 05:50 UTC: all 12 candidates were stale; the tracker reported
+  2,000 / 2,000 daily requests used. Newest saved collection was 02:24:32 UTC.
+  The separate Helius counter was 8,980 / 800,000 estimated credits over 31 days.
+- Three production detail requests took 0.499–0.569 seconds. No spontaneous
+  timeout was reproduced. A controlled 13-second delay proved the production
+  client aborted after 12.459 seconds; the user's latency cause remains unknown.
+- Split current checks, history and discovery within the existing daily cap:
+  70% / 25% / 5%. Current checks have priority and a default 40-minute target;
+  history is paced and normally waits for a 25-request batch. Discovery runs
+  only when the cohort has space. Each pass has a 30-second time limit.
+- Pages, records and received state are committed and analyzed before subsequent
+  slow work. Global and rolling credit counters survive the upgrade unchanged.
+  Today's spent budget still waits for UTC midnight; do not reset it to claim
+  collection has recovered.
+- Account/balance state has its own freshness timestamp. A current head page
+  cannot qualify old state. A tokenless BNB chain check cannot refresh history.
+  Full historical/trace/price/basis gaps still withhold economic qualification.
+- Default to research, show actual saved/pending counts and latest known
+  execution, put activity before month checks, and make all gates expandable.
+  Wallet client deadline is 30 seconds; failed refresh retains open evidence.
+- Validation: 114 Rust tests and Rust/web builds passed; controlled browser
+  checks at 320/390/768/1440 passed with captured production data. A 13-second
+  response now succeeds; a stalled refresh aborts at 30.456 seconds without
+  clearing saved details. CI for the final published head must be checked.
+- No new required variable or paid provider. Optional
+  `WATER_TRACKER_REFRESH_SECONDS=2400` controls the current-check target.
+  [Collection details and captured evidence](docs/wallet-tracker-collection.md).
