@@ -1,7 +1,8 @@
 //! Public market reads: GeckoTerminal first, independently labelled fallback.
-use super::gecko::GeckoClient;
+use super::gecko::{safe_external_url, GeckoClient, TokenInfoSnapshot, TokenSocial};
 use crate::model::{Chain, MarketSnapshot, SourceStatus};
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -16,6 +17,13 @@ pub struct MarketRead {
     pub sources: Vec<SourceStatus>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct TokenMetadataRead {
+    #[serde(flatten)]
+    pub info: TokenInfoSnapshot,
+    pub sources: Vec<SourceStatus>,
+}
+
 #[derive(Clone)]
 pub struct MarketClient {
     http: Client,
@@ -23,6 +31,7 @@ pub struct MarketClient {
     fallback_host: String,
     cache: Arc<Mutex<HashMap<String, (Instant, MarketRead)>>>,
     pending: Arc<Mutex<HashMap<String, Weak<AsyncMutex<()>>>>>,
+    info_cache: Arc<Mutex<HashMap<String, (Instant, TokenMetadataRead)>>>,
 }
 
 pub fn asset_key(chain: Chain, address: &str) -> String {
@@ -77,7 +86,123 @@ impl MarketClient {
             fallback_host: fallback_host.trim_end_matches('/').to_string(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            info_cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    fn cached_info(&self, key: &str) -> Option<TokenMetadataRead> {
+        self.info_cache
+            .lock()
+            .ok()?
+            .get(key)
+            .cloned()
+            .and_then(|(at, read)| {
+                let complete = read.info.image_url.is_some()
+                    && read.info.has_socials()
+                    && !read.info.websites.is_empty();
+                (at.elapsed() < Duration::from_secs(if complete { 600 } else { 30 }))
+                    .then_some(read)
+            })
+    }
+
+    pub async fn token_info(&self, chain: Chain, address: &str) -> TokenMetadataRead {
+        let key = format!("info:{}", asset_key(chain, address));
+        if let Some(read) = self.cached_info(&key) {
+            return read;
+        }
+        let gate = {
+            let mut pending = self.pending.lock().unwrap();
+            pending.retain(|_, gate| gate.strong_count() > 0);
+            pending
+                .get(&key)
+                .and_then(Weak::upgrade)
+                .unwrap_or_else(|| {
+                    let gate = Arc::new(AsyncMutex::new(()));
+                    pending.insert(key.clone(), Arc::downgrade(&gate));
+                    gate
+                })
+        };
+        let _guard = gate.lock().await;
+        if let Some(read) = self.cached_info(&key) {
+            return read;
+        }
+        let mut read = TokenMetadataRead {
+            info: TokenInfoSnapshot::default(),
+            sources: Vec::new(),
+        };
+        let primary = tokio::time::timeout(
+            Duration::from_secs(4),
+            self.gecko.token_info(chain, address),
+        )
+        .await;
+        let primary_detail = match primary {
+            Ok(Ok(info)) => {
+                read.info = info;
+                "Token metadata received.".to_string()
+            }
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => "GeckoTerminal metadata exceeded its 4s budget.".to_string(),
+        };
+        read.sources.push(SourceStatus {
+            source: "GeckoTerminal token metadata".into(),
+            ok: read.info.image_url.is_some()
+                || read.info.has_socials()
+                || !read.info.websites.is_empty(),
+            detail: primary_detail,
+        });
+        if read.info.image_url.is_none()
+            || !read.info.has_socials()
+            || read.info.websites.is_empty()
+        {
+            let fallback = async {
+                let payload: Value = self
+                    .http
+                    .get(format!(
+                        "{}/token-pairs/v1/{}/{address}",
+                        self.fallback_host,
+                        chain.market_network()
+                    ))
+                    .timeout(Duration::from_secs(4))
+                    .send()
+                    .await
+                    .map_err(|_| "Dexscreener metadata transport unavailable.".to_string())?
+                    .error_for_status()
+                    .map_err(|e| {
+                        format!(
+                            "Dexscreener metadata returned HTTP {}.",
+                            e.status().map(|s| s.as_u16()).unwrap_or(0)
+                        )
+                    })?
+                    .json()
+                    .await
+                    .map_err(|_| "Dexscreener metadata returned unreadable JSON.".to_string())?;
+                fallback_token_info(&payload, chain, address).ok_or_else(|| {
+                    "No metadata received for this exact chain and base token.".to_string()
+                })
+            };
+            let result = tokio::time::timeout(Duration::from_secs(4), fallback).await;
+            let (ok, detail) = match result {
+                Ok(Ok(info)) => {
+                    read.info.fill_missing(info);
+                    (true, "Metadata from the deepest indexed pool for the exact chain and base token. Provider-listed links do not verify ownership.".into())
+                }
+                Ok(Err(error)) => (false, error),
+                Err(_) => (false, "Dexscreener metadata exceeded its 4s budget.".into()),
+            };
+            read.sources.push(SourceStatus {
+                source: "Dexscreener token metadata (fallback)".into(),
+                ok,
+                detail,
+            });
+        }
+        if let Ok(mut cache) = self.info_cache.lock() {
+            cache.retain(|_, (at, _)| at.elapsed() < Duration::from_secs(600));
+            if cache.len() >= 256 {
+                cache.clear();
+            }
+            cache.insert(key, (Instant::now(), read.clone()));
+        }
+        read
     }
 
     fn cached(&self, key: &str) -> Option<MarketRead> {
@@ -272,6 +397,82 @@ fn positive(value: Option<&Value>) -> Option<f64> {
     number(value).filter(|n| *n > 0.0)
 }
 
+fn fallback_token_info(payload: &Value, chain: Chain, address: &str) -> Option<TokenInfoSnapshot> {
+    payload
+        .as_array()?
+        .iter()
+        .filter(|pair| {
+            pair["chainId"].as_str() == Some(chain.market_network())
+                && pair
+                    .pointer("/baseToken/address")
+                    .and_then(Value::as_str)
+                    .is_some_and(|received| asset_key(chain, received) == asset_key(chain, address))
+        })
+        .filter_map(|pair| metadata_from_pair(pair).map(|info| (pair, info)))
+        .max_by(|(a, _), (b, _)| {
+            number(a.pointer("/liquidity/usd"))
+                .unwrap_or(0.0)
+                .total_cmp(&number(b.pointer("/liquidity/usd")).unwrap_or(0.0))
+        })
+        .map(|(_, info)| info)
+}
+
+fn metadata_from_pair(pair: &Value) -> Option<TokenInfoSnapshot> {
+    let mut info = TokenInfoSnapshot::default();
+    info.image_url = pair
+        .pointer("/info/imageUrl")
+        .and_then(Value::as_str)
+        .and_then(safe_external_url);
+    info.websites = pair
+        .pointer("/info/websites")
+        .and_then(Value::as_array)
+        .map(|links| {
+            links
+                .iter()
+                .filter_map(|link| link["url"].as_str().and_then(safe_external_url))
+                .take(3)
+                .collect()
+        })
+        .unwrap_or_default();
+    for social in pair
+        .pointer("/info/socials")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(12)
+    {
+        let Some(url) = social["url"].as_str().and_then(safe_external_url) else {
+            continue;
+        };
+        let Some(kind) = social["type"].as_str() else {
+            continue;
+        };
+        let (label, slot) = match kind {
+            "twitter" | "x" => ("X", Some(&mut info.twitter_url)),
+            "telegram" => ("Telegram", Some(&mut info.telegram_url)),
+            "discord" => ("Discord", Some(&mut info.discord_url)),
+            "farcaster" => ("Farcaster", Some(&mut info.farcaster_url)),
+            "zora" => ("Zora", Some(&mut info.zora_url)),
+            "instagram" => ("Instagram", None),
+            "tiktok" => ("TikTok", None),
+            "youtube" => ("YouTube", None),
+            "reddit" => ("Reddit", None),
+            _ => continue,
+        };
+        if info.socials.iter().any(|s| s.label == label) {
+            continue;
+        }
+        if let Some(slot) = slot {
+            *slot = Some(url.clone());
+        }
+        info.socials.push(TokenSocial {
+            label: label.into(),
+            url,
+        });
+    }
+    (info.image_url.is_some() || info.has_socials() || !info.websites.is_empty()).then_some(info)
+}
+
 fn fallback_snapshot(
     payload: &Value,
     chain: Chain,
@@ -340,6 +541,88 @@ mod tests {
             "quoteToken":{"address":"So11111111111111111111111111111111111111112"},
             "priceUsd":"0.00004343", "liquidity":{"usd":17216.13}, "marketCap":41880,
             "volume":{"h24":5143.98}, "txns":{"h1":{"buys":2,"sells":2}}})
+    }
+
+    #[test]
+    fn metadata_rejects_wrong_chain_quote_identity_and_unsafe_links() {
+        let mut correct = pair();
+        correct["info"] = json!({"imageUrl":"https://images.example/token.png", "websites":[{"url":"javascript:alert(1)"},{"url":"https://token.example"}], "socials":[{}, {"type":"twitter","url":"https://x.com/token"},{"type":"telegram","url":"data:text/html,test"},{"type":"instagram","url":"https://instagram.com/token"}]});
+        let mut wrong_chain = correct.clone();
+        wrong_chain["chainId"] = json!("bsc");
+        wrong_chain["liquidity"]["usd"] = json!(99999999);
+        let mut wrong_base = correct.clone();
+        wrong_base["baseToken"]["address"] = json!("unrelated");
+        wrong_base["quoteToken"]["address"] = json!(TOKEN);
+        wrong_base["liquidity"]["usd"] = json!(99999999);
+        let mut empty_deeper = correct.clone();
+        empty_deeper["liquidity"]["usd"] = json!(999999999);
+        empty_deeper["info"] = json!({"imageUrl":"javascript:alert(1)","socials":[{"type":"twitter","url":"javascript:alert(1)"}]});
+        let payload = json!([wrong_chain, wrong_base, correct, empty_deeper]);
+        let info = fallback_token_info(&payload, Chain::Solana, TOKEN).unwrap();
+        assert_eq!(info.websites, vec!["https://token.example/"]);
+        assert_eq!(info.twitter_url.as_deref(), Some("https://x.com/token"));
+        assert!(info.telegram_url.is_none());
+        assert_eq!(info.socials.len(), 2);
+        assert!(info.gt_verified.is_none());
+        assert!(
+            fallback_token_info(&payload, Chain::Solana, &TOKEN.to_ascii_lowercase()).is_none()
+        );
+        let address = "0x1111111111111111111111111111111111111111";
+        let mut evm = payload[2].clone();
+        evm["chainId"] = json!("bsc");
+        evm["baseToken"]["address"] = json!(address.to_ascii_uppercase());
+        assert!(fallback_token_info(&json!([evm.clone()]), Chain::Bnb, address).is_some());
+        assert!(fallback_token_info(&json!([evm]), Chain::Robinhood, address).is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_primary_metadata_uses_one_coalesced_fallback_and_preserves_healthy_primary() {
+        use axum::{http::StatusCode, routing::get, Json, Router};
+        let primary_count = Arc::new(AtomicUsize::new(0));
+        let fallback_count = Arc::new(AtomicUsize::new(0));
+        let pc = primary_count.clone();
+        let fc = fallback_count.clone();
+        let app=Router::new().route("/networks/solana/tokens/{token}/info",get(move || {let pc=pc.clone();async move {pc.fetch_add(1,Ordering::SeqCst);(StatusCode::TOO_MANY_REQUESTS,Json(json!({"error":"fixture cooldown"})))}}))
+            .route("/token-pairs/v1/solana/{token}",get(move || {let fc=fc.clone();async move {fc.fetch_add(1,Ordering::SeqCst);let mut pair=pair();pair["info"]=json!({"imageUrl":"https://images.example/token.png","websites":[{"url":"https://token.example"}],"socials":[{"type":"twitter","url":"https://x.com/token"}]});Json(json!([pair]))}}));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let host = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = Client::new();
+        let client = MarketClient::new(http.clone(), GeckoClient::new(http, host.clone()), host);
+        let responses =
+            futures::future::join_all((0..8).map(|_| client.token_info(Chain::Solana, TOKEN)))
+                .await;
+        assert_eq!(primary_count.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback_count.load(Ordering::SeqCst), 1);
+        for read in responses {
+            assert!(read.info.image_url.is_some() && read.info.has_socials());
+            assert!(!read.sources[0].ok && read.sources[1].ok);
+            assert!(read.info.gt_verified.is_none());
+        }
+        let healthy_app = Router::new().route("/networks/solana/tokens/{token}/info", get(|| async {
+            Json(json!({"data":{"attributes":{"address":TOKEN,"image_url":"https://images.example/primary.png","websites":["https://primary.example"],"twitter_handle":"primary","gt_verified":true}}}))
+        }));
+        let healthy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let healthy_host = format!("http://{}", healthy_listener.local_addr().unwrap());
+        let healthy_task =
+            tokio::spawn(async move { axum::serve(healthy_listener, healthy_app).await.unwrap() });
+        let http = Client::new();
+        let healthy_client = MarketClient::new(
+            http.clone(),
+            GeckoClient::new(http, healthy_host),
+            client.fallback_host.clone(),
+        );
+        let healthy = healthy_client.token_info(Chain::Solana, TOKEN).await;
+        assert_eq!(
+            healthy.info.image_url.as_deref(),
+            Some("https://images.example/primary.png")
+        );
+        assert_eq!(healthy.info.gt_verified, Some(true));
+        assert_eq!(healthy.sources.len(), 1);
+        assert!(healthy.sources[0].ok);
+        assert_eq!(fallback_count.load(Ordering::SeqCst), 1);
+        healthy_task.abort();
+        task.abort();
     }
 
     #[test]

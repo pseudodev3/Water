@@ -334,59 +334,137 @@ function holderStatusLine(holder: EarlyHolderMap["holders"][number]) {
 }
 
 
-export function AssetLinks({
+export function AssetIdentity({
   chain,
   token,
+  title,
+  subtitle,
 }: {
   chain: Chain;
   token: string;
+  title: string;
+  subtitle: string;
 }) {
   const [info, setInfo] = useState<TokenInfo | null>(null);
-
+  const [loading, setLoading] = useState(true);
+  const [failedImage, setFailedImage] = useState<string | undefined>();
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
     setInfo(null);
-
+    setLoading(true);
     fetchTokenInfo(chain, token)
       .then((value) => {
         if (active) setInfo(value);
       })
       .catch(() => {
         if (active) setInfo(null);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
-
     return () => {
       active = false;
     };
-  }, [chain, token]);
-
-  if (!info) return null;
-
+  }, [chain, token, attempt]);
+  const safeUrl = (value: string | null | undefined) => {
+    if (!value) return null;
+    try {
+      const url = new URL(value);
+      return ["https:", "http:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password
+        ? url.href
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const socials = info?.socials?.length
+    ? info.socials
+    : [
+        { label: "X", url: info?.twitter_url },
+        { label: "Telegram", url: info?.telegram_url },
+        { label: "Discord", url: info?.discord_url },
+        { label: "Farcaster", url: info?.farcaster_url },
+        { label: "Zora", url: info?.zora_url },
+      ];
   const links = [
-    info.websites[0] ? { label: "Website", url: info.websites[0] } : null,
-    info.twitter_url ? { label: "X", url: info.twitter_url } : null,
-    info.telegram_url ? { label: "Telegram", url: info.telegram_url } : null,
-    info.discord_url ? { label: "Discord", url: info.discord_url } : null,
-    info.farcaster_url ? { label: "Farcaster", url: info.farcaster_url } : null,
-    info.zora_url ? { label: "Zora", url: info.zora_url } : null,
-  ].filter((item): item is { label: string; url: string } => Boolean(item));
-
-  if (!links.length) return null;
-
+    ...(info?.websites ?? []).map((url, index) => ({
+      label: index ? `Website ${index + 1}` : "Website",
+      url,
+    })),
+    ...socials,
+  ].flatMap((link) => {
+    const url = safeUrl(link.url);
+    return url ? [{ label: link.label, url }] : [];
+  });
+  const image = safeUrl(info?.image_url);
+  const unavailable = !loading && !image && !links.length;
   return (
-    <div className="asset-links" aria-label="Token links">
-      {links.slice(0, 5).map((link) => (
-        <a
-          key={link.label}
-          href={link.url}
-          target="_blank"
-          rel="noreferrer"
+    <>
+      <div className="token-heading">
+        {image && failedImage !== image ? (
+          <img
+            className="token-avatar"
+            src={image}
+            width={56}
+            height={56}
+            alt={`${title} token image`}
+            referrerPolicy="no-referrer"
+            onError={() => setFailedImage(image)}
+          />
+        ) : (
+          <span
+            className="token-avatar token-avatar-fallback"
+            role="img"
+            aria-label={
+              loading ? "Token image loading" : "Token image unavailable"
+            }
+          >
+            <Fingerprint size={24} strokeWidth={1.5} aria-hidden="true" />
+          </span>
+        )}
+        <div>
+          <div className="eyebrow">Observed asset</div>
+          <h2>{title}</h2>
+          <p>{subtitle}</p>
+        </div>
+      </div>
+      {loading ? (
+        <p className="token-metadata-note" role="status">
+          Loading token image and socials…
+        </p>
+      ) : links.length ? (
+        <div className="asset-links" aria-label="Token socials and websites">
+          {links.map((link) => (
+            <a
+              key={link.label}
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {link.label}
+              <ExternalLink size={11} strokeWidth={1.5} aria-hidden="true" />
+            </a>
+          ))}
+        </div>
+      ) : (
+        <p className="token-metadata-note">No social links were returned.</p>
+      )}
+      {!loading && (!image || failedImage === image) && (
+        <p className="token-metadata-note">Token image unavailable.</p>
+      )}
+      {unavailable && (
+        <button
+          type="button"
+          className="wallet-inline-button"
+          onClick={() => setAttempt((value) => value + 1)}
         >
-          {link.label}
-          <ExternalLink size={10} strokeWidth={1.5} aria-hidden="true" />
-        </a>
-      ))}
-    </div>
+          Retry token metadata
+        </button>
+      )}
+    </>
   );
 }
 

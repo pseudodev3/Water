@@ -15,7 +15,7 @@ import {
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Chain, getHealth, Health, scanToken, ScanResult } from "@/lib/api";
 import {
-  AssetLinks,
+  AssetIdentity,
   CounterCasePanel,
   DemandPanel,
   EarlyHolderPanel,
@@ -356,10 +356,13 @@ function ResultView({ result }: { result: ScanResult }) {
     <section className="results" aria-live="polite">
       <div className="asset-line">
         <div>
-          <div className="eyebrow">Observed asset</div>
-          <h2>{title}</h2>
-          <p>{subtitle}</p>
-          <AssetLinks chain={result.chain} token={result.address} />
+          <AssetIdentity
+            key={`${result.chain}:${result.address}`}
+            chain={result.chain}
+            token={result.address}
+            title={title}
+            subtitle={subtitle}
+          />
           <div className="token-address">
             <code>{result.address}</code>
             <CopyAddress value={result.address} label="token address" />

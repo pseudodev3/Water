@@ -570,6 +570,16 @@ a:focus-visible {
   margin-top: 11px;
 }
 
+.token-heading { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.token-heading > div { min-width: 0; overflow-wrap: anywhere; }
+.token-avatar { width: 56px; height: 56px; flex: 0 0 56px; object-fit: cover; border-radius: 14px; outline: 1px solid oklch(1 0 0 / 0.1); }
+.token-avatar-fallback { display: grid; place-items: center; color: var(--muted); background: var(--surface-1); }
+.asset-line .token-metadata-note { margin-top: 10px; font-size: 12px; }
+.wallet-visibility-filter { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 0; margin: 8px 0; color: var(--muted); font-size: 13px; cursor: pointer; }
+.wallet-visibility-filter input { width: 16px; height: 16px; flex: 0 0 16px; accent-color: var(--moss); }
+.asset-links a { min-height: 32px; }
+@media (pointer: coarse) { .asset-links a { min-height: 44px; } }
+
 .asset-links a {
   display: inline-flex;
   align-items: center;

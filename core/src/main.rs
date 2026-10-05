@@ -345,22 +345,12 @@ async fn origin(
 async fn token_info(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ScanRequest>,
-) -> Result<Json<providers::gecko::TokenInfoSnapshot>, (StatusCode, Json<Value>)> {
+) -> Result<Json<providers::market::TokenMetadataRead>, (StatusCode, Json<Value>)> {
     if let Err(message) = request.validate() {
         return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": message }))));
     }
 
-    state
-        .gecko
-        .token_info(request.chain, request.address.trim())
-        .await
-        .map(Json)
-        .map_err(|error| {
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": error.to_string() })),
-            )
-        })
+    Ok(Json(state.market.token_info(request.chain, request.address.trim()).await))
 }
 
 async fn shutdown_signal() {

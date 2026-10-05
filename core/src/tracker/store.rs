@@ -684,6 +684,7 @@ mod tests {
             cursor: None,
             limit: Some(1),
             transaction: None,
+            include_unvalued: false,
         };
         let page =
             activity_page_with_revision(&s, &BTreeMap::new(), &request, Some(revision.clone()))
