@@ -13,7 +13,7 @@ Production:
 - Backend: `https://water-production-822e.up.railway.app`
 
 Current production baseline:
-- `d5e69fd6efdf9a29e1c273ddc225c3d5439b5271` (PR #28).
+- `7cb1a635dafbe7fa4b0296665146c4b1edf785fd` (PR #29).
 - PR #26's research UI, PR #27's bounded accounting/runtime diagnostics and
   PR #28's zero-balance Positions filter are merged. All deployments passed.
   The last PR #28 live check returned 122 positive positions, no zero rows and
@@ -21,7 +21,7 @@ Current production baseline:
 - Earlier Railway crashes remain unexplained without exit/resource details.
   See [runtime investigation](docs/wallet-runtime-investigation.md).
 
-Current follow-up branch: `fix/wallet-noise-token-metadata`. The default wallet
+PR #29 is merged and both Vercel and Railway deployments passed. The default wallet
 Positions view now shows only positive quantities with a fresh positive USD
 valuation. Unpriced/zero-value positive balances can be inspected with the
 checkbox; missing pricing is not called zero value. Counts use the same mark
@@ -43,7 +43,28 @@ Validation: 132 Rust tests, production web build, nine browser cases at
 failure with live Dexscreener metadata passed. No new variables, paid service,
 provider collection allocation or storage migration is required.
 Read [wallet visibility and token metadata](docs/wallet-visibility-metadata.md).
-This branch is not live until its PR is merged and deployments are checked.
+
+Current follow-up branch: `ui/wallet-usd-values`. Holding totals now stand out
+from token quantities and per-token prices, with explicit USD labels. Totals use
+cents for ordinary amounts and significant/scientific precision for tiny positive
+values instead of rounding them to zero. Positions default to highest USD value;
+lowest value and recent activity are also available. Missing values sort last in
+both value directions. Sorting covers all holdings before the 20-row display limit.
+
+The live evidence check at 21:53 UTC still had no qualified wallets. Background
+history/discovery was paused at 2,000 requests, resetting at 00:00 UTC (01:00
+Africa/Lagos); current checks retained their separate allocation. Backfill,
+economic reconstruction, historical prices and balance reconciliation remain
+distinct blockers. One small Solana wallet had complete indexed history but
+unresolved economics; that is not complete qualification evidence. RH also
+reported an `Invalid hex amount.` state-read error on one account. Current BNB
+public token logs cannot prove whole-wallet history; waiting does not fix that
+coverage limitation. There is no measured completion ETA.
+Read [holding values and evidence readiness](docs/wallet-values-evidence.md).
+Validation passed: 132 Rust tests, the Next production build, received-data
+browser checks at 320/390/1440px, explicit tiny/zero/missing value cases, all sort
+directions before pagination, search/show-more and a phone accessibility check.
+This follow-up is not live until its PR is merged and deployments are checked.
 
 PR #25's independent current activity allocation, token metadata/current marks,
 balance reads and detailed saved transactions are merged. The live collection

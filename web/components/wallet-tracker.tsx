@@ -26,6 +26,7 @@ import {
   tokenLabel,
   assetSymbol,
   unitPrice,
+  holdingValue,
   ActivityPage,
   TransactionEvidence,
   TokenQuote,
@@ -840,6 +841,7 @@ function WalletDetail({
   const chain = w.candidate.chain;
   const [positionLimit, setPositionLimit] = useState(20);
   const [assetSearch, setAssetSearch] = useState("");
+  const [positionSort, setPositionSort] = useState("value-desc");
   const [includeUnpriced, setIncludeUnpriced] = useState(false);
   const tabs = useResearchTabs<
     "activity" | "positions" | "performance" | "evidence"
@@ -848,7 +850,21 @@ function WalletDetail({
   const allHoldings = currentPositions(w.positions, true);
   const holdings = includeUnpriced ? allHoldings : valuedHoldings;
   const positions = [...holdings]
-    .sort((a, b) => (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0))
+    .sort((a, b) => {
+      const recent = (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
+      if (positionSort === "recent") return recent;
+      const value = (p: WalletAnalysis["positions"][number]) => {
+        if (p.market_value_usd == null || p.market_value_usd.trim() === "")
+          return null;
+        const usd = Number(p.market_value_usd);
+        return Number.isFinite(usd) ? usd : null;
+      };
+      const av = value(a);
+      const bv = value(b);
+      if (av === null) return bv === null ? recent : 1;
+      if (bv === null) return -1;
+      return (positionSort === "value-desc" ? bv - av : av - bv) || recent;
+    })
     .filter((p) =>
       [p.asset, tokenLabel(p.asset, w.markets)]
         .join(" ")
@@ -1035,23 +1051,40 @@ function WalletDetail({
               {allHoldings.length - valuedHoldings.length})
             </label>
           )}
-          <label className="wallet-search position-search">
-            <Search size={15} aria-hidden="true" />
-            <input
-              type="search"
-              aria-label="Search wallet assets"
-              placeholder="Search token, ticker or address"
-              value={assetSearch}
-              onChange={(event) => {
-                setAssetSearch(event.target.value);
-                setPositionLimit(20);
-              }}
-            />
-          </label>
+          <div className="wallet-position-controls">
+            <label className="wallet-search position-search">
+              <Search size={15} aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="Search wallet assets"
+                placeholder="Search token, ticker or address"
+                value={assetSearch}
+                onChange={(event) => {
+                  setAssetSearch(event.target.value);
+                  setPositionLimit(20);
+                }}
+              />
+            </label>
+            <label className="wallet-position-sort">
+              <span>Sort by</span>
+              <select
+                aria-label="Sort wallet holdings"
+                value={positionSort}
+                onChange={(event) => {
+                  setPositionSort(event.target.value);
+                  setPositionLimit(20);
+                }}
+              >
+                <option value="value-desc">Highest value first</option>
+                <option value="value-asc">Lowest value first</option>
+                <option value="recent">Recent activity</option>
+              </select>
+            </label>
+          </div>
           <div className="wallet-position-head" aria-hidden="true">
             <span>Token</span>
             <span>Quantity</span>
-            <span>Current value</span>
+            <span>Holding value (USD)</span>
             <span>Basis coverage</span>
           </div>
           {positions.length ? (
@@ -1068,19 +1101,26 @@ function WalletDetail({
                   </span>
                   <ExternalLink size={12} />
                 </a>
-                <span>
+                <span className="wallet-position-quantity">
                   <small className="mobile-field-label">Quantity</small>
                   {unitPrice(p.valuation?.quantity ?? p.quantity)} tokens
                 </span>
-                <span>
-                  <small className="mobile-field-label">Current value</small>
-                  Value{" "}
-                  {p.market_value_usd === null
-                    ? "Unavailable"
-                    : unitPrice(p.market_value_usd, true)}
+                <span className="wallet-position-value">
+                  <small className="mobile-field-label">
+                    Holding value · USD
+                  </small>
+                  <strong
+                    className={
+                      p.market_value_usd === null
+                        ? "value-unavailable"
+                        : undefined
+                    }
+                  >
+                    {holdingValue(p.market_value_usd)}
+                  </strong>
                   <small>
                     {p.valuation?.price_usd
-                      ? `${unitPrice(p.valuation.price_usd, true)} / token`
+                      ? `Price / token ${unitPrice(p.valuation.price_usd, true)}`
                       : "Price unavailable"}
                   </small>
                 </span>
@@ -1088,7 +1128,7 @@ function WalletDetail({
                   <small className="mobile-field-label">Basis coverage</small>
                   {amount(String(Number(p.basis_coverage) * 100))}% known
                   <small>
-                    Average open entry{" "}
+                    Avg. entry / token{" "}
                     {unitPrice(p.average_entry_usd ?? null, true)}
                   </small>
                   <a
