@@ -89,7 +89,7 @@ fn open_total(
     open
 }
 
-pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
+pub fn analyze(snapshot: &Snapshot, timestamp: u64) -> Analysis {
     let chain = snapshot.candidate.chain;
     let prices = PriceIndex::new(&snapshot.prices);
     let end = timestamp;
@@ -99,7 +99,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
     let mut transactions: Vec<_> = snapshot
         .records
         .iter()
-        .filter_map(|r| r.transaction.clone())
+        .filter_map(|r| r.transaction.as_ref())
         .filter(|t| t.timestamp < end)
         .collect();
     transactions.sort_by_key(|t| (t.block, t.index.unwrap_or(u64::MAX), t.id.clone()));
@@ -580,8 +580,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
     } else {
         "observed"
     };
-    snapshot.coverage = coverage.clone();
-    Analysis{candidate:snapshot.candidate,analyzed_at:end,policy:POLICY.into(),status:status.into(),coverage,windows,positions,markets:BTreeMap::new(),activity:events,unresolved_records:economic_gaps,records:snapshot.records.len(),notes:vec!["Historical USD values use source candles at the event/boundary time; conversion is an estimate, not an executable quote.".into(),"Network fees are expensed when charged. Deposits, withdrawals and unproven transfer basis are not trading gains.".into(),"Initial qualification thresholds are research filters; future profitability is evaluated separately.".into()]}
+    Analysis{candidate:snapshot.candidate.clone(),analyzed_at:end,policy:POLICY.into(),status:status.into(),coverage,windows,positions,markets:BTreeMap::new(),activity:events,unresolved_records:economic_gaps,records:snapshot.records.len(),notes:vec!["Historical USD values use source candles at the event/boundary time; conversion is an estimate, not an executable quote.".into(),"Network fees are expensed when charged. Deposits, withdrawals and unproven transfer basis are not trading gains.".into(),"Initial qualification thresholds are research filters; future profitability is evaluated separately.".into()]}
 }
 
 #[cfg(test)]
@@ -678,7 +677,7 @@ mod tests {
             granularity: "test".into(),
             source: "test".into(),
         });
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.windows[1].episodes, 1);
         assert_eq!(a.windows[1].realized_usd, Some(Decimal::from(100)));
         assert_eq!(a.positions[0].quantity, Decimal::ZERO);
@@ -692,7 +691,7 @@ mod tests {
             tx("sell", 70 * DAY, -100, 2, true),
         ];
         prices(&mut s, &[70 * DAY]);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.windows[1].realized_usd, None);
         assert_eq!(a.windows[1].episodes, 0);
         assert!(!a.windows[1].qualified);
@@ -702,7 +701,7 @@ mod tests {
         s.records.push(r);
         prices(&mut s, &[70 * DAY]);
         s.balances.insert("token".into(), Decimal::from(100));
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.windows[1].fees_usd, None);
         assert_eq!(a.windows[1].open_change_usd, None);
         assert!(!a.windows[1].qualified);
@@ -712,7 +711,7 @@ mod tests {
         let mut s = base();
         s.coverage.history_complete = false;
         s.coverage.last_collected_at = Some(80 * DAY);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.status, "stale");
         assert!(a.windows.iter().all(|w| !w.qualified));
     }
@@ -720,9 +719,9 @@ mod tests {
     #[test]
     fn fresh_history_does_not_promote_old_account_and_balance_state() {
         let mut s = consistent_sample();
-        assert_eq!(analyze(s.clone(), 90 * DAY).status, "qualified_60d");
+        assert_eq!(analyze(&s, 90 * DAY).status, "qualified_60d");
         s.coverage.last_state_checked_at = Some(88 * DAY);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(!a.status.starts_with("qualified_"));
         assert!(a
             .windows
@@ -770,7 +769,7 @@ mod tests {
     #[test]
     fn both_independent_months_can_qualify_and_outliers_cannot() {
         let s = consistent_sample();
-        let a = analyze(s.clone(), 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.status, "qualified_60d", "{:?}", a.windows);
         assert!(a.windows.iter().all(|w| w.episodes == 32
             && w.tokens == 10
@@ -779,7 +778,7 @@ mod tests {
         let mut s = s;
         let row = s.records.iter_mut().find(|r| r.id == "60-0-sell").unwrap();
         row.transaction.as_mut().unwrap().assets[1].quantity = Decimal::from(1000);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(!a.windows[1].qualified);
         assert!(
             !a.windows[1]
@@ -802,7 +801,7 @@ mod tests {
             r.transaction.as_mut().unwrap().assets[0].asset = "token0".into();
             s.records.push(r);
         }
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.status, "qualified_60d", "{:?}", a.windows);
         assert!(a
             .windows
@@ -830,13 +829,13 @@ mod tests {
             granularity: "test".into(),
             source: "synthetic test only".into(),
         });
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(a.windows[1].realized_usd.is_none());
         assert!(!a.windows[1].qualified);
         assert_eq!(a.status, "incomplete");
         let mut s = consistent_sample();
         s.prices.retain(|p| p.timestamp != 71 * DAY + 30);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(a.windows[1].realized_usd.is_none());
         assert!(
             !a.windows[1]
@@ -866,7 +865,7 @@ mod tests {
             source: "test".into(),
         });
         s.balances.insert("token".into(), Decimal::from(10));
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.windows[1].total_usd, Some(Decimal::from(-47)));
         assert!(!a.windows[1].qualified);
         let mut s = consistent_sample();
@@ -882,7 +881,7 @@ mod tests {
             granularity: "test".into(),
             source: "test".into(),
         });
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.windows[1].total_usd, Some(Decimal::from(-7)));
         assert!(!a.windows[1].qualified);
     }
@@ -896,7 +895,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .finalized = false;
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(a
             .windows
             .iter()
@@ -904,7 +903,7 @@ mod tests {
         assert!(a.activity.iter().any(|e| !e.finalized));
         let mut s = consistent_sample();
         s.balances.insert("unseen".into(), Decimal::ONE);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(!a.coverage.balances_reconciled);
         assert!(a.windows.iter().all(|w| w.total_usd.is_none()));
     }
@@ -914,7 +913,7 @@ mod tests {
         let mut s = consistent_sample();
         s.records
             .retain(|r| !r.id.starts_with("age-") && !r.id.starts_with("30-"));
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(!a.windows[1].qualified);
         assert!(
             !a.windows[1]
@@ -929,7 +928,7 @@ mod tests {
         r.transaction.as_mut().unwrap().assets[0].asset =
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".into();
         s.records.push(r);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(a.unresolved_records > 0);
         assert!(a
             .windows
@@ -952,7 +951,7 @@ mod tests {
                 source: "synthetic test only".into(),
             });
         }
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(a
             .windows
             .iter()
@@ -963,7 +962,7 @@ mod tests {
     fn a_profitable_program_account_never_becomes_a_trader_rank() {
         let mut s = consistent_sample();
         s.coverage.execution_account_verified = false;
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.status, "incomplete");
         assert!(a.windows.iter().all(|w| !w.qualified));
     }
@@ -986,7 +985,7 @@ mod tests {
                 p.asset = "BNB".into();
             }
         }
-        let a = analyze(s.clone(), 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert_eq!(a.status, "incomplete");
         assert!(a
             .windows
@@ -999,7 +998,7 @@ mod tests {
         t.assets[0].asset = "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d".into();
         t.assets[1].asset = "0x55d398326f99059ff775485246999027b3197955".into();
         s.records.push(r);
-        let a = analyze(s, 90 * DAY);
+        let a = analyze(&s, 90 * DAY);
         assert!(a.unresolved_records > 0);
         assert!(a
             .windows

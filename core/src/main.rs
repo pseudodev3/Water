@@ -13,6 +13,7 @@ mod robinhood_launchpads;
 mod providers;
 mod position;
 mod reconstruct;
+mod runtime;
 mod tracker;
 
 use axum::{
@@ -94,6 +95,7 @@ async fn main() {
 
     tracker.start();
     info!("Water core listening on {}", config.port);
+    runtime::start();
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -110,7 +112,7 @@ async fn wallet_detail(State(state): State<Arc<AppState>>, Json(request): Json<t
     let tracker=state.tracker.clone();
     tokio::task::spawn_blocking(move||tracker.detail(request.chain,&request.wallet)).await
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"Wallet evidence is busy."}))))?
-        .map_err(|error|(StatusCode::BAD_REQUEST,Json(json!({"error":error}))))?
+        .map_err(wallet_error)?
         .map(Json).ok_or((StatusCode::NOT_FOUND,Json(json!({"error":"This wallet has not been collected yet."}))))
 }
 
@@ -128,7 +130,9 @@ async fn wallet_activity(
             )
         })?
         .map_err(|error| {
-            let code = if error.starts_with("Activity changed;") {
+            let code = if error == "Wallet evidence is busy; retry shortly." {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else if error.starts_with("Activity changed;") {
                 StatusCode::CONFLICT
             } else {
                 StatusCode::BAD_REQUEST
@@ -146,7 +150,16 @@ async fn wallet_nominate(State(state): State<Arc<AppState>>, Json(request): Json
     let tracker=state.tracker.clone();
     tokio::task::spawn_blocking(move||tracker.nominate(request)).await
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"Wallet evidence is busy."}))))?
-        .map(Json).map_err(|error|(StatusCode::BAD_REQUEST,Json(json!({"error":error}))))
+        .map(Json).map_err(wallet_error)
+}
+
+fn wallet_error(error: String) -> (StatusCode, Json<Value>) {
+    let status = if error == "Wallet evidence is busy; retry shortly." {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    (status, Json(json!({"error": error})))
 }
 
 async fn wallet_overlap(State(state): State<Arc<AppState>>, Json(request): Json<model::ScanRequest>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
@@ -351,7 +364,22 @@ async fn token_info(
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let interrupt = async {
+        tokio::signal::ctrl_c().await.expect("Interrupt signal handler should initialize");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Termination signal handler should initialize")
+            .recv().await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    let signal = tokio::select! {
+        _ = interrupt => "SIGINT",
+        _ = terminate => "SIGTERM",
+    };
+    info!(signal, "Water received shutdown signal; draining HTTP requests");
 }
 
 #[cfg(test)]

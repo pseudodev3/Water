@@ -2,12 +2,35 @@ use super::budget::Lane;
 use super::model::*;
 use crate::model::Chain;
 use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
 
 pub struct Store {
     db: Mutex<Connection>,
     pub path: String,
     pub current_limit: u64,
+}
+
+/// Normalized accounting never reads a parsed transaction's raw provider JSON.
+/// Serde skips that field without constructing its thousands of nested values.
+/// Pending references retain their source fields for ordering and retries.
+fn normalized_record(value: &str) -> Result<Record, String> {
+    #[derive(serde::Deserialize)]
+    struct Normalized {
+        id: String,
+        transaction: Option<Transaction>,
+        error: Option<String>,
+    }
+    let record: Normalized = serde_json::from_str(value).map_err(|e| e.to_string())?;
+    if record.transaction.is_none() {
+        return serde_json::from_str(value).map_err(|e| e.to_string());
+    }
+    Ok(Record {
+        id: record.id,
+        raw: serde_json::Value::Null,
+        transaction: record.transaction,
+        error: record.error,
+    })
 }
 
 impl Store {
@@ -276,7 +299,49 @@ impl Store {
         Ok(candidate)
     }
 
+    /// Accounting view: parsed records omit raw payloads; `record` and
+    /// `activity_snapshot` provide the persisted source for explicit inspection.
     pub fn snapshot(&self, chain: Chain, wallet: &str) -> Result<Option<Snapshot>, String> {
+        Ok(self
+            .load_snapshot(chain, wallet, false, None)?
+            .map(|(s, _)| s))
+    }
+
+    /// Hash persisted bytes while holding the same read lock as the snapshot.
+    /// Only the explicitly inspected transaction needs its full source payload.
+    pub fn activity_snapshot(
+        &self,
+        chain: Chain,
+        wallet: &str,
+        source_record: Option<&str>,
+    ) -> Result<Option<(Snapshot, String)>, String> {
+        Ok(self
+            .load_snapshot(chain, wallet, true, source_record)?
+            .map(|(s, hash)| (s, hash.unwrap())))
+    }
+
+    pub fn record(&self, chain: Chain, wallet: &str, id: &str) -> Result<Option<Record>, String> {
+        let db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
+        let value: Option<String> = db
+            .query_row(
+                "SELECT record FROM records WHERE chain=? AND wallet=? AND id=?",
+                params![chain.key(), wallet, id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        value
+            .map(|v| serde_json::from_str(&v).map_err(|e| e.to_string()))
+            .transpose()
+    }
+
+    fn load_snapshot(
+        &self,
+        chain: Chain,
+        wallet: &str,
+        revision: bool,
+        source_record: Option<&str>,
+    ) -> Result<Option<(Snapshot, Option<String>)>, String> {
         let db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
         let tuple: Option<(String, String, String)> = db
             .query_row(
@@ -292,12 +357,23 @@ impl Store {
         let mut statement = db
             .prepare("SELECT record FROM records WHERE chain=? AND wallet=? ORDER BY id")
             .map_err(|e| e.to_string())?;
+        let mut hasher = revision.then(Sha256::new);
         let records = statement
             .query_map(params![chain.key(), wallet], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .map(|r| {
-                r.map_err(|e| e.to_string())
-                    .and_then(|v| serde_json::from_str(&v).map_err(|e| e.to_string()))
+                r.map_err(|e| e.to_string()).and_then(|v| {
+                    if let Some(hash) = &mut hasher {
+                        hash.update((v.len() as u64).to_le_bytes());
+                        hash.update(v.as_bytes());
+                    }
+                    let record = normalized_record(&v)?;
+                    if source_record == Some(record.id.as_str()) {
+                        serde_json::from_str(&v).map_err(|e| e.to_string())
+                    } else {
+                        Ok(record)
+                    }
+                })
             })
             .collect::<Result<Vec<Record>, String>>()?;
         let mut statement = db
@@ -311,13 +387,16 @@ impl Store {
                     .and_then(|v| serde_json::from_str(&v).map_err(|e| e.to_string()))
             })
             .collect::<Result<Vec<Price>, String>>()?;
-        Ok(Some(Snapshot {
-            candidate: serde_json::from_str(&candidate).map_err(|e| e.to_string())?,
-            coverage: serde_json::from_str(&coverage).map_err(|e| e.to_string())?,
-            records,
-            prices,
-            balances: serde_json::from_str(&balances).map_err(|e| e.to_string())?,
-        }))
+        Ok(Some((
+            Snapshot {
+                candidate: serde_json::from_str(&candidate).map_err(|e| e.to_string())?,
+                coverage: serde_json::from_str(&coverage).map_err(|e| e.to_string())?,
+                records,
+                prices,
+                balances: serde_json::from_str(&balances).map_err(|e| e.to_string())?,
+            },
+            hasher.map(|h| format!("{:x}", h.finalize())),
+        )))
     }
 
     /// Evidence rows and the continuation cursor commit together. A restart
@@ -487,6 +566,178 @@ fn credits_in_window(db: &Connection, day: u64) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn evidence_record(id: &str, complete: bool) -> Record {
+        Record {
+            id: id.into(),
+            raw: serde_json::json!({"slot":42,"provider_evidence":"x".repeat(256 * 1024)}),
+            error: None,
+            transaction: Some(Transaction {
+                id: id.into(),
+                timestamp: 1000,
+                block: 42,
+                index: Some(0),
+                finalized: true,
+                succeeded: true,
+                assets: vec![
+                    Delta {
+                        asset: "token".into(),
+                        quantity: 10.into(),
+                    },
+                    Delta {
+                        asset: "SOL".into(),
+                        quantity: (-1).into(),
+                    },
+                ],
+                fee_asset: "SOL".into(),
+                fee_quantity: Some(rust_decimal::Decimal::ZERO),
+                movement_complete: complete,
+                swap_evidence: true,
+                notes: vec![],
+                counterparties: vec![],
+            }),
+        }
+    }
+
+    #[test]
+    fn compact_reads_keep_all_economics_and_source_evidence_survives_failed_retries() {
+        let store = Store::open(":memory:").unwrap();
+        let c = candidate();
+        store.nominate(c.clone(), 1).unwrap();
+        let records = vec![
+            evidence_record("complete", true),
+            evidence_record("incomplete", false),
+            Record {
+                id: "pending".into(),
+                raw: serde_json::json!({"slot":43,"blockTime":1001}),
+                transaction: None,
+                error: None,
+            },
+        ];
+        let coverage = Coverage {
+            last_collected_at: Some(1100),
+            ..Default::default()
+        };
+        store
+            .save_page(&c, &records, &coverage, &BTreeMap::new())
+            .unwrap();
+        let compact = store.snapshot(c.chain, &c.wallet).unwrap().unwrap();
+        assert_eq!(compact.records.len(), 3);
+        assert!(compact
+            .records
+            .iter()
+            .filter(|r| r.transaction.is_some())
+            .all(|r| r.raw.is_null()));
+        assert_eq!(
+            compact
+                .records
+                .iter()
+                .find(|r| r.id == "pending")
+                .unwrap()
+                .raw["blockTime"],
+            1001
+        );
+        let mut full = compact.clone();
+        full.records = records.clone();
+        assert_eq!(
+            serde_json::to_value(super::super::accounting::analyze(&compact, 1101)).unwrap(),
+            serde_json::to_value(super::super::accounting::analyze(&full, 1101)).unwrap(),
+        );
+        let mut retry = store
+            .record(c.chain, &c.wallet, "incomplete")
+            .unwrap()
+            .unwrap();
+        retry.error = Some("Receipt retry failed".into());
+        store
+            .save_page(&c, &[retry], &coverage, &BTreeMap::new())
+            .unwrap();
+        let inspected = store
+            .record(c.chain, &c.wallet, "incomplete")
+            .unwrap()
+            .unwrap();
+        assert_eq!(inspected.raw, records[1].raw);
+        assert_eq!(inspected.error.as_deref(), Some("Receipt retry failed"));
+    }
+
+    #[test]
+    fn raw_only_updates_invalidate_cursors_and_inspection_loads_only_the_selected_source() {
+        use super::super::evidence::activity_page_with_revision;
+        let store = Store::open(":memory:").unwrap();
+        let c = candidate();
+        store.nominate(c.clone(), 1).unwrap();
+        let mut first = evidence_record("first", true);
+        let second = evidence_record("second", true);
+        let coverage = Coverage {
+            last_collected_at: Some(1100),
+            ..Default::default()
+        };
+        store
+            .save_page(&c, &[first.clone(), second], &coverage, &BTreeMap::new())
+            .unwrap();
+        let (s, revision) = store
+            .activity_snapshot(c.chain, &c.wallet, None)
+            .unwrap()
+            .unwrap();
+        let mut request = ActivityRequest {
+            chain: c.chain,
+            wallet: c.wallet.clone(),
+            cursor: None,
+            limit: Some(1),
+            transaction: None,
+        };
+        let page =
+            activity_page_with_revision(&s, &BTreeMap::new(), &request, Some(revision.clone()))
+                .unwrap();
+        request.cursor = page["next_cursor"].as_str().map(str::to_owned);
+        first.raw["receipt_revision"] = serde_json::json!(2);
+        store
+            .save_page(&c, &[first.clone()], &coverage, &BTreeMap::new())
+            .unwrap();
+        let (updated, next_revision) = store
+            .activity_snapshot(c.chain, &c.wallet, None)
+            .unwrap()
+            .unwrap();
+        assert_ne!(revision, next_revision);
+        assert!(activity_page_with_revision(
+            &updated,
+            &BTreeMap::new(),
+            &request,
+            Some(next_revision.clone())
+        )
+        .unwrap_err()
+        .starts_with("Activity changed;"));
+        let (inspected, inspected_revision) = store
+            .activity_snapshot(c.chain, &c.wallet, Some("first"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(next_revision, inspected_revision);
+        assert_eq!(
+            inspected
+                .records
+                .iter()
+                .find(|r| r.id == "first")
+                .unwrap()
+                .raw,
+            first.raw
+        );
+        assert!(inspected
+            .records
+            .iter()
+            .find(|r| r.id == "second")
+            .unwrap()
+            .raw
+            .is_null());
+        request.cursor = None;
+        request.transaction = Some("first".into());
+        let response = activity_page_with_revision(
+            &inspected,
+            &BTreeMap::new(),
+            &request,
+            Some(inspected_revision),
+        )
+        .unwrap();
+        assert_eq!(response["transaction"]["raw"], first.raw);
+    }
 
     #[test]
     fn paced_history_cannot_spend_the_current_checks_allocation_over_a_full_utc_day() {
@@ -675,7 +926,7 @@ mod tests {
             .save_page(&c, &[], &complete, &BTreeMap::new())
             .unwrap();
         let mut analysis = super::super::accounting::analyze(
-            store.snapshot(c.chain, &c.wallet).unwrap().unwrap(),
+            &store.snapshot(c.chain, &c.wallet).unwrap().unwrap(),
             now(),
         );
         analysis.status = "qualified_60d".into();

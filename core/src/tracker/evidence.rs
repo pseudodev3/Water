@@ -97,6 +97,15 @@ pub fn activity_page(
     markets: &BTreeMap<String, TokenQuote>,
     request: &ActivityRequest,
 ) -> Result<Value, String> {
+    activity_page_with_revision(snapshot, markets, request, None)
+}
+
+pub fn activity_page_with_revision(
+    snapshot: &Snapshot,
+    markets: &BTreeMap<String, TokenQuote>,
+    request: &ActivityRequest,
+    saved_revision: Option<String>,
+) -> Result<Value, String> {
     let mut records: Vec<_> = snapshot.records.iter().collect();
     records.sort_by_key(|r| {
         std::cmp::Reverse((
@@ -109,11 +118,15 @@ pub fn activity_page(
             r.id.clone(),
         ))
     });
-    let mut hasher = Sha256::new();
-    for record in &records {
-        hasher.update(serde_json::to_vec(record).map_err(|e| e.to_string())?);
-    }
-    let revision = format!("{:x}", hasher.finalize());
+    let revision = if let Some(revision) = saved_revision {
+        revision
+    } else {
+        let mut hasher = Sha256::new();
+        for record in &records {
+            hasher.update(serde_json::to_vec(record).map_err(|e| e.to_string())?);
+        }
+        format!("{:x}", hasher.finalize())
+    };
     let offset = if let Some(cursor) = &request.cursor {
         if cursor.len() > 512 {
             return Err("Invalid activity cursor.".into());
@@ -137,7 +150,7 @@ pub fn activity_page(
         return Err("Invalid activity offset.".into());
     }
     let analysis = accounting::analyze(
-        snapshot.clone(),
+        snapshot,
         snapshot
             .coverage
             .last_collected_at
@@ -304,7 +317,7 @@ mod tests {
                 counterparties: vec![],
             }),
         });
-        let mut a = accounting::analyze(s.clone(), 10000);
+        let mut a = accounting::analyze(&s, 10000);
         let markets = BTreeMap::from([(
             "token".into(),
             TokenQuote {
@@ -334,7 +347,7 @@ mod tests {
             source: "Synthetic historical candle".into(),
             granularity: "hour".into(),
         });
-        let priced = accounting::analyze(s.clone(), 10000);
+        let priced = accounting::analyze(&s, 10000);
         assert_eq!(
             priced.activity[0].pricing.unit_price_usd,
             Some(Decimal::from(2))
@@ -363,7 +376,7 @@ mod tests {
         let mut s = snapshot();
         s.coverage.balances_observed_at = Some(9900);
         s.balances.insert("token".into(), Decimal::from(4));
-        let mut a = accounting::analyze(s.clone(), 10000);
+        let mut a = accounting::analyze(&s, 10000);
         a.positions.push(Position {
             asset: "token".into(),
             quantity: Decimal::from(100),
