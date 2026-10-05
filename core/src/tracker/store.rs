@@ -1,3 +1,4 @@
+use super::budget::Lane;
 use super::model::*;
 use crate::model::Chain;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,11 +17,22 @@ impl Store {
 
     /// Reserve before sending. Every configured Helius credential shares this
     /// Water budget; a credential list does not multiply provider plan credits.
+    #[cfg(test)]
     pub fn reserve_http(
         &self,
         timestamp: u64,
         daily_limit: u64,
         helius_limit: Option<u64>,
+    ) -> Result<(), String> {
+        self.reserve_http_in_lane(timestamp, daily_limit, helius_limit, None)
+    }
+
+    pub fn reserve_http_in_lane(
+        &self,
+        timestamp: u64,
+        daily_limit: u64,
+        helius_limit: Option<u64>,
+        lane: Option<Lane>,
     ) -> Result<(), String> {
         let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
@@ -37,6 +49,22 @@ impl Store {
             .unwrap_or(0);
         if used >= daily_limit {
             return Err("Wallet collection reached its daily free request budget; it resumes after UTC midnight.".into());
+        }
+        if let Some(lane) = lane {
+            let key = format!("lane:{}:{day}", lane.key());
+            let used: u64 = tx
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM state WHERE key=?",
+                    [&key],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .unwrap_or(0);
+            if used >= lane.allowance(timestamp, daily_limit) {
+                return Err(format!("{} work is paced within the free request budget; the next attempt is eligible at UTC timestamp {}. Saved evidence is retained.",lane.key(),lane.next_attempt(timestamp,daily_limit,used)));
+            }
+            tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,(used+1).to_string()]).map_err(|e|e.to_string())?;
         }
         if let Some(limit) = helius_limit {
             if credits_in_window(&tx, day)?.saturating_add(10) > limit {
@@ -139,13 +167,13 @@ impl Store {
         Ok(true)
     }
 
-    pub fn next_wallet(&self, timestamp: u64) -> Result<Option<Candidate>, String> {
+    pub fn next_wallet(&self, timestamp: u64, interval: u64) -> Result<Option<Candidate>, String> {
         let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
         let value: Option<String> = tx
             .query_row(
-                "SELECT candidate FROM wallets ORDER BY scheduled_at,chain,wallet LIMIT 1",
-                [],
+                "SELECT candidate FROM wallets WHERE scheduled_at<=? ORDER BY scheduled_at,chain,wallet LIMIT 1",
+                [timestamp],
                 |r| r.get(0),
             )
             .optional()
@@ -157,9 +185,39 @@ impl Store {
         if let Some(c) = &candidate {
             tx.execute(
                 "UPDATE wallets SET scheduled_at=? WHERE chain=? AND wallet=?",
-                params![timestamp, c.chain.key(), c.wallet],
+                params![timestamp.saturating_add(interval), c.chain.key(), c.wallet],
             )
             .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(candidate)
+    }
+
+    pub fn wallet_count(&self) -> Result<usize, String> {
+        self.db
+            .lock()
+            .map_err(|_| "Wallet storage is busy.")?
+            .query_row("SELECT COUNT(*) FROM wallets", [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn lane_used(&self, lane: Lane, timestamp: u64) -> Result<u64, String> {
+        Ok(self
+            .state(&format!("lane:{}:{}", lane.key(), timestamp / DAY))?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0))
+    }
+
+    pub fn next_history_wallet(&self, timestamp: u64) -> Result<Option<Candidate>, String> {
+        let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let value: Option<String> = tx.query_row("SELECT w.candidate FROM wallets w LEFT JOIN state s ON s.key='history-due:'||w.chain||':'||w.wallet WHERE CAST(COALESCE(s.value,'0') AS INTEGER)<=? ORDER BY CAST(COALESCE(s.value,'0') AS INTEGER),w.chain,w.wallet LIMIT 1",[timestamp],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        let candidate: Option<Candidate> = value
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        if let Some(c) = &candidate {
+            tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("history-due:{}:{}",c.chain.key(),c.wallet),(timestamp+300).to_string()]).map_err(|e|e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(candidate)
@@ -345,6 +403,95 @@ fn credits_in_window(db: &Connection, day: u64) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paced_history_cannot_spend_the_current_checks_allocation_over_a_full_utc_day() {
+        let store = Store::open(":memory:").unwrap();
+        let start = 100 * DAY;
+        let mut current = 0;
+        for minute in 0..1440 {
+            let timestamp = start + minute * 60;
+            if minute % 40 == 0 {
+                // Captured production cohort's bounded head routes: seven SOL
+                // wallets (2 calls each), two RH wallets (4 each), two BNB
+                // wallets with known tokens (4 each), and one tokenless BNB
+                // nomination (chain check only; cannot be marked fresh).
+                for _ in 0..31 {
+                    store
+                        .reserve_http_in_lane(timestamp, 2000, None, Some(Lane::Current))
+                        .unwrap();
+                    current += 1;
+                }
+            }
+            while store
+                .reserve_http_in_lane(timestamp, 2000, Some(800_000), Some(Lane::History))
+                .is_ok()
+            {}
+        }
+        assert_eq!(current, 1116);
+        assert_eq!(store.lane_used(Lane::Current, start).unwrap(), 1116);
+        assert!(store.lane_used(Lane::History, start).unwrap() <= 500);
+        assert!(
+            store
+                .state("requests:100")
+                .unwrap()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                <= 2000
+        );
+    }
+
+    #[test]
+    fn new_work_allocations_never_reset_legacy_spending_or_charge_a_failed_credit_reservation() {
+        let store = Store::open(":memory:").unwrap();
+        for _ in 0..2000 {
+            store.reserve_http(100 * DAY, 2000, None).unwrap();
+        }
+        assert!(store
+            .reserve_http_in_lane(100 * DAY, 2000, Some(10), Some(Lane::Current))
+            .is_err());
+        assert_eq!(store.lane_used(Lane::Current, 100 * DAY).unwrap(), 0);
+        assert_eq!(store.helius_credits(100 * DAY).unwrap(), 0);
+        store
+            .reserve_http_in_lane(101 * DAY, 2000, Some(10), Some(Lane::Current))
+            .unwrap();
+        assert!(store
+            .reserve_http_in_lane(101 * DAY, 2000, Some(10), Some(Lane::Current))
+            .is_err());
+        assert_eq!(store.lane_used(Lane::Current, 101 * DAY).unwrap(), 1);
+        assert_eq!(store.state("requests:101").unwrap().as_deref(), Some("1"));
+        assert_eq!(store.helius_credits(101 * DAY).unwrap(), 10);
+    }
+
+    #[test]
+    fn current_check_scheduling_is_fair_and_does_not_poll_again_before_the_due_time() {
+        let store = Store::open(":memory:").unwrap();
+        let a = candidate();
+        let mut b = a.clone();
+        b.wallet = "second-test-wallet".into();
+        store.nominate(a.clone(), 2).unwrap();
+        store.nominate(b.clone(), 2).unwrap();
+        assert_eq!(
+            store.next_wallet(100, 2400).unwrap().unwrap().wallet,
+            a.wallet
+        );
+        assert_eq!(
+            store.next_wallet(160, 2400).unwrap().unwrap().wallet,
+            b.wallet
+        );
+        assert!(store.next_wallet(2400, 2400).unwrap().is_none());
+        assert_eq!(
+            store.next_wallet(2500, 2400).unwrap().unwrap().wallet,
+            a.wallet
+        );
+        // Historical work has its own fair schedule; it cannot move head due times.
+        assert!(store.next_history_wallet(2501).unwrap().is_some());
+        assert_eq!(
+            store.next_wallet(2560, 2400).unwrap().unwrap().wallet,
+            b.wallet
+        );
+    }
     #[test]
     fn credit_limits_are_atomic_persisted_and_span_billing_month_boundaries() {
         let path =

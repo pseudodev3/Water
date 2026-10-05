@@ -113,6 +113,7 @@ pub struct Coverage {
     pub execution_account_verified: bool,
     pub fees_complete: bool,
     pub last_collected_at: Option<u64>,
+    pub last_state_checked_at: Option<u64>,
     pub oldest_record_at: Option<u64>,
     pub newest_record_at: Option<u64>,
     pub pages: usize,

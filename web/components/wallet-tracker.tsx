@@ -39,6 +39,16 @@ function date(timestamp: number | null) {
       })
     : "Not collected";
 }
+function utcDate(timestamp: number) {
+  return new Date(timestamp * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
+  });
+}
 function statusLabel(status: string) {
   return (
     (
@@ -59,7 +69,7 @@ export function WalletTracker() {
   const [error, setError] = useState("");
   const [chain, setChain] = useState<Chain | "all">("all");
   const [view, setView] = useState<"qualified" | "research" | "followed">(
-    "qualified",
+    "research",
   );
   const [source, setSource] = useState("all");
   const [followed, setFollowed] = useState<string[]>([]);
@@ -142,14 +152,19 @@ export function WalletTracker() {
     detailRequest.current = controller;
     const id = walletId(wallet.candidate);
     setDetailLoading(id);
-    setDetail(null);
+    setDetail((current) =>
+      current && walletId(current.candidate) === id ? current : null,
+    );
     try {
       const value = await getWalletDetail(
         wallet.candidate.chain,
         wallet.candidate.wallet,
         controller.signal,
       );
-      if (!controller.signal.aborted) setDetail(value);
+      if (!controller.signal.aborted) {
+        setDetail(value);
+        setError("");
+      }
     } catch (caught) {
       if (!controller.signal.aborted)
         setError(
@@ -229,6 +244,11 @@ export function WalletTracker() {
   }
 
   const wallets = response?.wallets ?? [];
+  const collection = response?.status;
+  const budgetPaused = collection?.collection_state === "budget_paused" ||
+    (collection?.requests_today !== undefined &&
+      collection.daily_request_limit !== undefined &&
+      collection.requests_today >= collection.daily_request_limit);
   const qualified = wallets.filter((w) => w.status.startsWith("qualified_"));
   const visible = wallets.filter(
     (w) =>
@@ -284,7 +304,7 @@ export function WalletTracker() {
           <strong>{followed.length}</strong>
         </div>
         <div>
-          <span>Discovery checked</span>
+          <span>Discovery attempted</span>
           <strong className="wallet-summary-date">
             {date(response?.status.last_discovery_at ?? null)}
           </strong>
@@ -293,6 +313,12 @@ export function WalletTracker() {
       {response?.status.enabled && (
         <details className="wallet-discovery-coverage">
           <summary>Discovery coverage</summary>
+          {collection?.requests_today !== undefined && collection.daily_request_limit !== undefined && (
+            <p>
+              {collection.requests_today.toLocaleString()} / {collection.daily_request_limit.toLocaleString()} collection requests used today.
+              {collection.current_refresh_seconds !== undefined && ` Current history checks target every ${Math.round(collection.current_refresh_seconds / 60)} minutes; historical reconstruction continues separately.`}
+            </p>
+          )}
           <p>
             {response.status.solana_indexed_access
               ? "Indexed Solana history access is configured."
@@ -383,7 +409,7 @@ export function WalletTracker() {
                 setDetailLoading("");
               }}
             >
-              <option value="all">Both chains</option>
+              <option value="all">All chains</option>
               <option value="solana">Solana</option>
               <option value="robinhood">Robinhood</option>
               <option value="bnb">BNB Chain</option>
@@ -422,9 +448,11 @@ export function WalletTracker() {
             Collection is paused. Wallet history is not being added yet.
           </p>
         )}
-        {response?.status.enabled && response.status.detail && (
+        {response?.status.enabled && (budgetPaused || response.status.detail) && (
           <p className="wallet-collection-note" role="status">
-            {response.status.detail} Last received evidence is preserved.
+            {budgetPaused
+              ? `Collection is paused: today’s request budget is used. It resumes ${collection?.budget_resets_at ? `at ${utcDate(collection.budget_resets_at)}` : "after UTC midnight"}. Saved records and observed activity remain available below.`
+              : `${response.status.detail} Last received evidence is preserved.`}
           </p>
         )}
         {loading && !response ? (
@@ -464,7 +492,7 @@ export function WalletTracker() {
             <div className="wallet-list-head">
               <span>Execution wallet / discovery</span>
               <span>Record</span>
-              <span>Latest 30 days</span>
+              <span>Latest evidence</span>
               <span>Last collected</span>
             </div>
             {visible.map((w) => (
@@ -493,11 +521,14 @@ export function WalletTracker() {
                     className={`wallet-record ${w.status.startsWith("qualified_") ? "qualified" : ""}`}
                   >
                     {statusLabel(w.status)}
+                    <small className="wallet-record-progress">
+                      {w.records.toLocaleString()} saved · {w.coverage.pending_records.toLocaleString()} awaiting reconstruction
+                    </small>
                   </span>
                   <span className="wallet-pnl">
                     {w.status.startsWith("qualified_")
                       ? amount(w.windows[1]?.total_usd ?? null, true)
-                      : "Awaiting verification"}
+                      : w.coverage.newest_record_at ? `Latest execution ${date(w.coverage.newest_record_at)}` : "No execution received"}
                   </span>
                   <span className="wallet-last">
                     {date(w.coverage.last_collected_at)}
@@ -524,7 +555,7 @@ export function WalletTracker() {
         {detailLoading && (
           <p className="wallet-detail-loading" role="status">
             <Activity size={15} className="spin" />
-            Reconstructing the saved record…
+            Loading saved wallet evidence…
           </p>
         )}
         {detail && (
@@ -694,6 +725,35 @@ function WalletDetail({
       <p className="wallet-detail-status">
         {statusLabel(w.status)} · As of {date(w.analyzed_at)}
       </p>
+      <div className="wallet-detail-activity">
+        <h3>Latest observed activity.</h3>
+        {w.activity.slice(0, 12).map((a, i) => (
+          <div className="wallet-feed-row" key={`${a.tx}:${i}`}>
+            <div>
+              <strong>
+                {a.kind.replaceAll("_", " ")}
+                {!a.finalized && " · provisional"}
+              </strong>
+              <small>
+                {a.asset ? shortAddress(a.asset) : "Amounts unverified"}
+                {a.counterparties.length
+                  ? ` · counterparty ${shortAddress(a.counterparties[0])}`
+                  : ""}
+              </small>
+            </div>
+            <span>{amount(a.quantity)}</span>
+            <a
+              href={evidenceLink(chain, a.tx, "tx")}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {date(a.timestamp)}
+              <ExternalLink size={12} />
+            </a>
+          </div>
+        ))}
+        {!w.activity.length && <p>No saved activity yet.</p>}
+      </div>
       <div className="wallet-window-grid">
         {w.windows.map((window, i) => (
           <section key={window.start} className="wallet-window">
@@ -736,6 +796,8 @@ function WalletDetail({
               Available values describe reconstructed evidence. A rank requires
               every check below.
             </p>
+            <details className="wallet-qualification-checks">
+              <summary>{window.gates.filter((g) => g.passed).length} / {window.gates.length} qualification checks passed</summary>
             <ul className="wallet-gates">
               {window.gates.map((g) => (
                 <li key={g.name}>
@@ -753,12 +815,21 @@ function WalletDetail({
                 </li>
               ))}
             </ul>
+            </details>
           </section>
         ))}
       </div>
       <div className="wallet-coverage">
         <h3>What the history covers.</h3>
         <dl>
+          <div>
+            <dt>Current history checked</dt>
+            <dd>{date(w.coverage.last_collected_at)}</dd>
+          </div>
+          <div>
+            <dt>Account and balances checked</dt>
+            <dd>{date(w.coverage.last_state_checked_at ?? null)}</dd>
+          </div>
           <div>
             <dt>Records saved</dt>
             <dd>{w.records}</dd>
@@ -850,35 +921,6 @@ function WalletDetail({
             <small>{date(s.observed_at)}</small>
           </div>
         ))}
-      </div>
-      <div className="wallet-detail-activity">
-        <h3>Latest observed activity.</h3>
-        {w.activity.slice(0, 12).map((a, i) => (
-          <div className="wallet-feed-row" key={`${a.tx}:${i}`}>
-            <div>
-              <strong>
-                {a.kind.replaceAll("_", " ")}
-                {!a.finalized && " · provisional"}
-              </strong>
-              <small>
-                {a.asset ? shortAddress(a.asset) : "Amounts unverified"}
-                {a.counterparties.length
-                  ? ` · counterparty ${shortAddress(a.counterparties[0])}`
-                  : ""}
-              </small>
-            </div>
-            <span>{amount(a.quantity)}</span>
-            <a
-              href={evidenceLink(chain, a.tx, "tx")}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {date(a.timestamp)}
-              <ExternalLink size={12} />
-            </a>
-          </div>
-        ))}
-        {!w.activity.length && <p>No saved activity yet.</p>}
       </div>
       <div className="wallet-detail-notes">
         {w.notes.map((note) => (

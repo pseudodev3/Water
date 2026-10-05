@@ -1,6 +1,6 @@
 # Water — Project Handoff
 
-_Last updated: 2026-10-03_
+_Last updated: 2026-10-05_
 
 This file is the canonical pickup point for a new ChatGPT/Codex session.
 
@@ -12,14 +12,21 @@ Production:
 - Frontend: `https://web-water.vercel.app`
 - Backend: `https://water-production-822e.up.railway.app`
 
-Feature baseline immediately before this handoff:
-- `34b7825e9a50b2e4e76be37a4f66abf419657080`
-- PR #15: **Recognize Pump.fun and StonkFun specifically**
+Current production baseline:
+- `cd0fe21634153c30fdfe673173e4d231f53e547f`
+- PR #23: wallet tracker, shared Helius budget and BNB scans/tracking, merged
+  and deployed to Railway/Vercel. See the latest sections below for subsequent
+  work; historical sections retain their original acceptance context.
 
-At the time this handoff was written:
+The production baseline was verified after PR #23:
 - Railway deployment: green
 - Vercel deployment: green
-- Open PRs: none
+- Review branches and open PRs: inspect GitHub; the latest work is below.
+
+Latest follow-up: PR #24 (`fix/tracker-rpc-pump`) adds RPC recovery and the
+2026-10-05 collection/stale-evidence fixes. It remains unmerged at the time of
+this update. Production's daily collection counter was 2,000 / 2,000; a deploy
+does not reset it. See [collection checks](docs/wallet-tracker-collection.md).
 
 If a new session is picking up work:
 1. Read this file.
@@ -1102,3 +1109,63 @@ reduced, not eliminated; do not claim every recognized RH launchpad has a logo.
   history/native category contract still needs keyed reconciliation. No paid
   provider was substituted. Production volume, Helius/RH credentials and keyed
   real-wallet acceptance from the previous handoff remain outstanding.
+
+## Tracker RPC recovery and Pump scope (2026-10-04; review branch)
+
+- Branch `fix/tracker-rpc-pump`, based on main `cd0fe216`. PR #23 is merged and
+  deployed; this follow-up is not deployed until separately merged.
+- Production now reports storage configured and collection enabled, two Helius
+  credentials, an RH index key and six received SOL/RH candidates. The earlier
+  deployment setup notes are historical. A path flag alone still does not prove
+  volume durability; Fomo discovery has no configured permitted access.
+- Reproduced RH `-32000` as unavailable historical state on the official RPC.
+  Free dRPC returned code, precision and balance at the same finalized height.
+  Account/balance checks now use archive fallback with a pinned finalized block;
+  fallback and trace chains are checked. Unknown reads never become `latest`.
+- Configured Helius now serves SOL state and bounded discovery reads, sharing
+  indexed history's persisted budget and cooldown. Previously these checks
+  bypassed Helius and received HTTP 403 from the public fallback.
+- BNB was already in discovery, history, activity, filters and follows. Its
+  public known-token history cannot prove wallet-wide completeness, so it stays
+  under research. No BNB production nomination was observed in this sample.
+- Pump's mobile/site interface is multichain, including RH and BNB references.
+  Its currently received public monthly board lacks RH/BNB execution-wallet
+  mappings. Removed `0x` => RH guessing and ambiguous multichain profile seeds.
+  No authenticated Pump social history or complete three-chain social feed was
+  implemented. Discovery notes expose this gap; see the linked research for the
+  permitted-feed requirements and the distinction from Go.fun bounty payouts.
+- Validation: 108 Rust tests, production web build, four viewport browser checks
+  and actual Rust provider state reads on the screenshot's RH wallet passed.
+  Pending history/price/trace/basis gaps remain separate from repaired state reads.
+- Details and captured evidence:
+  [RPC and Pump coverage](docs/wallet-tracker-rpc-pump.md).
+
+## Collection, stale evidence and wallet deadline (2026-10-05; PR #24, not deployed)
+
+- Live check at 05:50 UTC: all 12 candidates were stale; the tracker reported
+  2,000 / 2,000 daily requests used. Newest saved collection was 02:24:32 UTC.
+  The separate Helius counter was 8,980 / 800,000 estimated credits over 31 days.
+- Three production detail requests took 0.499–0.569 seconds. No spontaneous
+  timeout was reproduced. A controlled 13-second delay proved the production
+  client aborted after 12.459 seconds; the user's latency cause remains unknown.
+- Split current checks, history and discovery within the existing daily cap:
+  70% / 25% / 5%. Current checks have priority and a default 40-minute target;
+  history is paced and normally waits for a 25-request batch. Discovery runs
+  only when the cohort has space. Each pass has a 30-second time limit.
+- Pages, records and received state are committed and analyzed before subsequent
+  slow work. Global and rolling credit counters survive the upgrade unchanged.
+  Today's spent budget still waits for UTC midnight; do not reset it to claim
+  collection has recovered.
+- Account/balance state has its own freshness timestamp. A current head page
+  cannot qualify old state. A tokenless BNB chain check cannot refresh history.
+  Full historical/trace/price/basis gaps still withhold economic qualification.
+- Default to research, show actual saved/pending counts and latest known
+  execution, put activity before month checks, and make all gates expandable.
+  Wallet client deadline is 30 seconds; failed refresh retains open evidence.
+- Validation: 114 Rust tests and Rust/web builds passed; controlled browser
+  checks at 320/390/768/1440 passed with captured production data. A 13-second
+  response now succeeds; a stalled refresh aborts at 30.456 seconds without
+  clearing saved details. CI for the final published head must be checked.
+- No new required variable or paid provider. Optional
+  `WATER_TRACKER_REFRESH_SECONDS=2400` controls the current-check target.
+  [Collection details and captured evidence](docs/wallet-tracker-collection.md).

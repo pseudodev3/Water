@@ -1969,3 +1969,7 @@ a:focus-visible {
 .wallet-discovery-coverage { padding: 16px 0 0; font-size: 13px; color: var(--muted); }
 .wallet-discovery-coverage summary { min-height: 44px; cursor: pointer; }
 .wallet-discovery-coverage p { line-height: 1.7; color: var(--faint); margin: 8px 0; }
+
+.wallet-record-progress { display: block; margin-top: 6px; color: var(--faint); font-size: 11px; line-height: 1.6; }
+.wallet-qualification-checks { margin-top: 16px; }
+.wallet-qualification-checks summary { min-height: 44px; display: list-item; padding: 12px 0; color: var(--muted); font-size: 12px; cursor: pointer; }

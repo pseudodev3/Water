@@ -1,0 +1,116 @@
+{
+  "checked_at": "2026-10-05T05:50:23.293950+00:00",
+  "production_frontend": "https://web-water.vercel.app/wallets",
+  "production_backend": "https://water-production-822e.up.railway.app",
+  "live_status": {
+    "enabled": true,
+    "storage_configured": true,
+    "requests_today": 2000,
+    "daily_request_limit": 2000,
+    "detail": "Wallet collection reached its daily free request budget; it resumes after UTC midnight.",
+    "cohort_limit": 12,
+    "interval_seconds": 60,
+    "helius_key_count": 2,
+    "helius_credits_reserved_31d": 8980,
+    "helius_credit_limit_31d": 800000,
+    "fomo_discovery_access": false
+  },
+  "wallet_count": 12,
+  "stale_wallet_count": 12,
+  "newest_saved_check_utc": "2026-10-05T02:24:32+00:00",
+  "detail_timings": [
+    {
+      "chain": "bnb",
+      "wallet": "0x842c035ee4c79c36788911eb8d61e8b9f8794bb6",
+      "records": 3,
+      "http_status": 200,
+      "positions": 0,
+      "activity": 4,
+      "status": "stale",
+      "elapsed_seconds": 0.499
+    },
+    {
+      "chain": "robinhood",
+      "wallet": "0x4c64bac8ac8c9e091d0bd7c592a65d06dcf2f88b",
+      "records": 131,
+      "http_status": 200,
+      "positions": 20,
+      "activity": 60,
+      "status": "stale",
+      "elapsed_seconds": 0.513
+    },
+    {
+      "chain": "solana",
+      "wallet": "88887QrRZPZmsstEXsoXXB8E7nbmUDde4Gp5s7jG3ENu",
+      "records": 3611,
+      "http_status": 200,
+      "positions": 1118,
+      "activity": 100,
+      "status": "stale",
+      "elapsed_seconds": 0.569
+    }
+  ],
+  "controlled_production_timeout": {
+    "test": "Production client with controlled 13-second response delay",
+    "elapsed_seconds": 12.459,
+    "message": "Wallet evidence took too long. Try again shortly.",
+    "detail_received": false,
+    "live_backend_latency_cause_established": false
+  },
+  "controlled_fixed_browser": {
+    "data_source": "Captured real production list and wallet details, 2026-10-05; controlled local browser tests",
+    "viewports": [
+      {
+        "width": 320,
+        "horizontal_overflow": false,
+        "actual_research_wallets": 12,
+        "keyboard_checks": true,
+        "follow_persistence": true,
+        "chain_filter": true
+      },
+      {
+        "width": 390,
+        "horizontal_overflow": false,
+        "actual_research_wallets": 12,
+        "keyboard_checks": true,
+        "follow_persistence": true,
+        "chain_filter": true
+      },
+      {
+        "width": 768,
+        "horizontal_overflow": false,
+        "actual_research_wallets": 12,
+        "keyboard_checks": true,
+        "follow_persistence": true,
+        "chain_filter": true
+      },
+      {
+        "width": 1440,
+        "horizontal_overflow": false,
+        "actual_research_wallets": 12,
+        "keyboard_checks": true,
+        "follow_persistence": true,
+        "chain_filter": true
+      }
+    ],
+    "errors": [],
+    "delayed_response": {
+      "controlled_delay_seconds": 13,
+      "elapsed_seconds": 13.415,
+      "detail_received": true,
+      "timeout_message": false
+    },
+    "stalled_refresh": {
+      "elapsed_seconds": 30.456,
+      "message": "Wallet evidence took too long. Try again shortly.",
+      "saved_detail_preserved": true
+    }
+  },
+  "limits": [
+    "The exact time of daily-budget exhaustion was not measured.",
+    "No spontaneous production API timeout was reproduced.",
+    "A 24-hour request-budget simulation is not a production observation.",
+    "Full history, ownership, trace, price and basis gaps remain unknown until reconciled.",
+    "The upgrade preserves already-spent daily and rolling credit counters."
+  ]
+}

@@ -1,6 +1,8 @@
 # Helius budgets and BNB Chain
 
-Implemented on `feat/wallet-tracker`, PR #23. Not merged or deployed.
+Merged and deployed through PR #23 at
+`cd0fe21634153c30fdfe673173e4d231f53e547f`. Subsequent state-read fixes and Pump
+social-feed limits are described in [RPC and Pump coverage](wallet-tracker-rpc-pump.md).
 
 ## Helius: start with one free key
 
