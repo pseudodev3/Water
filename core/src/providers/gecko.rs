@@ -299,6 +299,10 @@ impl GeckoClient {
         let info = token_info_from_payload(&payload)?;
 
         if let Ok(mut cache) = self.info_cache.lock() {
+            cache.retain(|_, (at, _)| at.elapsed() < StdDuration::from_secs(600));
+            if cache.len() >= 256 {
+                cache.clear();
+            }
             cache.insert(cache_key, (Instant::now(), info.clone()));
         }
 
