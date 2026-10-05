@@ -258,6 +258,8 @@ pub struct PositionValuation {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Analysis {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_value: Option<super::eligibility::WalletValue>,
     pub candidate: Candidate,
     pub analyzed_at: u64,
     pub policy: String,

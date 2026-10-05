@@ -311,14 +311,24 @@ Configure these **server secrets**, never trading keys or browser variables:
   this endpoint at the exact transaction block when the main RPC cannot serve
   it. Unavailable traces/state and unresolved smart-account fees stay incomplete.
 
-The default cohort is 12 wallets, up to 10,000 evidence records each, with one
-wallet processed per 60-second tick. It reserves at most 2,000 tracker HTTP
-requests per UTC day before sending them; configure between 10 and 2,500.
+The default active cohort is 12 wallets, up to 10,000 evidence records each.
+At each 60-second tick, up to four due wallets receive current work; history uses
+remaining ticks. A screening pool holds at most four times the cohort limit.
+Expensive current-history, backfill and historical-pricing work requires at least
+$1,000 in received fresh native and wallet-token USD holdings on that chain
+(`WATER_TRACKER_MIN_WALLET_USD`, default `1000`; `0` disables the gate). Missing
+prices or an incomplete token inventory do not prove a wallet is below the floor.
+Unknown wallets get bounded value checks; confirmed low-value wallets sleep for
+six hours. Saved evidence stays inspectable in **Value checks**.
+Read [wallet capital screening and UI research](docs/wallet-capital-design.md).
+Background history/discovery reserves at most 2,000 HTTP attempts per UTC day
+(`WATER_TRACKER_DAILY_REQUESTS`, 10–2,500). Current work has a separate ceiling
+of 24,000 (`WATER_TRACKER_CURRENT_DAILY_REQUESTS`, 100–96,000); the measured
+head cadence and shared Helius credit guard pace it. Failed requests count.
 Helius's free plan provides 1M **credits per project per credit cycle**. Full
 history pages cost ten credits per 100 returned transactions, with a ten-credit
-minimum. At the default 2,000 attempts/day, even assigning every attempt ten
-credits reserves 620,000 over 31 UTC days. Water reserves ten credits per Helius
-attempt before sending it and stops at a shared rolling 800,000-credit limit
+minimum. Water reserves method-specific weighted Helius credits before sending an
+attempt and stops at a shared rolling 800,000-credit limit
 (`WATER_TRACKER_HELIUS_CREDITS_31D`). Failed calls remain reserved; this local
 estimate is distinct from actual project usage. Keys share the budget and HTTP
 429 pauses collection instead of rotating keys around quota limits. Monitor the

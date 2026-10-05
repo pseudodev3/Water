@@ -31,6 +31,7 @@ export type WalletWindow = {
   gates: Array<{ name: string; passed: boolean; detail: string }>;
 };
 export type WalletAnalysis = {
+  wallet_value?: WalletValue;
   candidate: WalletCandidate;
   analyzed_at: number;
   policy: string;
@@ -127,6 +128,8 @@ export function positiveValue(value: string | null | undefined) {
 }
 export type WalletResponse = {
   status: {
+    minimum_wallet_value_usd?: string;
+    screening_pool_limit?: number;
     enabled: boolean;
     nomination_enabled?: boolean;
     detail?: string | null;
@@ -162,6 +165,27 @@ export type WalletResponse = {
   };
   wallets: WalletSummary[];
 };
+
+export type WalletValue = {
+  status: "eligible" | "below_minimum" | "awaiting_value";
+  minimum_usd: string;
+  known_value_usd: string | null;
+  total_complete: boolean;
+  inventory_complete: boolean;
+  positive_assets: number;
+  unpriced_assets: number;
+  balance_observed_at: number | null;
+  oldest_price_at: number | null;
+  balance_block: string | null;
+  source: string | null;
+  next_check_at: number;
+  detail: string;
+};
+
+export function walletValueLabel(value?: WalletValue) {
+  if (!value || value.known_value_usd == null) return "Value pending";
+  return `${value.total_complete ? "" : "≥ "}${holdingValue(value.known_value_usd)}`;
+}
 
 const API = process.env.NEXT_PUBLIC_WATER_API_URL ?? "http://localhost:8080";
 async function request<T>(

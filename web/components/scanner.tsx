@@ -142,12 +142,16 @@ export function Scanner() {
           <div className="hero-copy">
             <div className="eyebrow">
               <Droplets size={14} strokeWidth={1.5} aria-hidden="true" />
-              See beneath the price
+              Token scanner · Solana / RH / BNB
             </div>
-            <h1 id="water-title">Token scanner</h1>
+            <h1 id="water-title">
+              See beneath
+              <br />
+              the price.
+            </h1>
             <p>
-              Market structure, ownership and origin. Inspect the evidence
-              behind a token.
+              Know the holders, the liquidity and the pressure behind a token.
+              One scan. The evidence in focus.
             </p>
             <div className="hero-footnote">Solana · Robinhood · BNB Chain</div>
           </div>

@@ -2,6 +2,21 @@
 
 import { Check, Copy, Droplets, ScanLine, Users } from "lucide-react";
 import { KeyboardEvent, useId, useRef, useState } from "react";
+import type { Chain } from "@/lib/api";
+
+export function ChainAvatar({ chain }: { chain: Chain }) {
+  return (
+    <span className="wallet-chain-avatar" aria-hidden="true">
+      {chain === "solana" ? (
+        <span className="chain-logo chain-logo-solana" />
+      ) : (
+        <span className="wallet-chain-code">
+          {chain === "bnb" ? "BNB" : "RH"}
+        </span>
+      )}
+    </span>
+  );
+}
 
 export function ResearchHeader({
   current,

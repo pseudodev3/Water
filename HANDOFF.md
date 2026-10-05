@@ -12,8 +12,8 @@ Production:
 - Frontend: `https://web-water.vercel.app`
 - Backend: `https://water-production-822e.up.railway.app`
 
-Current production baseline:
-- `7cb1a635dafbe7fa4b0296665146c4b1edf785fd` (PR #29).
+Previously verified production baseline:
+- `66fe8009cbd64005a610c37241dc48b1f6c9c708` (PR #30).
 - PR #26's research UI, PR #27's bounded accounting/runtime diagnostics and
   PR #28's zero-balance Positions filter are merged. All deployments passed.
   The last PR #28 live check returned 122 positive positions, no zero rows and
@@ -44,7 +44,7 @@ failure with live Dexscreener metadata passed. No new variables, paid service,
 provider collection allocation or storage migration is required.
 Read [wallet visibility and token metadata](docs/wallet-visibility-metadata.md).
 
-Current follow-up branch: `ui/wallet-usd-values`. Holding totals now stand out
+PR #30 is merged; Vercel and Railway deployments passed. Holding totals now stand out
 from token quantities and per-token prices, with explicit USD labels. Totals use
 cents for ordinary amounts and significant/scientific precision for tiny positive
 values instead of rounding them to zero. Positions default to highest USD value;
@@ -64,7 +64,41 @@ Read [holding values and evidence readiness](docs/wallet-values-evidence.md).
 Validation passed: 132 Rust tests, the Next production build, received-data
 browser checks at 320/390/1440px, explicit tiny/zero/missing value cases, all sort
 directions before pagination, search/show-more and a phone accessibility check.
-This follow-up is not live until its PR is merged and deployments are checked.
+PR #30 live browser verification received 1,418 valued holdings on 6HJet,
+verified both USD sort directions, and passed without JavaScript errors or overflow.
+Health returned HTTP 200 with CORS `*`.
+
+Latest implementation: [PR #31](https://github.com/pseudodev3/Water/pull/31),
+branch `feat/wallet-value-floor-ui`. Its merge and deployment checks determine
+when this implementation becomes the production baseline.
+- Default expensive collection floor: **$1,000 native + wallet token holdings on
+  the selected chain**, confirmed with fresh received balances and USD marks.
+  A sufficient partial lower bound admits; missing prices or incomplete EVM
+  inventories never prove a low total. No profitability gates are relaxed.
+- Confirmed low wallets sleep six hours; unknowns receive bounded hourly checks.
+  Native-only sufficient holdings avoid token census requests. History,
+  transaction reconstruction and historical pricing are gated; source records,
+  losses and cursors are retained. Market checks can wake newly eligible wallets.
+- The active cohort stays bounded (default 12, highest established value first);
+  discovery can use a screening pool up to four times that size. This is a finite
+  sample, not exhaustive wallet discovery. BNB/RH token census remains partial.
+- UI research uses actual Fomo public pages and official app screenshots: quiet
+  dark surfaces, prominent USD values, identity/value rows, and bottom tool
+  navigation on phones. **Value checks** exposes pending and low-value wallets;
+  default discovery shows only holdings that meet the floor. Positions sorts,
+  raw activity inspection, scanner socials/images and strict 30/60-day evidence
+  remain available.
+- No required configuration, paid provider or schema migration is added.
+  Optional `WATER_TRACKER_MIN_WALLET_USD=1000` defaults automatically; `0` disables
+  this gate. Keep the existing Railway volume and shared budgets.
+- Validation: 137 Rust tests, web production build, controlled eligibility states
+  over received evidence at 320/390/768/1440px, follows, profile/holdings sort,
+  keyboard tabs, safe empty rollout, and WCAG axe checks with zero violations.
+  Screenshots use controlled eligibility values and are not live wallet totals.
+Read [capital screening and design evidence](docs/wallet-capital-design.md).
+Confirm PR #31 is merged and its main commit has successful Vercel/Railway
+deployment statuses before claiming availability; local replay screenshots are
+not proof of production data.
 
 PR #25's independent current activity allocation, token metadata/current marks,
 balance reads and detailed saved transactions are merged. The live collection

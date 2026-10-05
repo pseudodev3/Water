@@ -27,6 +27,7 @@ import {
   assetSymbol,
   unitPrice,
   holdingValue,
+  walletValueLabel,
   ActivityPage,
   TransactionEvidence,
   TokenQuote,
@@ -42,6 +43,7 @@ import {
   CopyAddress,
   ResearchTabs,
   useResearchTabs,
+  ChainAvatar,
 } from "@/components/research-ui";
 
 const FOLLOW_KEY = "water:followed-wallets:v1";
@@ -84,12 +86,13 @@ export function WalletTracker() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [chain, setChain] = useState<Chain | "all">("all");
-  const [view, setView] = useState<"qualified" | "research" | "followed">(
-    "research",
-  );
+  const [view, setView] = useState<
+    "qualified" | "research" | "followed" | "screening"
+  >("research");
   const [source, setSource] = useState("all");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("latest");
+  const [sort, setSort] = useState("value");
   const [followed, setFollowed] = useState<string[]>([]);
   const [detail, setDetail] = useState<WalletAnalysis | null>(null);
   const [detailLoading, setDetailLoading] = useState("");
@@ -279,11 +282,20 @@ export function WalletTracker() {
       collection?.requests_today !== undefined &&
       collection.daily_request_limit !== undefined &&
       collection.requests_today >= collection.daily_request_limit);
-  const qualified = wallets.filter((w) => w.status.startsWith("qualified_"));
+  const qualified = wallets.filter(
+    (w) =>
+      w.wallet_value?.status === "eligible" &&
+      w.status.startsWith("qualified_"),
+  );
+  const eligible = wallets.filter((w) => w.wallet_value?.status === "eligible");
+  const waiting = wallets.filter((w) => w.wallet_value?.status !== "eligible");
   const visible = wallets
     .filter(
       (w) =>
         (chain === "all" || w.candidate.chain === chain) &&
+        (view === "screening"
+          ? w.wallet_value?.status !== "eligible"
+          : w.wallet_value?.status === "eligible") &&
         (view === "qualified"
           ? w.status.startsWith("qualified_")
           : view === "followed"
@@ -301,11 +313,18 @@ export function WalletTracker() {
     .sort((a, b) =>
       sort === "records"
         ? b.records - a.records
-        : (b.coverage.last_collected_at ?? 0) -
-          (a.coverage.last_collected_at ?? 0),
+        : sort === "value"
+          ? Number(b.wallet_value?.known_value_usd ?? -1) -
+            Number(a.wallet_value?.known_value_usd ?? -1)
+          : (b.coverage.last_collected_at ?? 0) -
+            (a.coverage.last_collected_at ?? 0),
     );
   const feed = wallets
-    .filter((w) => followed.includes(walletId(w.candidate)))
+    .filter(
+      (w) =>
+        w.wallet_value?.status === "eligible" &&
+        followed.includes(walletId(w.candidate)),
+    )
     .flatMap((w) =>
       w.activity.map((a) => ({
         ...a,
@@ -323,8 +342,8 @@ export function WalletTracker() {
           <Users size={14} strokeWidth={1.5} />
           Wallet intelligence
         </div>
-        <h1 id="wallet-title">Wallet tracker</h1>
-        <p>Inspect activity, positions and the record behind each wallet.</p>
+        <h1 id="wallet-title">Find wallets worth watching.</h1>
+        <p>Follow the capital. Verify the record. See every received trade.</p>
         <div className="wallet-method">
           <ShieldCheck size={16} strokeWidth={1.5} />
           <span>
@@ -341,20 +360,16 @@ export function WalletTracker() {
           <strong>{response ? qualified.length : "—"}</strong>
         </div>
         <div>
-          <span>Collected wallets</span>
-          <strong>{response ? wallets.length : "—"}</strong>
+          <span>Meets minimum</span>
+          <strong>{response ? eligible.length : "—"}</strong>
         </div>
         <div>
-          <span>Following</span>
+          <span>Saved follows</span>
           <strong>{followed.length}</strong>
         </div>
         <div>
-          <span>Discovery attempted</span>
-          <strong className="wallet-summary-date">
-            {response
-              ? date(response.status.last_discovery_at ?? null)
-              : "Unavailable"}
-          </strong>
+          <span>In value checks</span>
+          <strong>{response ? waiting.length : "—"}</strong>
         </div>
       </section>
       {response?.status.enabled && (
@@ -415,37 +430,43 @@ export function WalletTracker() {
       >
         <div className="wallet-toolbar">
           <div className="wallet-views" aria-label="Wallet view">
-            {(["qualified", "research", "followed"] as const).map((v) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={view === v}
-                className={view === v ? "active" : ""}
-                onClick={() => {
-                  setView(v);
-                  detailRequest.current?.abort();
-                  setDetail(null);
-                  setDetailLoading("");
-                }}
-              >
-                {v === "qualified"
-                  ? "Qualified"
-                  : v === "research"
-                    ? "Under research"
-                    : "Following"}
-                {response && (
-                  <span className="tab-count">
-                    {v === "qualified"
-                      ? qualified.length
-                      : v === "research"
-                        ? wallets.length
-                        : wallets.filter((w) =>
-                            followed.includes(walletId(w.candidate)),
-                          ).length}
-                  </span>
-                )}
-              </button>
-            ))}
+            {(["research", "qualified", "followed", "screening"] as const).map(
+              (v) => (
+                <button
+                  key={v}
+                  type="button"
+                  aria-pressed={view === v}
+                  className={view === v ? "active" : ""}
+                  onClick={() => {
+                    setView(v);
+                    detailRequest.current?.abort();
+                    setDetail(null);
+                    setDetailLoading("");
+                  }}
+                >
+                  {v === "qualified"
+                    ? "Qualified"
+                    : v === "research"
+                      ? "Discover"
+                      : v === "screening"
+                        ? "Value checks"
+                        : "Following"}
+                  {response && (
+                    <span className="tab-count">
+                      {v === "qualified"
+                        ? qualified.length
+                        : v === "research"
+                          ? eligible.length
+                          : v === "screening"
+                            ? waiting.length
+                            : eligible.filter((w) =>
+                                followed.includes(walletId(w.candidate)),
+                              ).length}
+                    </span>
+                  )}
+                </button>
+              ),
+            )}
           </div>
           <button
             className="wallet-refresh"
@@ -458,8 +479,8 @@ export function WalletTracker() {
             <span>Refresh</span>
           </button>
         </div>
-        <div className="wallet-filters">
-          <label>
+        <div className="wallet-filters" data-open={filtersOpen}>
+          <label id="wallet-chain-filter">
             Chain
             <select
               aria-label="Chain"
@@ -477,7 +498,7 @@ export function WalletTracker() {
               <option value="bnb">BNB Chain</option>
             </select>
           </label>
-          <label>
+          <label id="wallet-source-filter">
             Discovery
             <select
               aria-label="Discovery"
@@ -505,18 +526,40 @@ export function WalletTracker() {
               type="search"
             />
           </label>
-          <label>
+          <label id="wallet-sort-filter">
             Sort
             <select
               aria-label="Sort wallets"
               value={sort}
               onChange={(event) => setSort(event.target.value)}
             >
-              <option value="latest">Last checked</option>
+              <option value="value">Highest wallet value</option>
+              <option value="latest">Latest collection</option>
               <option value="records">Records saved</option>
             </select>
           </label>
+          <button
+            className="wallet-filter-toggle"
+            type="button"
+            aria-label="Wallet filters"
+            aria-expanded={filtersOpen}
+            aria-controls="wallet-chain-filter wallet-source-filter wallet-sort-filter"
+            onClick={() => setFiltersOpen(!filtersOpen)}
+          >
+            Filters
+            {chain !== "all" || source !== "all" || sort !== "value"
+              ? ` (${Number(chain !== "all") + Number(source !== "all") + Number(sort !== "value")})`
+              : ""}
+            <ChevronDown size={14} aria-hidden="true" />
+          </button>
         </div>
+        <p className="wallet-floor-note">
+          <ShieldCheck size={14} aria-hidden="true" />
+          Collection starts at{" "}
+          {holdingValue(collection?.minimum_wallet_value_usd ?? "1000")} in
+          native coins and tokens. Missing values receive limited checks; saved
+          history stays available.
+        </p>
         {error && (
           <div className="error-line" role="alert">
             {error}
@@ -583,7 +626,9 @@ export function WalletTracker() {
                       ? "The record comes first."
                       : view === "followed"
                         ? "Your watch begins here."
-                        : "Waiting for wallet history."}
+                        : view === "screening"
+                          ? "All wallet values are checked."
+                          : `Checking for wallets at ${holdingValue(collection?.minimum_wallet_value_usd ?? "1000")}+.`}
                 </h2>
                 <p>
                   {search.trim()
@@ -592,15 +637,22 @@ export function WalletTracker() {
                       ? "No collected wallet meets these filters and the qualification checks yet. Incomplete history stays under research."
                       : view === "followed"
                         ? "Follow a wallet from the research list to bring its activity together here. Following does not verify performance."
-                        : "Automatic discovery adds candidates as evidence arrives. Collection continues independently of this page."}
+                        : view === "screening"
+                          ? "Wallets with missing values or holdings below the minimum appear here."
+                          : "Wallets appear here once received holdings meet the minimum. Open Value checks to inspect balances and remaining gaps."}
                 </p>
-                {view === "qualified" && (
+                {(view === "qualified" || view === "research") && (
                   <button
                     type="button"
                     className="wallet-inline-button"
-                    onClick={() => setView("research")}
+                    onClick={() =>
+                      setView(view === "research" ? "screening" : "research")
+                    }
                   >
-                    See wallets under research <ArrowRight size={15} />
+                    {view === "research"
+                      ? "View value checks"
+                      : "Discover wallets"}{" "}
+                    <ArrowRight size={15} />
                   </button>
                 )}
               </div>
@@ -608,9 +660,9 @@ export function WalletTracker() {
               <div className="wallet-list">
                 <div className="wallet-list-head">
                   <span>Wallet / source</span>
+                  <span>Wallet value · USD</span>
                   <span>History status</span>
                   <span>Latest activity</span>
-                  <span>Last checked</span>
                 </div>
                 {visible.map((w) => (
                   <div className="wallet-row" key={walletId(w.candidate)}>
@@ -632,10 +684,26 @@ export function WalletTracker() {
                       }
                     >
                       <span className="wallet-identity">
-                        <strong>{shortAddress(w.candidate.wallet)}</strong>
+                        <ChainAvatar chain={w.candidate.chain} />
+                        <span>
+                          <strong>{shortAddress(w.candidate.wallet)}</strong>
+                          <small>
+                            {chainLabel(w.candidate.chain)} ·{" "}
+                            {w.candidate.sources.map((s) => s.name).join(" / ")}
+                          </small>
+                        </span>
+                      </span>
+                      <span className="wallet-capital">
+                        <small className="mobile-field-label">
+                          Wallet value · USD
+                        </small>
+                        <strong>{walletValueLabel(w.wallet_value)}</strong>
                         <small>
-                          {chainLabel(w.candidate.chain)} ·{" "}
-                          {w.candidate.sources.map((s) => s.name).join(" / ")}
+                          {w.wallet_value?.status === "below_minimum"
+                            ? "Below minimum · paused"
+                            : w.wallet_value?.status === "eligible"
+                              ? "Meets collection minimum"
+                              : "Value check pending"}
                         </small>
                       </span>
                       <span
@@ -660,11 +728,7 @@ export function WalletTracker() {
                             ? date(w.coverage.newest_record_at)
                             : "No execution received"}
                       </span>
-                      <span className="wallet-last">
-                        <small className="mobile-field-label">
-                          Last checked
-                        </small>
-                        {date(w.coverage.last_collected_at)}
+                      <span className="wallet-row-open">
                         {detailLoading === walletId(w.candidate) ? (
                           <Activity size={14} className="spin" />
                         ) : (
@@ -905,6 +969,16 @@ function WalletDetail({
       <p className="wallet-detail-status">
         {statusLabel(w.status)} · As of {date(w.analyzed_at)}
       </p>
+      <div className="wallet-value-hero">
+        <span>Wallet holdings · USD</span>
+        <strong>{walletValueLabel(w.wallet_value)}</strong>
+        <small>
+          Native coins + tokens ·{" "}
+          {w.wallet_value?.total_complete
+            ? "Received inventory valued"
+            : "Known value; remaining holdings may be unpriced"}
+        </small>
+      </div>
       <div className="profile-metrics">
         <div>
           <span>Saved records</span>
@@ -1204,6 +1278,46 @@ function WalletDetail({
       </div>
       <div {...tabs.panel("evidence")}>
         <div className="wallet-coverage">
+          <h3>Collection value check.</h3>
+          <p>
+            {w.wallet_value?.detail ?? "Wallet value has not been checked yet."}
+          </p>
+          <dl>
+            <div>
+              <dt>Received wallet value</dt>
+              <dd>{walletValueLabel(w.wallet_value)}</dd>
+            </div>
+            <div>
+              <dt>Balance source</dt>
+              <dd>{w.wallet_value?.source ?? "Not received"}</dd>
+            </div>
+            <div>
+              <dt>Balances checked</dt>
+              <dd>{date(w.wallet_value?.balance_observed_at ?? null)}</dd>
+            </div>
+            <div>
+              <dt>Next value check</dt>
+              <dd>{date(w.wallet_value?.next_check_at || null)}</dd>
+            </div>
+            <div>
+              <dt>Inventory</dt>
+              <dd>
+                {w.wallet_value?.inventory_complete
+                  ? "Wallet token accounts received"
+                  : "Partial; completeness unproved"}
+              </dd>
+            </div>
+            <div>
+              <dt>Unpriced holdings</dt>
+              <dd>{w.wallet_value?.unpriced_assets ?? "Unknown"}</dd>
+            </div>
+            {w.wallet_value?.balance_block && (
+              <div>
+                <dt>Block / slots</dt>
+                <dd>{w.wallet_value.balance_block}</dd>
+              </div>
+            )}
+          </dl>
           <h3>What the history covers.</h3>
           <dl>
             <div>
