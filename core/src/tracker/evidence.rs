@@ -1,0 +1,411 @@
+//! Read-time evidence presentation. Spot marks never enter historical accounting.
+use super::{accounting, model::*};
+use crate::model::TokenQuote;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use rust_decimal::Decimal;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+
+pub fn enrich(
+    analysis: &mut Analysis,
+    snapshot: &Snapshot,
+    markets: BTreeMap<String, TokenQuote>,
+    at: u64,
+) {
+    if snapshot.coverage.balances_observed_at.is_some()
+        || !snapshot.coverage.balance_observations.is_empty()
+    {
+        for (asset, quantity) in &snapshot.balances {
+            if *quantity > Decimal::ZERO
+                && !quote(snapshot.candidate.chain, asset)
+                && !analysis.positions.iter().any(|p| p.asset == *asset)
+            {
+                analysis.positions.push(Position {
+                    asset: asset.clone(),
+                    quantity: Decimal::ZERO,
+                    known_cost_usd: Decimal::ZERO,
+                    basis_coverage: Decimal::ZERO,
+                    market_value_usd: None,
+                    realized_usd: None,
+                    first_acquired_at: None,
+                    last_activity_at: None,
+                    valuation: None,
+                    average_entry_usd: None,
+                });
+            }
+        }
+    }
+    for position in &mut analysis.positions {
+        let mark = markets.get(&position.asset);
+        let observation = snapshot.coverage.balance_observations.get(&position.asset);
+        let received = observation
+            .map(|o| (o.quantity, o.observed_at))
+            .or_else(|| {
+                snapshot
+                    .coverage
+                    .balances_observed_at
+                    .and_then(|time| snapshot.balances.get(&position.asset).map(|q| (*q, time)))
+            });
+        let (quantity, quantity_source, quantity_observed_at) = match received {
+            Some((q, t)) => (q, "RPC token balance", Some(t)),
+            None => (
+                position.quantity,
+                "Reconstructed from saved transactions",
+                snapshot.coverage.last_collected_at,
+            ),
+        };
+        if quantity != position.quantity
+            || !analysis.coverage.history_complete
+            || !analysis.coverage.balances_reconciled
+        {
+            position.average_entry_usd = None;
+        }
+        let fresh = mark.filter(|m| at.saturating_sub(m.observed_at) <= 900);
+        let price = fresh.and_then(|m| m.price_usd);
+        position.market_value_usd = if quantity == Decimal::ZERO {
+            Some(Decimal::ZERO)
+        } else {
+            price.and_then(|p| p.checked_mul(quantity))
+        };
+        position.valuation = Some(PositionValuation {
+            quantity,
+            quantity_source: quantity_source.into(),
+            quantity_observed_at,
+            quantity_block: observation.map(|o| o.block.clone()),
+            price_usd: price,
+            price_observed_at: mark.map(|m| m.observed_at),
+            source: mark.map(|m| m.source.clone()),
+            detail: if quantity == Decimal::ZERO {
+                "Zero quantity at the stated balance/history time.".into()
+            } else if price.is_some() {
+                "Quantity × current market mark. Read times are separate; incomplete history may make reconstructed quantity inaccurate. Liquidity and executable proceeds are unproved.".into()
+            } else if mark.is_some_and(|m| at.saturating_sub(m.observed_at) > 900) {
+                "Market mark is older than 15 minutes; refresh is pending. An old mark is not a current valuation.".into()
+            } else {
+                mark.map(|m| m.detail.clone()).unwrap_or(
+                    "Market enrichment is pending; no current price has been received.".into(),
+                )
+            },
+        });
+    }
+    analysis.markets = markets;
+}
+
+pub fn activity_page(
+    snapshot: &Snapshot,
+    markets: &BTreeMap<String, TokenQuote>,
+    request: &ActivityRequest,
+) -> Result<Value, String> {
+    let mut records: Vec<_> = snapshot.records.iter().collect();
+    records.sort_by_key(|r| {
+        std::cmp::Reverse((
+            record_block(r).unwrap_or(0),
+            record_time(r).unwrap_or(0),
+            r.transaction
+                .as_ref()
+                .and_then(|t| t.index)
+                .unwrap_or(u64::MAX),
+            r.id.clone(),
+        ))
+    });
+    let mut hasher = Sha256::new();
+    for record in &records {
+        hasher.update(serde_json::to_vec(record).map_err(|e| e.to_string())?);
+    }
+    let revision = format!("{:x}", hasher.finalize());
+    let offset = if let Some(cursor) = &request.cursor {
+        if cursor.len() > 512 {
+            return Err("Invalid activity cursor.".into());
+        }
+        let decoded = URL_SAFE_NO_PAD
+            .decode(cursor)
+            .map_err(|_| "Invalid activity cursor.")?;
+        let (saved, offset): (String, usize) =
+            serde_json::from_slice(&decoded).map_err(|_| "Invalid activity cursor.")?;
+        if saved != revision {
+            return Err(
+                "Activity changed; reload the first page to continue without skipped transactions."
+                    .into(),
+            );
+        }
+        offset
+    } else {
+        0
+    };
+    if offset > records.len() {
+        return Err("Invalid activity offset.".into());
+    }
+    let analysis = accounting::analyze(
+        snapshot.clone(),
+        snapshot
+            .coverage
+            .last_collected_at
+            .unwrap_or_else(now)
+            .saturating_add(1),
+    );
+    let mut activities: BTreeMap<&str, Vec<&Activity>> = BTreeMap::new();
+    for event in &analysis.activity {
+        activities.entry(&event.tx).or_default().push(event);
+    }
+    let row = |record: &&Record| {
+        let tx = record.transaction.as_ref();
+        json!({"tx":record.id,"timestamp":record_time(record),"outcome":match tx {None=>"awaiting_evidence",Some(t) if !t.succeeded=>"failed",Some(t) if !t.finalized=>"provisional",Some(t) if !t.movement_complete=>"incomplete",Some(_)=>"received"},
+            "block":record_block(record),"index":tx.and_then(|t|t.index),"finalized":tx.map(|t|t.finalized),
+            "movements":tx.map(|t|&t.assets),"fee_asset":tx.map(|t|&t.fee_asset),"fee_quantity":tx.and_then(|t|t.fee_quantity),
+            "swap_evidence":tx.map(|t|t.swap_evidence),"movement_complete":tx.map(|t|t.movement_complete),
+            "counterparties":tx.map(|t|&t.counterparties),"notes":tx.map(|t|&t.notes),"error":record.error,
+            "activities":activities.get(record.id.as_str()).cloned().unwrap_or_default(),"provider":snapshot.coverage.provider,
+            "raw":if request.transaction.is_some(){Some(&record.raw)}else{None}})
+    };
+    if let Some(id) = &request.transaction {
+        let record = records
+            .iter()
+            .find(|r| r.id == *id)
+            .ok_or("Transaction has not been saved for this wallet.")?;
+        return Ok(json!({"transaction":row(record),"markets":markets,"revision":revision}));
+    }
+    let limit = request.limit.unwrap_or(25).clamp(1, 100);
+    let end = (offset + limit).min(records.len());
+    let next = (end < records.len())
+        .then(|| URL_SAFE_NO_PAD.encode(serde_json::to_vec(&(revision.clone(), end)).unwrap()));
+    Ok(
+        json!({"transactions":records[offset..end].iter().map(row).collect::<Vec<_>>(),"markets":markets,"next_cursor":next,"total":records.len(),"revision":revision,"scope":"All saved transaction records, including pending and failed executions. Source-history completeness is reported separately."}),
+    )
+}
+fn record_block(record: &Record) -> Option<u64> {
+    record
+        .transaction
+        .as_ref()
+        .map(|t| t.block)
+        .or_else(|| record.raw["slot"].as_u64())
+        .or_else(|| record.raw["block_number"].as_u64())
+}
+fn record_time(record: &Record) -> Option<u64> {
+    record
+        .transaction
+        .as_ref()
+        .map(|t| t.timestamp)
+        .or_else(|| record.raw["blockTime"].as_u64())
+        .or_else(|| {
+            record.raw["timestamp"]
+                .as_str()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .and_then(|d| u64::try_from(d.timestamp()).ok())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Chain;
+    fn snapshot() -> Snapshot {
+        Snapshot {
+            candidate: Candidate {
+                chain: Chain::Solana,
+                wallet: "21rgbFW6sujQovCw3qt6R2EdE97Yzzvk8sSc37Bb72Cm".into(),
+                discovered_at: 1,
+                sources: vec![],
+                observed_tokens: vec![],
+            },
+            coverage: Coverage {
+                last_collected_at: Some(10000),
+                ..Default::default()
+            },
+            records: vec![],
+            prices: vec![],
+            balances: BTreeMap::new(),
+        }
+    }
+    fn request() -> ActivityRequest {
+        ActivityRequest {
+            chain: Chain::Solana,
+            wallet: snapshot().candidate.wallet,
+            cursor: None,
+            limit: Some(25),
+            transaction: None,
+        }
+    }
+    #[test]
+    fn every_pending_record_is_pageable_and_changed_evidence_rejects_old_cursors() {
+        let mut s = snapshot();
+        for n in 0..121 {
+            s.records.push(Record {
+                id: format!("tx{n:03}"),
+                raw: json!({"blockTime":n+1}),
+                transaction: None,
+                error: Some("Receipt pending".into()),
+            });
+        }
+        let mut req = request();
+        let markets = BTreeMap::new();
+        let mut ids = std::collections::BTreeSet::new();
+        let mut first_cursor = None;
+        loop {
+            let page = activity_page(&s, &markets, &req).unwrap();
+            for row in page["transactions"].as_array().unwrap() {
+                assert_eq!(row["outcome"], "awaiting_evidence");
+                assert!(row["movements"].is_null());
+                assert_eq!(row["error"], "Receipt pending");
+                assert!(ids.insert(row["tx"].as_str().unwrap().to_string()));
+            }
+            req.cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if first_cursor.is_none() {
+                first_cursor = req.cursor.clone();
+            }
+            if req.cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(ids.len(), 121);
+        req.cursor = first_cursor;
+        s.records[0].error = Some("Received error changed".into());
+        assert!(activity_page(&s, &markets, &req)
+            .unwrap_err()
+            .starts_with("Activity changed;"));
+        req.cursor = Some("a".repeat(513));
+        assert!(activity_page(&s, &markets, &req).is_err());
+        req.cursor = None;
+        req.transaction = Some("tx000".into());
+        assert_eq!(
+            activity_page(&s, &markets, &req).unwrap()["transaction"]["raw"]["blockTime"],
+            1
+        );
+    }
+    #[test]
+    fn current_marks_never_supply_historical_entry_prices_or_qualification() {
+        let mut s = snapshot();
+        s.records.push(Record {
+            id: "buy".into(),
+            raw: json!({"synthetic":true}),
+            error: None,
+            transaction: Some(Transaction {
+                id: "buy".into(),
+                timestamp: 9000,
+                block: 1,
+                index: Some(0),
+                finalized: true,
+                succeeded: true,
+                assets: vec![
+                    Delta {
+                        asset: "token".into(),
+                        quantity: Decimal::from(100),
+                    },
+                    Delta {
+                        asset: "SOL".into(),
+                        quantity: Decimal::from(-2),
+                    },
+                ],
+                fee_asset: "SOL".into(),
+                fee_quantity: Some(Decimal::new(5, 5)),
+                movement_complete: true,
+                swap_evidence: true,
+                notes: vec![],
+                counterparties: vec![],
+            }),
+        });
+        let mut a = accounting::analyze(s.clone(), 10000);
+        let markets = BTreeMap::from([(
+            "token".into(),
+            TokenQuote {
+                asset: "token".into(),
+                name: Some("Synthetic token".into()),
+                symbol: Some("TEST".into()),
+                price_usd: Some(Decimal::from(7)),
+                observed_at: 10000,
+                source: "Synthetic current mark".into(),
+                ..Default::default()
+            },
+        )]);
+        enrich(&mut a, &s, markets.clone(), 10000);
+        assert_eq!(a.positions[0].market_value_usd, Some(Decimal::from(700)));
+        assert_eq!(
+            a.activity[0].pricing.unit_price_quote,
+            Some(Decimal::new(2, 2))
+        );
+        assert_eq!(a.activity[0].pricing.unit_price_usd, None);
+        assert_eq!(a.activity[0].pricing.fee_quantity, Some(Decimal::new(5, 5)));
+        assert_eq!(a.activity[0].pricing.fee_usd, None);
+        assert!(!a.windows.iter().any(|w| w.qualified));
+        s.prices.push(Price {
+            asset: "SOL".into(),
+            timestamp: 9000,
+            usd: Decimal::from(100),
+            source: "Synthetic historical candle".into(),
+            granularity: "hour".into(),
+        });
+        let priced = accounting::analyze(s.clone(), 10000);
+        assert_eq!(
+            priced.activity[0].pricing.unit_price_usd,
+            Some(Decimal::from(2))
+        );
+        assert_eq!(priced.activity[0].pricing.fee_usd, Some(Decimal::new(5, 3)));
+        assert_eq!(
+            priced.activity[0]
+                .pricing
+                .quote_conversion
+                .as_ref()
+                .unwrap()
+                .source,
+            "Synthetic historical candle"
+        );
+        enrich(&mut a, &s, markets, 10901);
+        assert_eq!(a.positions[0].market_value_usd, None);
+        assert!(a.positions[0]
+            .valuation
+            .as_ref()
+            .unwrap()
+            .detail
+            .contains("older than 15 minutes"));
+    }
+    #[test]
+    fn received_balance_and_zero_are_distinct_from_reconstructed_quantity_and_missing_price() {
+        let mut s = snapshot();
+        s.coverage.balances_observed_at = Some(9900);
+        s.balances.insert("token".into(), Decimal::from(4));
+        let mut a = accounting::analyze(s.clone(), 10000);
+        a.positions.push(Position {
+            asset: "token".into(),
+            quantity: Decimal::from(100),
+            known_cost_usd: Decimal::ZERO,
+            basis_coverage: Decimal::ZERO,
+            market_value_usd: None,
+            realized_usd: None,
+            first_acquired_at: None,
+            last_activity_at: None,
+            valuation: None,
+            average_entry_usd: None,
+        });
+        let markets = BTreeMap::from([(
+            "token".into(),
+            TokenQuote {
+                asset: "token".into(),
+                price_usd: Some(Decimal::from(7)),
+                observed_at: 10000,
+                source: "Synthetic mark".into(),
+                ..Default::default()
+            },
+        )]);
+        enrich(&mut a, &s, markets, 10000);
+        assert_eq!(a.positions[0].quantity, Decimal::from(100));
+        assert_eq!(a.positions[0].market_value_usd, Some(Decimal::from(28)));
+        assert_eq!(
+            a.positions[0].valuation.as_ref().unwrap().quantity,
+            Decimal::from(4)
+        );
+        assert_eq!(
+            a.positions[0]
+                .valuation
+                .as_ref()
+                .unwrap()
+                .quantity_observed_at,
+            Some(9900)
+        );
+        s.balances.insert("token".into(), Decimal::ZERO);
+        enrich(&mut a, &s, BTreeMap::new(), 10000);
+        assert_eq!(a.positions[0].market_value_usd, Some(Decimal::ZERO));
+        s.balances.remove("token");
+        enrich(&mut a, &s, BTreeMap::new(), 10000);
+        assert_eq!(a.positions[0].market_value_usd, None);
+    }
+}

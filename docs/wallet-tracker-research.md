@@ -1,3 +1,8 @@
+> Billing update, checked 2026-10-05: Helius currently charges one credit for
+> standard RPC, including archival `getTransaction`, and ten credits per 100 full
+> indexed history transactions (minimum ten). Earlier pricing notes below are
+> historical. See [current research and validation](wallet-transaction-detail.md).
+
 # Wallet tracker: client audit and data research
 
 Research date: 2026-10-03. Scope: automatic discovery, historical qualification

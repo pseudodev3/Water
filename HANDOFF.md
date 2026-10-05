@@ -13,20 +13,22 @@ Production:
 - Backend: `https://water-production-822e.up.railway.app`
 
 Current production baseline:
-- `cd0fe21634153c30fdfe673173e4d231f53e547f`
-- PR #23: wallet tracker, shared Helius budget and BNB scans/tracking, merged
-  and deployed to Railway/Vercel. See the latest sections below for subsequent
-  work; historical sections retain their original acceptance context.
+- `3fa8cdc53bfbcc4b2c5aed969004b556e8c66128`
+- PR #24: RPC recovery, Pump discovery evidence and collection/stale fixes.
+  Merged 2026-10-05; exact merged-head core/web CI and Railway/Vercel deployments
+  passed. Historical sections below retain their original acceptance context.
 
-The production baseline was verified after PR #23:
-- Railway deployment: green
-- Vercel deployment: green
-- Review branches and open PRs: inspect GitHub; the latest work is below.
+Current follow-up branch: `feat/wallet-transaction-detail`. It separates fresh
+collection from background budgets, adds persistent token metadata/current
+marks, refreshes balance evidence, resolves current EVM references, and exposes
+all saved transactions with effective entry/exit prices, fees and source records.
+See [transaction research and setup](docs/wallet-transaction-detail.md).
 
-Latest follow-up: PR #24 (`fix/tracker-rpc-pump`) adds RPC recovery and the
-2026-10-05 collection/stale-evidence fixes. It remains unmerged at the time of
-this update. Production's daily collection counter was 2,000 / 2,000; a deploy
-does not reset it. See [collection checks](docs/wallet-tracker-collection.md).
+The live audit found 12 stale wallets and 885 unpriced positive reconstructed
+positions out of 886. Saved activity existed, but the page hid quote amounts,
+fees and prices. The background counter was already 2,000/2,000. This follow-up
+preserves that spending while permitting fresh work within a separate allocation.
+This branch has not been deployed to production at the time of this update.
 
 If a new session is picking up work:
 1. Read this file.

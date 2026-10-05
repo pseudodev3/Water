@@ -81,6 +81,7 @@ async fn main() {
         .route("/v1/token-info", post(token_info))
         .route("/v1/wallets", get(wallets))
         .route("/v1/wallets/detail", post(wallet_detail))
+        .route("/v1/wallets/activity", post(wallet_activity))
         .route("/v1/wallets/nominate", post(wallet_nominate))
         .route("/v1/wallets/token", post(wallet_overlap))
         .layer(cors)
@@ -111,6 +112,34 @@ async fn wallet_detail(State(state): State<Arc<AppState>>, Json(request): Json<t
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,Json(json!({"error":"Wallet evidence is busy."}))))?
         .map_err(|error|(StatusCode::BAD_REQUEST,Json(json!({"error":error}))))?
         .map(Json).ok_or((StatusCode::NOT_FOUND,Json(json!({"error":"This wallet has not been collected yet."}))))
+}
+
+async fn wallet_activity(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<tracker::model::ActivityRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tracker = state.tracker.clone();
+    tokio::task::spawn_blocking(move || tracker.activity(request))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error":"Wallet evidence is busy."})),
+            )
+        })?
+        .map_err(|error| {
+            let code = if error.starts_with("Activity changed;") {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (code, Json(json!({"error":error})))
+        })?
+        .map(Json)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error":"This wallet has not been collected yet."})),
+        ))
 }
 
 async fn wallet_nominate(State(state): State<Arc<AppState>>, Json(request): Json<tracker::model::WalletRequest>) -> Result<Json<tracker::model::Analysis>, (StatusCode, Json<Value>)> {

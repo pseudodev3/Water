@@ -20,6 +20,14 @@ import {
   evidenceLink,
   getWalletDetail,
   getWallets,
+  getWalletActivity,
+  getWalletTransaction,
+  tokenLabel,
+  assetSymbol,
+  unitPrice,
+  ActivityPage,
+  TransactionEvidence,
+  TokenQuote,
   nominateWallet,
   shortAddress,
   WalletAnalysis,
@@ -199,6 +207,14 @@ export function WalletTracker() {
   }, [response, detail, open]);
 
   useEffect(() => {
+    if (!detail) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void open(detail, false);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [detail, open]);
+
+  useEffect(() => {
     if (!detail || !scrollDetail.current) return;
     scrollDetail.current = false;
     const frame = window.requestAnimationFrame(() =>
@@ -245,8 +261,10 @@ export function WalletTracker() {
 
   const wallets = response?.wallets ?? [];
   const collection = response?.status;
-  const budgetPaused = collection?.collection_state === "budget_paused" ||
-    (collection?.requests_today !== undefined &&
+  const budgetPaused =
+    collection?.collection_state === "budget_paused" ||
+    (!collection?.collection_state &&
+      collection?.requests_today !== undefined &&
       collection.daily_request_limit !== undefined &&
       collection.requests_today >= collection.daily_request_limit);
   const qualified = wallets.filter((w) => w.status.startsWith("qualified_"));
@@ -313,12 +331,16 @@ export function WalletTracker() {
       {response?.status.enabled && (
         <details className="wallet-discovery-coverage">
           <summary>Discovery coverage</summary>
-          {collection?.requests_today !== undefined && collection.daily_request_limit !== undefined && (
-            <p>
-              {collection.requests_today.toLocaleString()} / {collection.daily_request_limit.toLocaleString()} collection requests used today.
-              {collection.current_refresh_seconds !== undefined && ` Current history checks target every ${Math.round(collection.current_refresh_seconds / 60)} minutes; historical reconstruction continues separately.`}
-            </p>
-          )}
+          {collection?.requests_today !== undefined &&
+            collection.daily_request_limit !== undefined && (
+              <p>
+                {collection.background_requests_today !== undefined
+                  ? `${collection.background_requests_today.toLocaleString()} / ${collection.daily_request_limit.toLocaleString()} background requests; ${collection.request_allocations?.find((a) => a.purpose === "current")?.used.toLocaleString() ?? "0"} / ${collection.current_request_limit?.toLocaleString() ?? "—"} fresh activity requests today.`
+                  : `${collection.requests_today.toLocaleString()} / ${collection.daily_request_limit.toLocaleString()} collection requests used today.`}
+                {collection.current_refresh_seconds !== undefined &&
+                  ` Current history checks target every ${Math.round(collection.current_refresh_seconds / 60)} minutes; historical reconstruction continues separately.`}
+              </p>
+            )}
           <p>
             {response.status.solana_indexed_access
               ? "Indexed Solana history access is configured."
@@ -448,11 +470,25 @@ export function WalletTracker() {
             Collection is paused. Wallet history is not being added yet.
           </p>
         )}
-        {response?.status.enabled && (budgetPaused || response.status.detail) && (
+        {response?.status.enabled &&
+          (budgetPaused || response.status.detail) && (
+            <p className="wallet-collection-note" role="status">
+              {budgetPaused
+                ? `Collection is paused: today’s request budget is used. It resumes ${collection?.budget_resets_at ? `at ${utcDate(collection.budget_resets_at)}` : "after UTC midnight"}. Saved records and observed activity remain available below.`
+                : `${response.status.detail} Last received evidence is preserved.`}
+            </p>
+          )}
+        {collection?.collection_state === "background_paused" && (
           <p className="wallet-collection-note" role="status">
-            {budgetPaused
-              ? `Collection is paused: today’s request budget is used. It resumes ${collection?.budget_resets_at ? `at ${utcDate(collection.budget_resets_at)}` : "after UTC midnight"}. Saved records and observed activity remain available below.`
-              : `${response.status.detail} Last received evidence is preserved.`}
+            Historical reconstruction and discovery have used today’s
+            allocation. Fresh activity checks and market enrichment continue
+            within their own provider limits.
+          </p>
+        )}
+        {collection?.helius_budget_paused && (
+          <p className="wallet-collection-note" role="status">
+            Solana’s rolling credit allocation is exhausted. Received evidence
+            is retained; Solana collection resumes as credits become available.
           </p>
         )}
         {loading && !response ? (
@@ -522,13 +558,17 @@ export function WalletTracker() {
                   >
                     {statusLabel(w.status)}
                     <small className="wallet-record-progress">
-                      {w.records.toLocaleString()} saved · {w.coverage.pending_records.toLocaleString()} awaiting reconstruction
+                      {w.records.toLocaleString()} saved ·{" "}
+                      {w.coverage.pending_records.toLocaleString()} awaiting
+                      reconstruction
                     </small>
                   </span>
                   <span className="wallet-pnl">
                     {w.status.startsWith("qualified_")
                       ? amount(w.windows[1]?.total_usd ?? null, true)
-                      : w.coverage.newest_record_at ? `Latest execution ${date(w.coverage.newest_record_at)}` : "No execution received"}
+                      : w.coverage.newest_record_at
+                        ? `Latest execution ${date(w.coverage.newest_record_at)}`
+                        : "No execution received"}
                   </span>
                   <span className="wallet-last">
                     {date(w.coverage.last_collected_at)}
@@ -691,7 +731,8 @@ function WalletDetail({
   const [positionLimit, setPositionLimit] = useState(20);
   const positions = [...w.positions].sort(
     (a, b) =>
-      Number(Number(b.quantity) > 0) - Number(Number(a.quantity) > 0) ||
+      Number(Number(b.valuation?.quantity ?? b.quantity) > 0) -
+        Number(Number(a.valuation?.quantity ?? a.quantity) > 0) ||
       (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0),
   );
   return (
@@ -725,35 +766,7 @@ function WalletDetail({
       <p className="wallet-detail-status">
         {statusLabel(w.status)} · As of {date(w.analyzed_at)}
       </p>
-      <div className="wallet-detail-activity">
-        <h3>Latest observed activity.</h3>
-        {w.activity.slice(0, 12).map((a, i) => (
-          <div className="wallet-feed-row" key={`${a.tx}:${i}`}>
-            <div>
-              <strong>
-                {a.kind.replaceAll("_", " ")}
-                {!a.finalized && " · provisional"}
-              </strong>
-              <small>
-                {a.asset ? shortAddress(a.asset) : "Amounts unverified"}
-                {a.counterparties.length
-                  ? ` · counterparty ${shortAddress(a.counterparties[0])}`
-                  : ""}
-              </small>
-            </div>
-            <span>{amount(a.quantity)}</span>
-            <a
-              href={evidenceLink(chain, a.tx, "tx")}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {date(a.timestamp)}
-              <ExternalLink size={12} />
-            </a>
-          </div>
-        ))}
-        {!w.activity.length && <p>No saved activity yet.</p>}
-      </div>
+      <WalletTransactions key={walletId(w.candidate)} wallet={w} />
       <div className="wallet-window-grid">
         {w.windows.map((window, i) => (
           <section key={window.start} className="wallet-window">
@@ -797,24 +810,27 @@ function WalletDetail({
               every check below.
             </p>
             <details className="wallet-qualification-checks">
-              <summary>{window.gates.filter((g) => g.passed).length} / {window.gates.length} qualification checks passed</summary>
-            <ul className="wallet-gates">
-              {window.gates.map((g) => (
-                <li key={g.name}>
-                  <span className={g.passed ? "pass" : "pending"}>
-                    {g.passed ? (
-                      <Check size={14} />
-                    ) : (
-                      <span aria-hidden="true">—</span>
-                    )}
-                  </span>
-                  <div>
-                    <strong>{g.name}</strong>
-                    <p>{g.detail}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
+              <summary>
+                {window.gates.filter((g) => g.passed).length} /{" "}
+                {window.gates.length} qualification checks passed
+              </summary>
+              <ul className="wallet-gates">
+                {window.gates.map((g) => (
+                  <li key={g.name}>
+                    <span className={g.passed ? "pass" : "pending"}>
+                      {g.passed ? (
+                        <Check size={14} />
+                      ) : (
+                        <span aria-hidden="true">—</span>
+                      )}
+                    </span>
+                    <div>
+                      <strong>{g.name}</strong>
+                      <p>{g.detail}</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             </details>
           </section>
         ))}
@@ -865,6 +881,9 @@ function WalletDetail({
             </dd>
           </div>
         </dl>
+        {w.coverage.state_error && (
+          <p>Latest balance read: {w.coverage.state_error}</p>
+        )}
         {w.coverage.notes.map((note, i) => (
           <p key={i}>{note}</p>
         ))}
@@ -879,13 +898,46 @@ function WalletDetail({
                 target="_blank"
                 rel="noreferrer"
               >
-                {shortAddress(p.asset)}
+                <span>
+                  {tokenLabel(p.asset, w.markets)}
+                  <small>{shortAddress(p.asset)}</small>
+                </span>
                 <ExternalLink size={12} />
               </a>
-              <span>{amount(p.quantity)} held</span>
-              <span>Value {amount(p.market_value_usd, true)}</span>
+              <span>
+                {unitPrice(p.valuation?.quantity ?? p.quantity)} tokens
+                <small>
+                  {p.valuation?.quantity_source ?? "Reconstructed quantity"} ·{" "}
+                  {date(p.valuation?.quantity_observed_at ?? w.analyzed_at)}
+                </small>
+                {p.valuation?.quantity_block && (
+                  <small>{p.valuation.quantity_block}</small>
+                )}
+              </span>
+              <span>
+                Value{" "}
+                {p.market_value_usd === null
+                  ? "Unavailable"
+                  : unitPrice(p.market_value_usd, true)}
+                <small>
+                  {p.valuation?.price_usd
+                    ? `${unitPrice(p.valuation.price_usd, true)} / token`
+                    : "Price unavailable"}
+                </small>
+                <small>
+                  {p.valuation?.source}{" "}
+                  {p.valuation?.price_observed_at
+                    ? `· ${date(p.valuation.price_observed_at)}`
+                    : ""}
+                </small>
+                <small>{p.valuation?.detail}</small>
+              </span>
               <span>
                 Basis {amount(String(Number(p.basis_coverage) * 100))}%
+                <small>
+                  Average open entry{" "}
+                  {unitPrice(p.average_entry_usd ?? null, true)}
+                </small>
                 <a
                   className="wallet-inspect-token"
                   href={`/?chain=${chain}&address=${encodeURIComponent(p.asset)}`}
@@ -928,5 +980,414 @@ function WalletDetail({
         ))}
       </div>
     </section>
+  );
+}
+
+function WalletTransactions({ wallet: w }: { wallet: WalletAnalysis }) {
+  const [page, setPage] = useState<ActivityPage | null>(null);
+  const [rows, setRows] = useState<TransactionEvidence[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const controller = useRef<AbortController | null>(null);
+  const load = useCallback(
+    async (cursor: string | null) => {
+      controller.current?.abort();
+      const request = new AbortController();
+      controller.current = request;
+      setBusy(true);
+      setError("");
+      try {
+        const next = await getWalletActivity(
+          w.candidate.chain,
+          w.candidate.wallet,
+          cursor,
+          request.signal,
+        );
+        if (!request.signal.aborted) {
+          setPage(next);
+          setRows((old) =>
+            cursor ? [...old, ...next.transactions] : next.transactions,
+          );
+        }
+      } catch (caught) {
+        if (!request.signal.aborted)
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "Activity is unavailable.",
+          );
+      } finally {
+        if (!request.signal.aborted) setBusy(false);
+      }
+    },
+    [w.candidate.chain, w.candidate.wallet],
+  );
+  useEffect(() => {
+    void load(null);
+    return () => controller.current?.abort();
+  }, [load, w.analyzed_at]);
+  return (
+    <div className="wallet-detail-activity">
+      <h3>Transactions, with the evidence.</h3>
+      <p className="wallet-value-note">
+        All saved records can be inspected here. Entry and exit prices use
+        received swap amounts. USD conversions use historical candles; fees are
+        shown separately.
+      </p>
+      {page && (
+        <p className="wallet-value-note">
+          Showing {rows.length.toLocaleString()} of{" "}
+          {page.total.toLocaleString()} saved transactions. Source history{" "}
+          {w.coverage.history_complete ? "complete" : "incomplete"}.
+        </p>
+      )}
+      {rows.map((row) => (
+        <TransactionRow
+          key={row.tx}
+          row={row}
+          chain={w.candidate.chain}
+          wallet={w.candidate.wallet}
+          markets={page?.markets ?? w.markets}
+        />
+      ))}
+      {!page && !busy && !error && (
+        <p>No transaction records have been saved.</p>
+      )}
+      {busy && <p role="status">Loading saved transactions…</p>}
+      {error && (
+        <div role="alert">
+          <p>{error}</p>
+          <button
+            className="wallet-inline-button"
+            type="button"
+            onClick={() => void load(null)}
+          >
+            Reload activity <RefreshCw size={14} />
+          </button>
+        </div>
+      )}
+      {page?.next_cursor && !error && (
+        <button
+          className="wallet-inline-button"
+          type="button"
+          disabled={busy}
+          onClick={() => void load(page.next_cursor)}
+        >
+          Load more transactions <ArrowRight size={14} />
+        </button>
+      )}
+      {!page &&
+        error &&
+        w.activity.slice(0, 12).map((a, i) => (
+          <div className="wallet-feed-row" key={`${a.tx}:${i}`}>
+            <div>
+              <strong>{a.kind.replaceAll("_", " ")}</strong>
+              <small>
+                {a.asset
+                  ? tokenLabel(a.asset, w.markets)
+                  : "Amounts unverified"}
+              </small>
+            </div>
+            <span>{unitPrice(a.quantity)}</span>
+            <a
+              href={evidenceLink(w.candidate.chain, a.tx, "tx")}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {date(a.timestamp)}
+              <ExternalLink size={12} />
+            </a>
+          </div>
+        ))}
+    </div>
+  );
+}
+function TransactionRow({
+  row,
+  chain,
+  wallet,
+  markets,
+}: {
+  row: TransactionEvidence;
+  chain: Chain;
+  wallet: string;
+  markets?: Record<string, TokenQuote>;
+}) {
+  const [raw, setRaw] = useState<TransactionEvidence | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
+  const trade = row.activities.find((a) =>
+    ["entry", "addition", "exit", "partial_exit"].includes(a.kind),
+  );
+  const kind =
+    trade?.kind ??
+    row.activities.find(
+      (a) =>
+        !["unresolved_execution", "provisional_transaction"].includes(a.kind),
+    )?.kind ??
+    row.outcome;
+  const observedAsset = row.movements?.find(
+    (d) => !["SOL", "ETH", "BNB"].includes(d.asset),
+  )?.asset;
+  const label =
+    (
+      {
+        entry: "Buy",
+        addition: "Buy · addition",
+        exit: "Sell · exit",
+        partial_exit: "Sell · partial exit",
+        failed_transaction: "Failed transaction",
+        awaiting_evidence: "Awaiting transaction evidence",
+      } as Record<string, string>
+    )[kind] ?? kind.replaceAll("_", " ");
+  const conversion = trade?.pricing?.quote_conversion;
+  async function inspect() {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setBusy(true);
+    setError("");
+    try {
+      const value = await getWalletTransaction(
+        chain,
+        wallet,
+        row.tx,
+        controller.signal,
+      );
+      if (!controller.signal.aborted) setRaw(value.transaction);
+    } catch (caught) {
+      if (!controller.signal.aborted)
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : "Source record is unavailable.",
+        );
+    } finally {
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+  return (
+    <details className="wallet-transaction">
+      <summary>
+        <span>
+          <strong>
+            {label}
+            {(trade?.asset ?? observedAsset)
+              ? ` · ${tokenLabel((trade?.asset ?? observedAsset)!, markets)}`
+              : ""}
+          </strong>
+          <small>
+            {row.timestamp === null ? "Time not received" : date(row.timestamp)}{" "}
+            · {row.outcome.replaceAll("_", " ")}
+          </small>
+        </span>
+        <span>
+          <span>
+            {trade?.quantity
+              ? `${unitPrice(trade.quantity)} tokens`
+              : row.movements?.length
+                ? `${row.movements.length} received movements`
+                : "Amounts pending"}
+            {trade && (
+              <small>
+                {trade.pricing?.unit_price_usd
+                  ? `${unitPrice(trade.pricing.unit_price_usd, true)} / token`
+                  : `${unitPrice(trade.pricing?.unit_price_quote ?? null)} ${trade.quote_asset ?? ""} / token`}
+              </small>
+            )}
+          </span>
+          <ChevronDown size={14} />
+        </span>
+      </summary>
+      <div className="wallet-transaction-evidence">
+        <a
+          className="wallet-full-address"
+          href={evidenceLink(chain, row.tx, "tx")}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {row.tx}
+          <ExternalLink size={14} />
+        </a>
+        <dl>
+          <div>
+            <dt>Block / slot</dt>
+            <dd>{row.block?.toLocaleString() ?? "Not received"}</dd>
+          </div>
+          <div>
+            <dt>Order within block</dt>
+            <dd>{row.index ?? "Not received"}</dd>
+          </div>
+          <div>
+            <dt>Finality</dt>
+            <dd>
+              {row.finalized === true
+                ? "Finalized"
+                : row.finalized === false
+                  ? "Provisional"
+                  : "Unknown"}
+            </dd>
+          </div>
+        </dl>
+        {trade && (
+          <dl>
+            <div>
+              <dt>
+                {trade.kind === "entry" || trade.kind === "addition"
+                  ? "Entry"
+                  : "Exit"}{" "}
+                price per token
+              </dt>
+              <dd>
+                {trade.pricing?.unit_price_quote ?? "Unavailable"}{" "}
+                {trade.quote_asset
+                  ? assetSymbol(trade.quote_asset, markets)
+                  : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Estimated USD per token</dt>
+              <dd>{unitPrice(trade.pricing?.unit_price_usd ?? null, true)}</dd>
+            </div>
+            <div>
+              <dt>Quote amount</dt>
+              <dd>
+                {trade.quote_quantity ?? "Unavailable"}{" "}
+                {trade.quote_asset
+                  ? assetSymbol(trade.quote_asset, markets)
+                  : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Estimated USD trade amount</dt>
+              <dd>{unitPrice(trade.value_usd, true)}</dd>
+            </div>
+          </dl>
+        )}
+        {trade?.pricing?.detail && <p>{trade.pricing.detail}</p>}
+        {trade && !conversion && (
+          <p>
+            Historical quote-to-USD evidence has not been received. The actual
+            quote amount and quote unit price remain available.
+          </p>
+        )}
+        {conversion && (
+          <p>
+            {conversion.source} · {conversion.granularity} candle at{" "}
+            {date(
+              Math.floor(
+                conversion.timestamp /
+                  (conversion.granularity === "day" ? 86400 : 3600),
+              ) * (conversion.granularity === "day" ? 86400 : 3600),
+            )}{" "}
+            · {unitPrice(conversion.usd, true)} / {conversion.asset}
+          </p>
+        )}
+        <h4>Received wallet movements</h4>
+        {row.movements?.length ? (
+          row.movements.map((delta, i) => (
+            <div className="wallet-movement" key={`${delta.asset}:${i}`}>
+              <a
+                href={evidenceLink(chain, delta.asset)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {tokenLabel(delta.asset, markets)}
+                <small>{delta.asset}</small>
+              </a>
+              <span>
+                {Number(delta.quantity) > 0 ? "+" : ""}
+                {delta.quantity}
+              </span>
+            </div>
+          ))
+        ) : (
+          <p>Movement amounts have not been received.</p>
+        )}
+        {!row.movement_complete && (
+          <p>
+            Movement coverage is incomplete. Received amounts are observations;
+            a complete trade price and profit cannot be inferred.
+          </p>
+        )}
+        <dl>
+          <div>
+            <dt>Network fee</dt>
+            <dd>
+              {row.fee_quantity ?? "Unavailable"} {row.fee_asset ?? ""}
+            </dd>
+          </div>
+          <div>
+            <dt>Estimated fee USD</dt>
+            <dd>
+              {unitPrice(row.activities[0]?.pricing?.fee_usd ?? null, true)}
+            </dd>
+          </div>
+        </dl>
+        {row.activities[0]?.pricing?.fee_conversion && (
+          <p>
+            Fee conversion: {row.activities[0].pricing.fee_conversion.source} ·{" "}
+            {row.activities[0].pricing.fee_conversion.granularity} candle at{" "}
+            {date(
+              Math.floor(
+                row.activities[0].pricing.fee_conversion.timestamp /
+                  (row.activities[0].pricing.fee_conversion.granularity ===
+                  "day"
+                    ? 86400
+                    : 3600),
+              ) *
+                (row.activities[0].pricing.fee_conversion.granularity === "day"
+                  ? 86400
+                  : 3600),
+            )}
+          </p>
+        )}
+        <p>
+          Source: {row.provider}. Swap evidence{" "}
+          {row.swap_evidence === true ? "received" : "unverified"}.
+        </p>
+        {row.counterparties?.length ? (
+          <p>
+            Counterparties:{" "}
+            {row.counterparties.map((a, i) => (
+              <a
+                className="wallet-counterparty"
+                key={`${a}:${i}`}
+                href={evidenceLink(chain, a)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {shortAddress(a)} <ExternalLink size={12} />
+              </a>
+            ))}
+          </p>
+        ) : null}
+        {row.notes?.map((note, i) => (
+          <p key={i}>{note}</p>
+        ))}
+        {row.error && <p>{row.error}</p>}
+        <button
+          className="wallet-inline-button"
+          type="button"
+          disabled={busy}
+          onClick={() => void inspect()}
+        >
+          {busy
+            ? "Reading source…"
+            : raw
+              ? "Refresh source record"
+              : "Inspect saved source record"}
+          <ArrowRight size={14} />
+        </button>
+        {error && <p role="alert">{error}</p>}
+        {raw && (
+          <pre className="wallet-source-record">
+            {JSON.stringify(raw.raw, null, 2)}
+          </pre>
+        )}
+      </div>
+    </details>
   );
 }

@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, path::Path, sync::Mutex};
 pub struct Store {
     db: Mutex<Connection>,
     pub path: String,
+    pub current_limit: u64,
 }
 
 impl Store {
@@ -34,45 +35,91 @@ impl Store {
         helius_limit: Option<u64>,
         lane: Option<Lane>,
     ) -> Result<(), String> {
+        self.reserve_work(
+            timestamp,
+            daily_limit,
+            helius_limit.map(|limit| (limit, 10)),
+            lane,
+        )
+    }
+
+    pub fn reserve_work(
+        &self,
+        timestamp: u64,
+        daily_limit: u64,
+        helius: Option<(u64, u64)>,
+        lane: Option<Lane>,
+    ) -> Result<(), String> {
         let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
         let day = timestamp / DAY;
-        let daily_key = format!("requests:{day}");
-        let used: u64 = tx
-            .query_row(
+        let read = |key: &str| -> Result<u64, String> {
+            tx.query_row(
                 "SELECT CAST(value AS INTEGER) FROM state WHERE key=?",
-                [&daily_key],
+                [key],
                 |r| r.get(0),
             )
             .optional()
-            .map_err(|e| e.to_string())?
-            .unwrap_or(0);
-        if used >= daily_limit {
-            return Err("Wallet collection reached its daily free request budget; it resumes after UTC midnight.".into());
+            .map(|v| v.unwrap_or(0))
+            .map_err(|e| e.to_string())
+        };
+        let used = read(&format!("requests:{day}"))?;
+        let current_used = read(&format!("lane:current:{day}"))?;
+        let current = matches!(lane, Some(Lane::Current));
+        if (current && current_used >= self.current_limit)
+            || (!current && used.saturating_sub(current_used) >= daily_limit)
+        {
+            return Err(
+                "This work reached its daily request allocation; saved evidence is retained."
+                    .into(),
+            );
         }
         if let Some(lane) = lane {
-            let key = format!("lane:{}:{day}", lane.key());
-            let used: u64 = tx
-                .query_row(
-                    "SELECT CAST(value AS INTEGER) FROM state WHERE key=?",
-                    [&key],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?
-                .unwrap_or(0);
-            if used >= lane.allowance(timestamp, daily_limit) {
-                return Err(format!("{} work is paced within the free request budget; the next attempt is eligible at UTC timestamp {}. Saved evidence is retained.",lane.key(),lane.next_attempt(timestamp,daily_limit,used)));
+            let limit = if current {
+                self.current_limit
+            } else {
+                daily_limit
+            };
+            let count = read(&format!("lane:{}:{day}", lane.key()))?;
+            if count >= lane.allowance(timestamp, limit) {
+                return Err(format!(
+                    "{} work is paced; next attempt is eligible at UTC timestamp {}.",
+                    lane.key(),
+                    lane.next_attempt(timestamp, limit, count)
+                ));
             }
-            tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,(used+1).to_string()]).map_err(|e|e.to_string())?;
         }
-        if let Some(limit) = helius_limit {
-            if credits_in_window(&tx, day)?.saturating_add(10) > limit {
+        if let Some((limit, cost)) = helius {
+            if credits_in_window(&tx, day)?.saturating_add(cost) > limit {
                 return Err("Helius collection reached Water's rolling 31-day credit budget; saved evidence and cursors are retained.".into());
             }
-            tx.execute("INSERT INTO state(key,value) VALUES(?,10) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+10", [format!("helius-credits:{day}")]).map_err(|e| e.to_string())?;
+            if let Some(lane) = lane {
+                let key = format!("helius-lane:{}:{day}", lane.key());
+                let daily = limit / 32; // Window counts up to 32 UTC date buckets.
+                let share = match lane {
+                    Lane::Current => 80,
+                    Lane::History => 15,
+                    Lane::Discovery => 5,
+                };
+                let cap = (daily * share / 100).max(cost);
+                let allowance = if matches!(lane, Lane::History) {
+                    let burst = cap / 4;
+                    burst + (cap - burst) * (timestamp % DAY) / DAY
+                } else {
+                    cap
+                };
+                let count = read(&key)?;
+                if count.saturating_add(cost) > allowance {
+                    return Err(format!("Helius {} work is paced within its daily credit allocation; saved evidence is retained.",lane.key()));
+                }
+                tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,(count+cost).to_string()]).map_err(|e|e.to_string())?;
+            }
+            tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+CAST(excluded.value AS INTEGER)",params![format!("helius-credits:{day}"),cost.to_string()]).map_err(|e|e.to_string())?;
         }
-        tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![daily_key,(used+1).to_string()]).map_err(|e|e.to_string())?;
+        if let Some(lane) = lane {
+            tx.execute("INSERT INTO state(key,value) VALUES(?,1) ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1",[format!("lane:{}:{day}",lane.key())]).map_err(|e|e.to_string())?;
+        }
+        tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("requests:{day}"),(used+1).to_string()]).map_err(|e|e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
     }
 
@@ -93,11 +140,17 @@ impl Store {
           CREATE TABLE IF NOT EXISTS wallets(chain TEXT NOT NULL, wallet TEXT NOT NULL, candidate TEXT NOT NULL, coverage TEXT NOT NULL, balances TEXT NOT NULL DEFAULT '{}', analysis TEXT, scheduled_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chain,wallet));
           CREATE TABLE IF NOT EXISTS records(chain TEXT NOT NULL, wallet TEXT NOT NULL, id TEXT NOT NULL, record TEXT NOT NULL, ready INTEGER NOT NULL, PRIMARY KEY(chain,wallet,id), FOREIGN KEY(chain,wallet) REFERENCES wallets(chain,wallet));
           CREATE TABLE IF NOT EXISTS prices(chain TEXT NOT NULL, asset TEXT NOT NULL, timestamp INTEGER NOT NULL, price TEXT NOT NULL, PRIMARY KEY(chain,asset,timestamp));
+          CREATE TABLE IF NOT EXISTS token_quotes(chain TEXT NOT NULL,asset TEXT NOT NULL,quote TEXT NOT NULL, PRIMARY KEY(chain,asset));
           CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS pending_records ON records(chain,wallet,ready);").map_err(|e| e.to_string())?;
         Ok(Self {
             db: Mutex::new(db),
             path: path.into(),
+            current_limit: std::env::var("WATER_TRACKER_CURRENT_DAILY_REQUESTS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(24000u64)
+                .clamp(100, 96000),
         })
     }
 
@@ -314,6 +367,37 @@ impl Store {
         Ok(())
     }
 
+    pub fn token_quotes(
+        &self,
+        chain: Chain,
+    ) -> Result<BTreeMap<String, crate::model::TokenQuote>, String> {
+        let db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
+        let mut stmt = db
+            .prepare("SELECT quote FROM token_quotes WHERE chain=?")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([chain.key()], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.map(|r| {
+            let quote: crate::model::TokenQuote =
+                serde_json::from_str(&r.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            Ok((quote.asset.clone(), quote))
+        })
+        .collect()
+    }
+    pub fn save_token_quotes(
+        &self,
+        chain: Chain,
+        quotes: &[crate::model::TokenQuote],
+    ) -> Result<(), String> {
+        let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        for quote in quotes {
+            tx.execute("INSERT INTO token_quotes(chain,asset,quote) VALUES(?,?,?) ON CONFLICT(chain,asset) DO UPDATE SET quote=excluded.quote",params![chain.key(),quote.asset,serde_json::to_string(quote).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     pub fn save_analysis(&self, analysis: &Analysis) -> Result<(), String> {
         self.db
             .lock()
@@ -411,7 +495,7 @@ mod tests {
         let mut current = 0;
         for minute in 0..1440 {
             let timestamp = start + minute * 60;
-            if minute % 40 == 0 {
+            if minute % 10 == 0 {
                 // Captured production cohort's bounded head routes: seven SOL
                 // wallets (2 calls each), two RH wallets (4 each), two BNB
                 // wallets with known tokens (4 each), and one tokenless BNB
@@ -428,9 +512,9 @@ mod tests {
                 .is_ok()
             {}
         }
-        assert_eq!(current, 1116);
-        assert_eq!(store.lane_used(Lane::Current, start).unwrap(), 1116);
-        assert!(store.lane_used(Lane::History, start).unwrap() <= 500);
+        assert_eq!(current, 4464);
+        assert_eq!(store.lane_used(Lane::Current, start).unwrap(), 4464);
+        assert!(store.lane_used(Lane::History, start).unwrap() <= 375);
         assert!(
             store
                 .state("requests:100")
@@ -438,7 +522,7 @@ mod tests {
                 .unwrap()
                 .parse::<u64>()
                 .unwrap()
-                <= 2000
+                <= 6500
         );
     }
 
@@ -448,20 +532,27 @@ mod tests {
         for _ in 0..2000 {
             store.reserve_http(100 * DAY, 2000, None).unwrap();
         }
-        assert!(store
-            .reserve_http_in_lane(100 * DAY, 2000, Some(10), Some(Lane::Current))
-            .is_err());
-        assert_eq!(store.lane_used(Lane::Current, 100 * DAY).unwrap(), 0);
-        assert_eq!(store.helius_credits(100 * DAY).unwrap(), 0);
         store
-            .reserve_http_in_lane(101 * DAY, 2000, Some(10), Some(Lane::Current))
+            .reserve_work(100 * DAY, 2000, Some((800000, 11)), Some(Lane::Current))
             .unwrap();
+        assert_eq!(store.lane_used(Lane::Current, 100 * DAY).unwrap(), 1);
+        assert_eq!(
+            store.state("requests:100").unwrap().as_deref(),
+            Some("2001")
+        );
+        assert_eq!(store.helius_credits(100 * DAY).unwrap(), 11);
         assert!(store
-            .reserve_http_in_lane(101 * DAY, 2000, Some(10), Some(Lane::Current))
+            .reserve_work(100 * DAY, 2000, None, Some(Lane::History))
             .is_err());
-        assert_eq!(store.lane_used(Lane::Current, 101 * DAY).unwrap(), 1);
-        assert_eq!(store.state("requests:101").unwrap().as_deref(), Some("1"));
-        assert_eq!(store.helius_credits(101 * DAY).unwrap(), 10);
+        // Rejected provider-credit reservations change neither HTTP nor lane totals.
+        assert!(store
+            .reserve_work(100 * DAY, 2000, Some((11, 1)), Some(Lane::Current))
+            .is_err());
+        assert_eq!(store.lane_used(Lane::Current, 100 * DAY).unwrap(), 1);
+        assert_eq!(
+            store.state("requests:100").unwrap().as_deref(),
+            Some("2001")
+        );
     }
 
     #[test]

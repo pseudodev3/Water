@@ -16,10 +16,10 @@ impl Lane {
         }
     }
     pub fn limit(self, daily: u64) -> u64 {
-        let current = daily * 70 / 100;
+        let current = 0;
         let discovery = daily * 5 / 100;
         match self {
-            Self::Current => current,
+            Self::Current => daily,
             Self::Discovery => discovery,
             Self::History => daily - current - discovery,
         }
@@ -68,10 +68,10 @@ mod tests {
     fn historical_passes_wait_for_a_batch_without_disabling_small_budgets() {
         let start = 100 * DAY;
         assert_eq!(Lane::History.minimum_batch(2000), 25);
-        assert_eq!(Lane::History.next_attempt(start, 2000, 125), start + 5760);
-        assert_eq!(Lane::History.allowance(start + 5760, 2000), 150);
-        assert_eq!(Lane::History.next_attempt(start, 2000, 480), start + DAY);
-        assert_eq!(Lane::History.minimum_batch(10), 1);
+        assert_eq!(Lane::History.next_attempt(start, 2000, 475), start + 1516);
+        assert_eq!(Lane::History.allowance(start + 1516, 2000), 500);
+        assert_eq!(Lane::History.next_attempt(start, 2000, 1880), start + DAY);
+        assert_eq!(Lane::History.minimum_batch(10), 2);
         assert_eq!(Lane::History.next_attempt(start, 10, 0), start);
         assert_eq!(Lane::Discovery.next_attempt(start, 10, 0), start + DAY);
     }

@@ -35,6 +35,41 @@ pub fn asset_key(chain: Chain, address: &str) -> String {
 }
 
 impl MarketClient {
+    pub async fn token_quotes(
+        &self,
+        chain: Chain,
+        assets: &[String],
+        at: u64,
+    ) -> Result<Vec<crate::model::TokenQuote>, String> {
+        let payload: Value = self
+            .http
+            .get(format!(
+                "{}/tokens/v1/{}/{}",
+                self.fallback_host,
+                chain.market_network(),
+                assets
+                    .iter()
+                    .take(30)
+                    .map(|a| super::gecko::market_asset_id(chain, a))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
+            .timeout(Duration::from_secs(4))
+            .send()
+            .await
+            .map_err(|_| "Dexscreener batch transport unavailable.")?
+            .error_for_status()
+            .map_err(|e| {
+                format!(
+                    "Dexscreener batch returned HTTP {}.",
+                    e.status().map(|s| s.as_u16()).unwrap_or(0)
+                )
+            })?
+            .json()
+            .await
+            .map_err(|_| "Dexscreener batch returned unreadable JSON.")?;
+        Ok(batch_quotes(&payload, chain, assets, at))
+    }
     pub fn new(http: Client, gecko: GeckoClient, fallback_host: String) -> Self {
         Self {
             http,
@@ -175,6 +210,57 @@ impl MarketClient {
                 .to_string()
         })
     }
+}
+
+fn batch_quotes(
+    payload: &Value,
+    chain: Chain,
+    assets: &[String],
+    at: u64,
+) -> Vec<crate::model::TokenQuote> {
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+    assets
+        .iter()
+        .filter_map(|asset| {
+            let row = payload
+                .as_array()?
+                .iter()
+                .filter(|row| {
+                    row["chainId"].as_str() == Some(chain.market_network())
+                        && row["baseToken"]["address"].as_str().is_some_and(|a| {
+                            asset_key(chain, a)
+                                == asset_key(chain, super::gecko::market_asset_id(chain, asset))
+                        })
+                        && row["priceUsd"]
+                            .as_str()
+                            .and_then(|s| Decimal::from_str(s).ok())
+                            .is_some_and(|p| p > Decimal::ZERO)
+                })
+                .max_by(|a, b| {
+                    let liquidity = |row: &Value| {
+                        row["liquidity"]["usd"]
+                            .as_number()
+                            .and_then(|n| Decimal::from_str(&n.to_string()).ok())
+                            .unwrap_or_default()
+                    };
+                    liquidity(a).cmp(&liquidity(b))
+                })?;
+            Some(crate::model::TokenQuote {
+                asset: asset.clone(),
+                name: row["baseToken"]["name"].as_str().map(str::to_owned),
+                symbol: row["baseToken"]["symbol"].as_str().map(str::to_owned),
+                decimals: None,
+                price_usd: row["priceUsd"]
+                    .as_str()
+                    .and_then(|s| Decimal::from_str(s).ok()),
+                observed_at: at,
+                source: "Dexscreener deepest indexed base-token pool".into(),
+                detail: "Current indexed market mark; not an executable or historical trade price."
+                    .into(),
+            })
+        })
+        .collect()
 }
 
 fn number(value: Option<&Value>) -> Option<f64> {
@@ -423,5 +509,29 @@ mod tests {
         assert_eq!(primary.load(Ordering::SeqCst), 1);
         assert_eq!(fallback.load(Ordering::SeqCst), 2);
         task.abort();
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn exact_chain_and_base_identity_are_required_and_decimals_do_not_round_tiny_prices() {
+        let address = "0x1111111111111111111111111111111111111111";
+        let payload = json!([
+            {"chainId":"ethereum","baseToken":{"address":address,"name":"Wrong chain"},"priceUsd":"999","liquidity":{"usd":1000000}},
+            {"chainId":"bsc","baseToken":{"address":"0x2222222222222222222222222222222222222222"},"quoteToken":{"address":address},"priceUsd":"888","liquidity":{"usd":1000000}},
+            {"chainId":"bsc","baseToken":{"address":address,"name":"Thin pool","symbol":"TEST"},"priceUsd":"1","liquidity":{"usd":1}},
+            {"chainId":"bsc","baseToken":{"address":address,"name":"Synthetic test asset","symbol":"TEST"},"priceUsd":"0.0000000000527123456789","liquidity":{"usd":20}}
+        ]);
+        let received = batch_quotes(&payload, Chain::Bnb, &[address.into()], 123);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].name.as_deref(), Some("Synthetic test asset"));
+        assert_eq!(
+            received[0].price_usd.unwrap().to_string(),
+            "0.0000000000527123456789"
+        );
+        assert!(batch_quotes(&payload, Chain::Solana, &[address.into()], 123).is_empty());
     }
 }

@@ -17,9 +17,9 @@ struct Closed {
 }
 
 pub struct PriceIndex {
-    exact: BTreeMap<(String, u64), Decimal>,
-    hour: BTreeMap<(String, u64), Decimal>,
-    day: BTreeMap<(String, u64), Decimal>,
+    exact: BTreeMap<(String, u64), Price>,
+    hour: BTreeMap<(String, u64), Price>,
+    day: BTreeMap<(String, u64), Price>,
 }
 impl PriceIndex {
     pub fn new(prices: &[Price]) -> Self {
@@ -29,30 +29,34 @@ impl PriceIndex {
             day: BTreeMap::new(),
         };
         for p in prices {
-            index.exact.insert((p.asset.clone(), p.timestamp), p.usd);
+            index
+                .exact
+                .insert((p.asset.clone(), p.timestamp), p.clone());
             match p.granularity.as_str() {
                 "hour" => {
                     index
                         .hour
-                        .insert((p.asset.clone(), p.timestamp / 3600), p.usd);
+                        .insert((p.asset.clone(), p.timestamp / 3600), p.clone());
                 }
                 "day" => {
                     index
                         .day
-                        .insert((p.asset.clone(), p.timestamp / DAY), p.usd);
+                        .insert((p.asset.clone(), p.timestamp / DAY), p.clone());
                 }
                 _ => {}
             }
         }
         index
     }
-    pub fn get(&self, asset: &str, time: u64) -> Option<Decimal> {
+    pub fn evidence(&self, asset: &str, time: u64) -> Option<&Price> {
         self.exact
             .get(&(asset.into(), time))
             .or_else(|| self.hour.get(&(asset.into(), time / 3600)))
             .or_else(|| self.day.get(&(asset.into(), time / DAY)))
-            .copied()
-            .filter(|p| *p > Decimal::ZERO)
+            .filter(|p| p.usd > Decimal::ZERO)
+    }
+    pub fn get(&self, asset: &str, time: u64) -> Option<Decimal> {
+        self.evidence(asset, time).map(|p| p.usd)
     }
 }
 fn price(prices: &PriceIndex, asset: &str, time: u64) -> Option<Decimal> {
@@ -127,6 +131,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
                 value_usd: None,
                 finalized: false,
                 counterparties: tx.counterparties.clone(),
+                pricing: Default::default(),
             });
             continue;
         }
@@ -145,6 +150,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
                 value_usd: None,
                 finalized: tx.finalized,
                 counterparties: tx.counterparties.clone(),
+                pricing: Default::default(),
             });
         }
         if !tx.succeeded {
@@ -159,6 +165,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
                 value_usd: fee_usd,
                 finalized: true,
                 counterparties: vec![],
+                pricing: Default::default(),
             });
             continue;
         }
@@ -280,6 +287,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
                 value_usd: usd,
                 finalized: tx.finalized,
                 counterparties: tx.counterparties.clone(),
+                pricing: Default::default(),
             });
         }
         if targets.is_empty() && !tx.assets.is_empty() {
@@ -323,6 +331,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
                         .map(|p| p * delta.quantity.abs()),
                     finalized: tx.finalized,
                     counterparties: tx.counterparties.clone(),
+                    pricing: Default::default(),
                 });
             }
         }
@@ -457,7 +466,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
             .len();
         let active_days = days
             .iter()
-            .filter(|(d, _)| *d >= from / DAY && *d <= (to - 1) / DAY)
+            .filter(|(d, _)| *d >= from / DAY && *d <= to.saturating_sub(1) / DAY)
             .map(|(d, _)| d)
             .collect::<BTreeSet<_>>()
             .len();
@@ -527,13 +536,33 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
                     price(&prices, asset, end).map(|v| v * p.current_quantity)
                 },
                 realized_usd: p.realized_pnl_usd,
+                valuation: None,
+                average_entry_usd: (p.basis_coverage == Decimal::ONE
+                    && p.current_quantity > Decimal::ZERO)
+                    .then(|| p.open_cost_usd_known / p.current_quantity),
                 first_acquired_at: p.first_acquired_at,
                 last_activity_at: p.last_activity_at,
             }
         })
         .collect();
     events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-    events.truncate(100);
+    let tx_by_id: BTreeMap<_, _> = transactions.iter().map(|t| (t.id.as_str(), t)).collect();
+    for event in &mut events {
+        if let Some(tx) = tx_by_id.get(event.tx.as_str()) {
+            let trade = matches!(
+                event.kind.as_str(),
+                "entry" | "addition" | "exit" | "partial_exit"
+            );
+            event.pricing=ActivityPricing {
+                unit_price_quote: if trade {event.quote_quantity.zip(event.quantity).and_then(|(q,n)|q.abs().checked_div(n.abs()))}else{None},
+                unit_price_usd: if trade {event.value_usd.zip(event.quantity).and_then(|(v,n)|v.abs().checked_div(n.abs()))}else{None},
+                quote_conversion: event.quote_asset.as_deref().and_then(|a|prices.evidence(a,event.timestamp)).cloned(),
+                fee_asset: Some(tx.fee_asset.clone()), fee_quantity:tx.fee_quantity,
+                fee_usd:fee(&prices,tx), fee_conversion:prices.evidence(&tx.fee_asset,event.timestamp).cloned(),
+                detail: if trade {"Quote unit price is the effective ratio of received wallet flows, including costs already inside those movements. USD is a historical candle conversion estimate. Network fees are separate."}else{"Received movements and fees are evidence; transfers and incomplete executions have no verified entry or exit price."}.into(),
+            };
+        }
+    }
     let status = if !fresh && coverage.last_collected_at.is_some() {
         "stale"
     } else if windows.iter().all(|w| w.qualified) {
@@ -552,7 +581,7 @@ pub fn analyze(mut snapshot: Snapshot, timestamp: u64) -> Analysis {
         "observed"
     };
     snapshot.coverage = coverage.clone();
-    Analysis{candidate:snapshot.candidate,analyzed_at:end,policy:POLICY.into(),status:status.into(),coverage,windows,positions,activity:events,unresolved_records:economic_gaps,records:snapshot.records.len(),notes:vec!["Historical USD values use source candles at the event/boundary time; conversion is an estimate, not an executable quote.".into(),"Network fees are expensed when charged. Deposits, withdrawals and unproven transfer basis are not trading gains.".into(),"Initial qualification thresholds are research filters; future profitability is evaluated separately.".into()]}
+    Analysis{candidate:snapshot.candidate,analyzed_at:end,policy:POLICY.into(),status:status.into(),coverage,windows,positions,markets:BTreeMap::new(),activity:events,unresolved_records:economic_gaps,records:snapshot.records.len(),notes:vec!["Historical USD values use source candles at the event/boundary time; conversion is an estimate, not an executable quote.".into(),"Network fees are expensed when charged. Deposits, withdrawals and unproven transfer basis are not trading gains.".into(),"Initial qualification thresholds are research filters; future profitability is evaluated separately.".into()]}
 }
 
 #[cfg(test)]

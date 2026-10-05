@@ -1,3 +1,8 @@
+> Current behavior is superseded by [transaction detail and continuous collection](wallet-transaction-detail.md).
+> This document records the PR #24 investigation and its original shared daily
+> allocation. The follow-up gives current work a separate allocation and uses
+> weighted Helius credits; do not apply the old 70/25/5 split to new deployments.
+
 # Wallet collection and stale evidence
 
 Checked on 2026-10-05 against the production wallet page and Railway API.

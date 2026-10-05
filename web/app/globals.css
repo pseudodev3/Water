@@ -1973,3 +1973,22 @@ a:focus-visible {
 .wallet-record-progress { display: block; margin-top: 6px; color: var(--faint); font-size: 11px; line-height: 1.6; }
 .wallet-qualification-checks { margin-top: 16px; }
 .wallet-qualification-checks summary { min-height: 44px; display: list-item; padding: 12px 0; color: var(--muted); font-size: 12px; cursor: pointer; }
+
+/* Saved transaction evidence stays readable at phone widths. */
+.wallet-transaction { border-top: 1px solid var(--line); }
+.wallet-transaction > summary { display:flex; align-items:center; justify-content:space-between; gap:16px; cursor:pointer; padding:18px 0; list-style:none; }
+.wallet-transaction > summary::-webkit-details-marker { display:none; }
+.wallet-transaction > summary > span { min-width:0; overflow-wrap:anywhere; }
+.wallet-transaction > summary > span:last-child { display:flex; align-items:center; gap:10px; flex-shrink:0; font-variant-numeric:tabular-nums; }
+.wallet-transaction small,.wallet-position-row small { display:block; color:var(--muted); font-size:12px; line-height:1.6; font-weight:400; margin-top:4px; }
+.wallet-transaction-evidence { padding:0 0 22px; color:var(--muted); font-size:14px; line-height:1.65; }
+.wallet-transaction-evidence h4 { margin:22px 0 10px; color:var(--text); }
+.wallet-transaction-evidence dl { margin:18px 0; }
+.wallet-transaction-evidence dl > div { display:flex; justify-content:space-between; gap:20px; padding:6px 0; }
+.wallet-transaction-evidence dd { margin:0; text-align:right; overflow-wrap:anywhere; color:var(--text); font-variant-numeric:tabular-nums; }
+.wallet-movement { display:flex; justify-content:space-between; gap:20px; padding:8px 0; border-bottom:1px solid var(--line); }
+.wallet-movement a { min-width:0; overflow-wrap:anywhere; }
+.wallet-movement span { max-width:50%; overflow-wrap:anywhere; text-align:right; flex-shrink:1; font-variant-numeric:tabular-nums; }
+.wallet-counterparty { display:inline-flex; align-items:center; gap:3px; margin:0 6px; }
+.wallet-source-record { max-height:400px; max-width:100%; overflow:auto; padding:16px; background:var(--surface-1); font-size:12px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+@media (max-width:640px) { .wallet-transaction > summary { align-items:flex-start; } .wallet-transaction > summary > span:last-child { flex-shrink:1; text-align:right; font-size:13px; } .wallet-transaction-evidence dl > div { gap:12px; } }

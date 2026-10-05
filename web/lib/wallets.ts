@@ -49,6 +49,7 @@ export type WalletAnalysis = {
     fees_complete: boolean;
     last_collected_at: number | null;
     last_state_checked_at?: number | null;
+    state_error?: string | null;
     oldest_record_at: number | null;
     newest_record_at: number | null;
     pages: number;
@@ -69,7 +70,19 @@ export type WalletAnalysis = {
     realized_usd: string | null;
     first_acquired_at: number | null;
     last_activity_at: number | null;
+    average_entry_usd?: string | null;
+    valuation?: {
+      quantity: string;
+      quantity_source: string;
+      quantity_observed_at: number | null;
+      quantity_block?: string | null;
+      price_usd: string | null;
+      price_observed_at: number | null;
+      source: string | null;
+      detail: string;
+    } | null;
   }>;
+  markets?: Record<string, TokenQuote>;
   activity: Array<{
     tx: string;
     timestamp: number;
@@ -81,9 +94,12 @@ export type WalletAnalysis = {
     value_usd: string | null;
     finalized: boolean;
     counterparties: string[];
+    pricing?: ActivityPricing;
   }>;
 };
-export type WalletSummary = Omit<WalletAnalysis, "positions" | "notes"> & { positions_count?: number };
+export type WalletSummary = Omit<WalletAnalysis, "positions" | "notes"> & {
+  positions_count?: number;
+};
 export type WalletResponse = {
   status: {
     enabled: boolean;
@@ -91,11 +107,21 @@ export type WalletResponse = {
     detail?: string | null;
     policy: string;
     interval_seconds?: number;
-    collection_state?: "budget_paused" | "scheduled";
+    collection_state?: "budget_paused" | "background_paused" | "scheduled";
     budget_resets_at?: number;
     current_refresh_seconds?: number;
     history_detail?: string | null;
-    request_allocations?: Array<{purpose: string; used: number; limit: number; available_now: number; next_attempt_at: number}>;
+    background_requests_today?: number;
+    current_request_limit?: number;
+    helius_budget_paused?: boolean;
+    market_detail?: string | null;
+    request_allocations?: Array<{
+      purpose: string;
+      used: number;
+      limit: number;
+      available_now: number;
+      next_attempt_at: number;
+    }>;
     cohort_limit?: number;
     requests_today?: number;
     daily_request_limit?: number;
@@ -212,4 +238,108 @@ export function amount(value: string | null, usd = false) {
       ? { style: "currency", currency: "USD", maximumFractionDigits: 2 }
       : { maximumFractionDigits: 6 },
   ).format(n);
+}
+
+export type TokenQuote = {
+  asset: string;
+  name: string | null;
+  symbol: string | null;
+  decimals: number | null;
+  price_usd: string | null;
+  observed_at: number;
+  source: string;
+  detail: string;
+};
+export type HistoricalConversion = {
+  asset: string;
+  timestamp: number;
+  usd: string;
+  granularity: string;
+  source: string;
+};
+export type ActivityPricing = {
+  unit_price_quote: string | null;
+  unit_price_usd: string | null;
+  quote_conversion: HistoricalConversion | null;
+  fee_asset: string | null;
+  fee_quantity: string | null;
+  fee_usd: string | null;
+  fee_conversion: HistoricalConversion | null;
+  detail: string;
+};
+export type TransactionEvidence = {
+  tx: string;
+  timestamp: number | null;
+  outcome: string;
+  block: number | null;
+  index: number | null;
+  finalized: boolean | null;
+  movements: Array<{ asset: string; quantity: string }> | null;
+  fee_asset: string | null;
+  fee_quantity: string | null;
+  swap_evidence: boolean | null;
+  movement_complete: boolean | null;
+  counterparties: string[] | null;
+  notes: string[] | null;
+  error: string | null;
+  activities: WalletAnalysis["activity"];
+  provider: string;
+  raw: unknown;
+};
+export type ActivityPage = {
+  transactions: TransactionEvidence[];
+  markets: Record<string, TokenQuote>;
+  next_cursor: string | null;
+  total: number;
+  revision: string;
+};
+export const getWalletActivity = (
+  chain: Chain,
+  wallet: string,
+  cursor: string | null,
+  signal?: AbortSignal,
+) =>
+  request<ActivityPage>(
+    "/v1/wallets/activity",
+    { chain, wallet, cursor, limit: 25 },
+    signal,
+  );
+export const getWalletTransaction = (
+  chain: Chain,
+  wallet: string,
+  transaction: string,
+  signal?: AbortSignal,
+) =>
+  request<{ transaction: TransactionEvidence }>(
+    "/v1/wallets/activity",
+    { chain, wallet, transaction },
+    signal,
+  );
+export function unitPrice(value: string | null, usd = false) {
+  if (value === null) return "Unavailable";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "Unavailable";
+  return new Intl.NumberFormat("en-US", {
+    maximumSignificantDigits: 9,
+    ...(usd ? { style: "currency", currency: "USD" } : {}),
+  }).format(n);
+}
+export function tokenLabel(
+  asset: string,
+  markets?: Record<string, TokenQuote>,
+) {
+  if (["SOL", "ETH", "BNB"].includes(asset)) return asset;
+  const token = markets?.[asset];
+  return token?.symbol
+    ? `${token.name ?? token.symbol} (${token.symbol})`
+    : (token?.name ?? shortAddress(asset));
+}
+
+export function assetSymbol(
+  asset: string,
+  markets?: Record<string, TokenQuote>,
+) {
+  return ["SOL", "ETH", "BNB"].includes(asset)
+    ? asset
+    : (markets?.[asset]?.symbol ?? shortAddress(asset));
 }
