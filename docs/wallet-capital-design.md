@@ -114,14 +114,16 @@ unknown, and fully missing values. These totals are test fixtures, not live wall
 values. Checks cover high-value sorting, cutoff membership, inspectable value
 checks, saved follows, profile totals, holdings sort, keyboard tabs, scanner tool
 navigation and a safe rollout with no established values. No page overflow or
-JavaScript errors were found. WCAG 2 A/AA and 2.1 AA axe checks on phone/desktop
+JavaScript errors were found. Received scanner image and all social-link rendering
+also pass at 390/1440px. Scanner results and wallet profiles reserve scroll clearance
+so the sticky header leaves token/wallet identity visible. WCAG 2 A/AA and 2.1 AA axe checks on phone/desktop
 profiles report zero violations; this is automated coverage, not a full accessibility
 certification. Screenshots were inspected and used to fix an ancestor blur that
 incorrectly positioned mobile navigation.
 
 Session evidence is stored under `/workspace/water-fomo-research`: original
 reference images, before captures, viewport screenshots, browser-verification.json,
-and Rust/build logs. Production rollout verification is recorded in the handoff
-after deployment. Source completeness and profitable track-record qualification
+and Rust/build logs. Production rollout verification remains separate from replay fixtures; check
+the merged commit’s Vercel/Railway statuses and live health before claiming availability. Source completeness and profitable track-record qualification
 still depend on provider coverage and economic reconstruction; there is no measured
 completion ETA from this UI or capital gate.

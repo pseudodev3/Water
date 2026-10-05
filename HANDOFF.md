@@ -12,7 +12,7 @@ Production:
 - Frontend: `https://web-water.vercel.app`
 - Backend: `https://water-production-822e.up.railway.app`
 
-Current production baseline:
+Previously verified production baseline:
 - `66fe8009cbd64005a610c37241dc48b1f6c9c708` (PR #30).
 - PR #26's research UI, PR #27's bounded accounting/runtime diagnostics and
   PR #28's zero-balance Positions filter are merged. All deployments passed.
@@ -68,7 +68,9 @@ PR #30 live browser verification received 1,418 valued holdings on 6HJet,
 verified both USD sort directions, and passed without JavaScript errors or overflow.
 Health returned HTTP 200 with CORS `*`.
 
-Current follow-up branch: `feat/wallet-value-floor-ui`.
+Latest implementation: [PR #31](https://github.com/pseudodev3/Water/pull/31),
+branch `feat/wallet-value-floor-ui`. Its merge and deployment checks determine
+when this implementation becomes the production baseline.
 - Default expensive collection floor: **$1,000 native + wallet token holdings on
   the selected chain**, confirmed with fresh received balances and USD marks.
   A sufficient partial lower bound admits; missing prices or incomplete EVM
@@ -94,7 +96,9 @@ Current follow-up branch: `feat/wallet-value-floor-ui`.
   keyboard tabs, safe empty rollout, and WCAG axe checks with zero violations.
   Screenshots use controlled eligibility values and are not live wallet totals.
 Read [capital screening and design evidence](docs/wallet-capital-design.md).
-This follow-up is not live until its PR is merged and both deployments are verified.
+Confirm PR #31 is merged and its main commit has successful Vercel/Railway
+deployment statuses before claiming availability; local replay screenshots are
+not proof of production data.
 
 PR #25's independent current activity allocation, token metadata/current marks,
 balance reads and detailed saved transactions are merged. The live collection

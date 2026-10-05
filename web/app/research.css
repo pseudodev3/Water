@@ -119,6 +119,10 @@
   padding-top: 16px;
   scroll-margin-top: 76px;
 }
+.results,
+.wallet-master-detail > [role="group"] {
+  scroll-margin-top: 88px;
+}
 .wallet-toolbar {
   padding: 0;
 }
