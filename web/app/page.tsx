@@ -1,14 +1,10 @@
 import { Scanner } from "@/components/scanner";
+import { ResearchHeader } from "@/components/research-ui";
 
 export default function Home() {
   return (
     <main className="shell">
-      <header className="topbar">
-        <a className="wordmark" href="/" aria-label="Water home">
-          water
-        </a>
-        <nav className="water-nav" aria-label="Water tools"><a href="/" aria-current="page">Token scan</a><a href="/wallets">Wallets</a></nav>
-      </header>
+      <ResearchHeader current="scanner" />
 
       <Scanner />
 
