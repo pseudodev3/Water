@@ -1569,11 +1569,27 @@ impl Tracker {
                 Err(error) => errors.push(error),
             }
         }
+        for quote in &mut quotes {
+            if let Some(previous) = cached.get(&quote.asset) {
+                quote.name = quote.name.take().or_else(|| previous.name.clone());
+                quote.symbol = quote.symbol.take().or_else(|| previous.symbol.clone());
+                quote.decimals = quote.decimals.or(previous.decimals);
+            }
+        }
         if matches!(chain, Chain::Solana) {
             let unnamed: Vec<_> = requested
                 .iter()
                 .filter(|a| {
                     wallet_key(chain, a).is_ok()
+                        && cached
+                            .get(*a)
+                            .is_none_or(|q| q.name.is_none() && q.symbol.is_none())
+                        && store
+                            .state(&format!("metadata-retry:{}:{}", chain.key(), a))
+                            .ok()
+                            .flatten()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .is_none_or(|t| t <= at)
                         && quotes
                             .iter()
                             .find(|q| q.asset == **a)
@@ -1582,15 +1598,26 @@ impl Tracker {
                 .cloned()
                 .collect();
             let mut provider = self.providers.as_ref().unwrap().clone();
-            provider.lane = Some(budget::Lane::History);
-            if let Ok(metadata) = provider.token_metadata(&unnamed).await {
-                for q in metadata {
-                    if let Some(old) = quotes.iter_mut().find(|old| old.asset == q.asset) {
-                        old.name = q.name;
-                        old.symbol = q.symbol;
-                        old.decimals = old.decimals.or(q.decimals);
-                    } else {
-                        quotes.push(q);
+            // Token identity is current evidence, not historical backfill.
+            provider.lane = Some(budget::Lane::Current);
+            if !provider.helius_keys.is_empty() {
+                let metadata = provider.token_metadata(&unnamed).await;
+                let retry = at + if metadata.is_ok() { DAY } else { 300 };
+                for asset in &unnamed {
+                    store.set_state(
+                        &format!("metadata-retry:{}:{}", chain.key(), asset),
+                        &retry.to_string(),
+                    )?;
+                }
+                if let Ok(metadata) = metadata {
+                    for q in metadata {
+                        if let Some(old) = quotes.iter_mut().find(|old| old.asset == q.asset) {
+                            old.name = q.name;
+                            old.symbol = q.symbol;
+                            old.decimals = old.decimals.or(q.decimals);
+                        } else {
+                            quotes.push(q);
+                        }
                     }
                 }
             }

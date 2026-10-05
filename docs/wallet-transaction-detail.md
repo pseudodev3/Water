@@ -86,7 +86,9 @@ Names are labels received from providers, not authenticated project identities.
 GeckoTerminal batches are primary; Dexscreener exact-chain base-token pools are
 fallback, selecting the deepest received pool. Native addresses are mapped to
 explicit wrapped-native contracts, preserving the original asset identity.
-Helius DAS supplies fungible metadata when permitted by the background allocation;
+Helius DAS supplies missing fungible metadata within the current allocation, even
+when background work is paused. Already received names are reused; unsuccessful
+identity lookups are cached to avoid repeated credit spending;
 NFT interfaces and unsolicited IDs are not accepted as fungible market evidence.
 No paid adapter or new key is required.
 
