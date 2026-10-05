@@ -1330,7 +1330,18 @@ function TransactionRow({
           <p>
             Fee conversion: {row.activities[0].pricing.fee_conversion.source} ·{" "}
             {row.activities[0].pricing.fee_conversion.granularity} candle at{" "}
-            {date(row.activities[0].pricing.fee_conversion.timestamp)}
+            {date(
+              Math.floor(
+                row.activities[0].pricing.fee_conversion.timestamp /
+                  (row.activities[0].pricing.fee_conversion.granularity ===
+                  "day"
+                    ? 86400
+                    : 3600),
+              ) *
+                (row.activities[0].pricing.fee_conversion.granularity === "day"
+                  ? 86400
+                  : 3600),
+            )}
           </p>
         )}
         <p>
