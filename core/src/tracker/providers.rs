@@ -961,6 +961,119 @@ impl Providers {
         }
     }
 
+    /// Bounded capital screen. EVM known-token reads do not prove a complete
+    /// wallet inventory; a native or partial-token lower bound may still admit.
+    pub async fn value_inventory(
+        &self,
+        candidate: &Candidate,
+        assets: &BTreeSet<String>,
+        quotes: &BTreeMap<String, crate::model::TokenQuote>,
+        minimum: Decimal,
+    ) -> Result<super::eligibility::Inventory, String> {
+        use super::eligibility::{assess, Inventory};
+        let at = now();
+        let (quantity, block) = match candidate.chain {
+            Chain::Solana => {
+                let value = self
+                    .solana_rpc(
+                        "getBalance",
+                        json!([candidate.wallet,{"commitment":"finalized"}]),
+                    )
+                    .await?;
+                (
+                    Decimal::from(
+                        value["value"]
+                            .as_u64()
+                            .ok_or("Native Solana balance is missing.")?,
+                    ) / Decimal::from(1_000_000_000u64),
+                    format!(
+                        "finalized native slot {}",
+                        value["context"]["slot"]
+                            .as_u64()
+                            .ok_or("Native balance slot is missing.")?
+                    ),
+                )
+            }
+            Chain::Robinhood | Chain::Bnb => {
+                let block = self.finalized_evm_block(candidate.chain).await?;
+                let height = block["number"]
+                    .as_str()
+                    .ok_or("Native balance block is missing.")?;
+                let value = self
+                    .evm_rpc(
+                        candidate.chain,
+                        "eth_getBalance",
+                        json!([candidate.wallet, height]),
+                    )
+                    .await?;
+                (
+                    scaled_hex(value.as_str().ok_or("Native EVM balance is missing.")?, 18)?,
+                    height.into(),
+                )
+            }
+        };
+        let mut inventory = Inventory {
+            quantities: BTreeMap::from([(native(candidate.chain).into(), quantity)]),
+            observed_at: at,
+            block,
+            source: format!("{} finalized native/token RPC", candidate.chain.label()),
+            complete: false,
+            error: None,
+        };
+        // A proved lower bound above the floor needs no expensive token census.
+        if assess(Some(&inventory), quotes, minimum, at, 0).status == "eligible" {
+            return Ok(inventory);
+        }
+        match candidate.chain {
+            Chain::Solana => {
+                for program in [TOKEN_PROGRAM, TOKEN_2022] {
+                    let value = self.solana_rpc("getTokenAccountsByOwner",json!([candidate.wallet,{"programId":program},{"encoding":"jsonParsed","commitment":"finalized"}])).await?;
+                    inventory.block.push_str(&format!(
+                        " / token slot {}",
+                        value["context"]["slot"]
+                            .as_u64()
+                            .ok_or("Token balance slot is missing.")?
+                    ));
+                    for row in value["value"]
+                        .as_array()
+                        .ok_or("Token inventory is missing.")?
+                    {
+                        let info = &row["account"]["data"]["parsed"]["info"];
+                        let mint = info["mint"]
+                            .as_str()
+                            .ok_or("Token inventory mint is missing.")?;
+                        let quantity = token_amount(&info["tokenAmount"])?;
+                        let held = inventory.quantities.entry(mint.into()).or_default();
+                        *held = held
+                            .checked_add(quantity)
+                            .ok_or("Token inventory exceeds supported precision.")?;
+                    }
+                }
+                inventory.complete = true;
+            }
+            Chain::Robinhood | Chain::Bnb => {
+                for asset in assets
+                    .iter()
+                    .filter(|a| !a.eq_ignore_ascii_case(native(candidate.chain)))
+                    .take(4)
+                {
+                    let read = async {
+                            let value = self.evm_archive(candidate.chain,"eth_call",json!([{"to":asset,"data":format!("0x70a08231000000000000000000000000{}",&candidate.wallet[2..])},inventory.block])).await?;
+                            let decimals = if let Some(d) = quotes.get(asset).and_then(|q|q.decimals) { d as u32 } else {
+                                let d = self.evm_archive(candidate.chain,"eth_call",json!([{"to":asset,"data":"0x313ce567"},inventory.block])).await?;
+                                u32::try_from(hex(d.as_str().ok_or("Token precision is missing.")?)?).map_err(|_|"Token precision is unsupported.")?
+                            };
+                            scaled_hex(value.as_str().ok_or("Token balance is missing.")?,decimals)
+                        }.await;
+                    if let Ok(quantity) = read {
+                        inventory.quantities.insert(asset.clone(), quantity);
+                    }
+                }
+            }
+        }
+        Ok(inventory)
+    }
+
     pub async fn balances(
         &self,
         candidate: &Candidate,

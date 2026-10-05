@@ -580,7 +580,7 @@ pub fn analyze(snapshot: &Snapshot, timestamp: u64) -> Analysis {
     } else {
         "observed"
     };
-    Analysis{candidate:snapshot.candidate.clone(),analyzed_at:end,policy:POLICY.into(),status:status.into(),coverage,windows,positions,markets:BTreeMap::new(),activity:events,unresolved_records:economic_gaps,records:snapshot.records.len(),notes:vec!["Historical USD values use source candles at the event/boundary time; conversion is an estimate, not an executable quote.".into(),"Network fees are expensed when charged. Deposits, withdrawals and unproven transfer basis are not trading gains.".into(),"Initial qualification thresholds are research filters; future profitability is evaluated separately.".into()]}
+    Analysis{wallet_value:None,candidate:snapshot.candidate.clone(),analyzed_at:end,policy:POLICY.into(),status:status.into(),coverage,windows,positions,markets:BTreeMap::new(),activity:events,unresolved_records:economic_gaps,records:snapshot.records.len(),notes:vec!["Historical USD values use source candles at the event/boundary time; conversion is an estimate, not an executable quote.".into(),"Network fees are expensed when charged. Deposits, withdrawals and unproven transfer basis are not trading gains.".into(),"Initial qualification thresholds are research filters; future profitability is evaluated separately.".into()]}
 }
 
 #[cfg(test)]

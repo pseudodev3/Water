@@ -226,7 +226,7 @@ impl Store {
             .map_err(|e| e.to_string())?;
         if count >= limit {
             return Err(
-                "The free collection cohort is full. Existing wallets continue collecting.".into(),
+                "The screening pool is full. Saved wallets are retained; eligible wallets continue collecting.".into(),
             );
         }
         tx.execute(
@@ -269,12 +269,37 @@ impl Store {
         Ok(candidate)
     }
 
+    pub fn schedule_wallet(&self, candidate: &Candidate, timestamp: u64) -> Result<(), String> {
+        self.db
+            .lock()
+            .map_err(|_| "Wallet storage is busy.")?
+            .execute(
+                "UPDATE wallets SET scheduled_at=? WHERE chain=? AND wallet=?",
+                params![timestamp, candidate.chain.key(), candidate.wallet],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn wallet_count(&self) -> Result<usize, String> {
         self.db
             .lock()
             .map_err(|_| "Wallet storage is busy.")?
             .query_row("SELECT COUNT(*) FROM wallets", [], |r| r.get(0))
             .map_err(|e| e.to_string())
+    }
+
+    pub fn candidates(&self) -> Result<Vec<Candidate>, String> {
+        let db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
+        let mut stmt = db
+            .prepare("SELECT candidate FROM wallets ORDER BY chain,wallet")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .map(|r| serde_json::from_str(&r.map_err(|e| e.to_string())?).map_err(|e| e.to_string()))
+            .collect();
+        result
     }
 
     pub fn lane_used(&self, lane: Lane, timestamp: u64) -> Result<u64, String> {
@@ -284,14 +309,40 @@ impl Store {
             .unwrap_or(0))
     }
 
+    #[cfg(test)]
     pub fn next_history_wallet(&self, timestamp: u64) -> Result<Option<Candidate>, String> {
+        let allowed = self
+            .candidates()?
+            .iter()
+            .map(super::eligibility::key)
+            .collect();
+        self.next_admitted_history_wallet(timestamp, &allowed)
+    }
+
+    pub fn next_admitted_history_wallet(
+        &self,
+        timestamp: u64,
+        allowed: &std::collections::BTreeSet<String>,
+    ) -> Result<Option<Candidate>, String> {
         let mut db = self.db.lock().map_err(|_| "Wallet storage is busy.")?;
         let tx = db.transaction().map_err(|e| e.to_string())?;
-        let value: Option<String> = tx.query_row("SELECT w.candidate FROM wallets w LEFT JOIN state s ON s.key='history-due:'||w.chain||':'||w.wallet WHERE CAST(COALESCE(s.value,'0') AS INTEGER)<=? ORDER BY CAST(COALESCE(s.value,'0') AS INTEGER),w.chain,w.wallet LIMIT 1",[timestamp],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
-        let candidate: Option<Candidate> = value
-            .map(|s| serde_json::from_str(&s))
-            .transpose()
-            .map_err(|e| e.to_string())?;
+        let candidate = {
+            let mut query = tx.prepare("SELECT w.candidate FROM wallets w LEFT JOIN state s ON s.key='history-due:'||w.chain||':'||w.wallet WHERE CAST(COALESCE(s.value,'0') AS INTEGER)<=? ORDER BY CAST(COALESCE(s.value,'0') AS INTEGER),w.chain,w.wallet")
+                    .map_err(|e| e.to_string())?;
+            let rows = query
+                .query_map([timestamp], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            let mut selected = None;
+            for row in rows {
+                let c: Candidate = serde_json::from_str(&row.map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                if allowed.contains(&super::eligibility::key(&c)) {
+                    selected = Some(c);
+                    break;
+                }
+            }
+            selected
+        };
         if let Some(c) = &candidate {
             tx.execute("INSERT INTO state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("history-due:{}:{}",c.chain.key(),c.wallet),(timestamp+300).to_string()]).map_err(|e|e.to_string())?;
         }
@@ -491,6 +542,24 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn analysis(&self, chain: Chain, wallet: &str) -> Result<Option<Analysis>, String> {
+        let value: Option<String> = self
+            .db
+            .lock()
+            .map_err(|_| "Wallet storage is busy.")?
+            .query_row(
+                "SELECT analysis FROM wallets WHERE chain=? AND wallet=?",
+                params![chain.key(), wallet],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        value
+            .map(|v| serde_json::from_str(&v).map_err(|e| e.to_string()))
+            .transpose()
     }
 
     pub fn analyses(&self) -> Result<Vec<Analysis>, String> {
