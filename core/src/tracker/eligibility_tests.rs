@@ -140,6 +140,7 @@ async fn setup(path: &str) -> (Tracker, Arc<Mutex<RpcState>>, tokio::task::JoinH
             public_nominations: false,
             evidence_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             minimum_wallet_value: Decimal::from(1000),
+            maximum_wallet_value: Decimal::ZERO,
         },
         state,
         server,
@@ -175,6 +176,137 @@ fn inventory(tracker: &Tracker, candidate: &Candidate, units: u64) {
             .unwrap(),
         )
         .unwrap();
+}
+
+#[tokio::test]
+async fn above_ceiling_stops_history_spend_retains_sources_and_recovers_at_exact_ceiling() {
+    let (mut tracker, state, server) = setup(":memory:").await;
+    tracker.maximum_wallet_value = Decimal::from(50000);
+    state.lock().unwrap().native_units = 501;
+    let store = tracker.store.as_ref().unwrap();
+    let c = candidate(Chain::Solana, "So11111111111111111111111111111111111111112");
+    store.nominate(c.clone(), 4).unwrap();
+    let record = Record {
+        id: "retained-above-ceiling-source".into(),
+        raw: json!({"received":"retain complete saved execution"}),
+        transaction: None,
+        error: None,
+    };
+    store
+        .save_page(
+            &c,
+            &[record.clone()],
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+    tracker
+        .update_analysis(c.chain, &c.wallet, now())
+        .await
+        .unwrap();
+    tracker.tick().await.unwrap();
+    let v = tracker.wallet_value(&c).unwrap();
+    assert_eq!(v.status, "above_maximum");
+    assert_eq!(v.known_value_usd, Some(Decimal::from(50100)));
+    assert!(!v.total_complete);
+    assert!(v.next_check_at >= now() + 6 * 3600 - 2);
+    assert!(!tracker.collection_admitted(&c).unwrap());
+    assert!(tracker.active_wallet_keys().unwrap().is_empty());
+    assert_eq!(state.lock().unwrap().calls, vec!["sol:getBalance"]);
+    tracker.tick().await.unwrap();
+    assert_eq!(state.lock().unwrap().calls.len(), 1);
+    assert_eq!(store.lane_used(budget::Lane::History, now()).unwrap(), 0);
+    assert_eq!(
+        store
+            .record(c.chain, &c.wallet, &record.id)
+            .unwrap()
+            .unwrap()
+            .raw,
+        record.raw
+    );
+    state.lock().unwrap().native_units = 500;
+    store
+        .set_state(&format!("value-next:{}", eligibility::key(&c)), "0")
+        .unwrap();
+    assert!(tracker.screen_collection(&c).await.unwrap());
+    assert_eq!(state.lock().unwrap().calls.len(), 4); // native + both token programs at the boundary
+    let v = tracker.wallet_value(&c).unwrap();
+    assert_eq!(v.status, "eligible");
+    assert!(v.total_complete);
+    assert_eq!(v.known_value_usd, Some(Decimal::from(50000)));
+    assert!(tracker.collection_admitted(&c).unwrap());
+    // An in-range native balance must not skip a received unpriced token.
+    state.lock().unwrap().native_units = 10;
+    state.lock().unwrap().unknown_token = true;
+    store
+        .set_state(&format!("value-next:{}", eligibility::key(&c)), "0")
+        .unwrap();
+    assert!(tracker.screen_collection(&c).await.unwrap());
+    let v = tracker.wallet_value(&c).unwrap();
+    assert!(v.inventory_complete && !v.total_complete);
+    assert_eq!(v.unpriced_assets, 1);
+    assert!(v.detail.contains("upper limit remain unverified"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn ceiling_checks_evm_tokens_even_when_native_meets_floor_and_excludes_large_cohort() {
+    let (mut tracker, state, server) = setup(":memory:").await;
+    tracker.maximum_wallet_value = Decimal::from(50000);
+    state.lock().unwrap().native_units = 10;
+    let store = tracker.store.as_ref().unwrap();
+    let token = "0x2222222222222222222222222222222222222222";
+    for chain in [Chain::Bnb, Chain::Robinhood] {
+        let mut c = candidate(chain, "0x1111111111111111111111111111111111111111");
+        c.observed_tokens.push(token.into());
+        store.nominate(c.clone(), 4).unwrap();
+        store
+            .save_token_quotes(
+                chain,
+                &[crate::model::TokenQuote {
+                    asset: token.into(),
+                    decimals: Some(18),
+                    price_usd: Some(Decimal::from(49001)),
+                    observed_at: now(),
+                    source: "Controlled ceiling-test token mark".into(),
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        assert!(!tracker.screen_collection(&c).await.unwrap());
+        let value = tracker.wallet_value(&c).unwrap();
+        assert_eq!(value.known_value_usd, Some(Decimal::from(50001)));
+        assert_eq!(value.status, "above_maximum");
+        assert!(!value.total_complete);
+        assert!(!tracker.collection_admitted(&c).unwrap());
+        store
+            .save_token_quotes(
+                chain,
+                &[crate::model::TokenQuote {
+                    asset: token.into(),
+                    decimals: Some(18),
+                    price_usd: Some(Decimal::from(49000)),
+                    observed_at: now(),
+                    source: "Controlled ceiling-test token mark".into(),
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        let value = tracker.wallet_value(&c).unwrap();
+        assert_eq!(value.status, "eligible");
+        assert!(!value.total_complete);
+        assert!(value.detail.contains("upper limit remain unverified"));
+    }
+    assert_eq!(state.lock().unwrap().calls.len(), 8); // verified identity/block/native + known token per chain
+    let whale = candidate(Chain::Solana, "synthetic-over-ceiling");
+    store.nominate(whale.clone(), 4).unwrap();
+    inventory(&tracker, &whale, 1000);
+    assert!(!tracker
+        .active_wallet_keys()
+        .unwrap()
+        .contains(&eligibility::key(&whale)));
+    assert_eq!(store.wallet_count().unwrap(), 3);
+    server.abort();
 }
 
 #[tokio::test]

@@ -30,6 +30,7 @@ pub struct Tracker {
     public_nominations: bool,
     evidence_workers: Arc<tokio::sync::Semaphore>,
     minimum_wallet_value: rust_decimal::Decimal,
+    maximum_wallet_value: rust_decimal::Decimal,
 }
 
 fn env_number(name: &str, default: usize, min: usize, max: usize) -> usize {
@@ -227,6 +228,7 @@ mod config_tests {
             public_nominations: false,
             evidence_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             minimum_wallet_value: rust_decimal::Decimal::ZERO,
+            maximum_wallet_value: rust_decimal::Decimal::ZERO,
         };
         let started = now();
         tracker.tick().await.unwrap();
@@ -411,6 +413,7 @@ mod config_tests {
             public_nominations: false,
             evidence_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             minimum_wallet_value: rust_decimal::Decimal::ZERO,
+            maximum_wallet_value: rust_decimal::Decimal::ZERO,
         };
         tracker.tick().await.unwrap();
         let detail = tracker
@@ -545,6 +548,10 @@ impl Tracker {
                 .and_then(|v| v.parse::<rust_decimal::Decimal>().ok())
                 .filter(|v| *v >= rust_decimal::Decimal::ZERO)
                 .unwrap_or(rust_decimal::Decimal::from(1000)),
+            maximum_wallet_value: secret("WATER_TRACKER_MAX_WALLET_USD")
+                .and_then(|v| v.parse::<rust_decimal::Decimal>().ok())
+                .filter(|v| *v >= rust_decimal::Decimal::ZERO)
+                .unwrap_or(rust_decimal::Decimal::from(50000)),
             evidence_workers: Arc::new(tokio::sync::Semaphore::new(2)),
             store,
             providers,
@@ -632,7 +639,7 @@ impl Tracker {
         }).collect();
         let credit_paused =
             store.helius_credits(timestamp).unwrap_or(0) >= providers.helius_credit_limit;
-        json!({"collection_state":if current_paused {"budget_paused"}else if background_paused {"background_paused"}else{"scheduled"},"budget_resets_at":resets_at,"current_refresh_seconds":self.effective_interval(),"request_allocations":lanes,"background_requests_today":background_used,"current_request_limit":store.current_limit,"history_detail":store.state("history_error").ok().flatten(),"market_detail":store.state("market_error").ok().flatten(),"helius_budget_paused":credit_paused,"enabled":true,"nomination_enabled":self.public_nominations,"detail":store.state("collector_error").ok().flatten(),"policy":POLICY,"minimum_wallet_value_usd":self.minimum_wallet_value,"wallet_value_scope":"native and wallet token holdings on the selected chain; off-wallet DeFi/NFT valuations are unproved","interval_seconds":self.interval,"cohort_limit":self.cohort_limit,"screening_pool_limit":self.cohort_limit*4,"requests_today":used,"daily_request_limit":providers.daily_limit,"solana_indexed_access":!providers.helius_keys.is_empty(),"rh_indexed_access":providers.config.blockscout_api_key.is_some(),"helius_key_count":providers.helius_keys.len(),"helius_credits_reserved_31d":store.helius_credits(timestamp).unwrap_or(0),"helius_credit_limit_31d":providers.helius_credit_limit,"bnb_history_scope":"Public token-transfer discovery; complete wallet/native-history coverage is unproved.","fomo_discovery_access":providers.fomo_key.is_some(),"last_discovery_at":store.state("discovery_time").ok().flatten().and_then(|v|v.parse::<u64>().ok()),"discovery_notes":store.state("discovery_notes").ok().flatten().and_then(|v|serde_json::from_str::<Value>(&v).ok()),"storage_configured":!store.path.is_empty(),"storage_durability":"Requires a persistent deployment volume; path configuration does not prove durability."})
+        json!({"collection_state":if current_paused {"budget_paused"}else if background_paused {"background_paused"}else{"scheduled"},"budget_resets_at":resets_at,"current_refresh_seconds":self.effective_interval(),"request_allocations":lanes,"background_requests_today":background_used,"current_request_limit":store.current_limit,"history_detail":store.state("history_error").ok().flatten(),"market_detail":store.state("market_error").ok().flatten(),"helius_budget_paused":credit_paused,"enabled":true,"nomination_enabled":self.public_nominations,"detail":store.state("collector_error").ok().flatten(),"policy":POLICY,"minimum_wallet_value_usd":self.minimum_wallet_value,"maximum_wallet_value_usd":(self.maximum_wallet_value>rust_decimal::Decimal::ZERO).then_some(self.maximum_wallet_value),"wallet_value_scope":"native and wallet token holdings on the selected chain; off-wallet DeFi/NFT valuations are unproved","interval_seconds":self.interval,"cohort_limit":self.cohort_limit,"screening_pool_limit":self.cohort_limit*4,"requests_today":used,"daily_request_limit":providers.daily_limit,"solana_indexed_access":!providers.helius_keys.is_empty(),"rh_indexed_access":providers.config.blockscout_api_key.is_some(),"helius_key_count":providers.helius_keys.len(),"helius_credits_reserved_31d":store.helius_credits(timestamp).unwrap_or(0),"helius_credit_limit_31d":providers.helius_credit_limit,"bnb_history_scope":"Public token-transfer discovery; complete wallet/native-history coverage is unproved.","fomo_discovery_access":providers.fomo_key.is_some(),"last_discovery_at":store.state("discovery_time").ok().flatten().and_then(|v|v.parse::<u64>().ok()),"discovery_notes":store.state("discovery_notes").ok().flatten().and_then(|v|serde_json::from_str::<Value>(&v).ok()),"storage_configured":!store.path.is_empty(),"storage_durability":"Requires a persistent deployment volume; path configuration does not prove durability."})
     }
 
     fn effective_interval(&self) -> u64 {
@@ -676,7 +683,10 @@ impl Tracker {
             .min(3600)
     }
 
-    fn value_inventory(&self, candidate: &Candidate) -> Result<Option<eligibility::Inventory>, String> {
+    fn value_inventory(
+        &self,
+        candidate: &Candidate,
+    ) -> Result<Option<eligibility::Inventory>, String> {
         self.store
             .as_ref()
             .unwrap()
@@ -696,13 +706,15 @@ impl Tracker {
             inventory.as_ref(),
             &store.token_quotes(candidate.chain)?,
             self.minimum_wallet_value,
+            self.maximum_wallet_value,
             now(),
             next,
         ))
     }
 
     fn collection_admitted(&self, candidate: &Candidate) -> Result<bool, String> {
-        Ok(self.minimum_wallet_value <= rust_decimal::Decimal::ZERO
+        Ok((self.minimum_wallet_value <= rust_decimal::Decimal::ZERO
+            && self.maximum_wallet_value <= rust_decimal::Decimal::ZERO)
             || self
                 .active_wallet_keys()?
                 .contains(&eligibility::key(candidate)))
@@ -711,7 +723,9 @@ impl Tracker {
     fn active_wallet_keys(&self) -> Result<BTreeSet<String>, String> {
         let store = self.store.as_ref().unwrap();
         let candidates = store.candidates()?;
-        if self.minimum_wallet_value <= rust_decimal::Decimal::ZERO {
+        if self.minimum_wallet_value <= rust_decimal::Decimal::ZERO
+            && self.maximum_wallet_value <= rust_decimal::Decimal::ZERO
+        {
             return Ok(candidates.iter().map(eligibility::key).collect());
         }
         let mut markets = std::collections::BTreeMap::new();
@@ -725,6 +739,7 @@ impl Tracker {
                 inventory.as_ref(),
                 &markets[c.chain.key()],
                 self.minimum_wallet_value,
+                self.maximum_wallet_value,
                 now(),
                 0,
             );
@@ -741,7 +756,9 @@ impl Tracker {
     }
 
     async fn screen_collection(&self, candidate: &Candidate) -> Result<bool, String> {
-        if self.minimum_wallet_value <= rust_decimal::Decimal::ZERO {
+        if self.minimum_wallet_value <= rust_decimal::Decimal::ZERO
+            && self.maximum_wallet_value <= rust_decimal::Decimal::ZERO
+        {
             return Ok(true);
         }
         let store = self.store.as_ref().unwrap();
@@ -770,7 +787,13 @@ impl Tracker {
             .providers
             .as_ref()
             .unwrap()
-            .value_inventory(candidate, &assets, &quotes, self.minimum_wallet_value)
+            .value_inventory(
+                candidate,
+                &assets,
+                &quotes,
+                self.minimum_wallet_value,
+                self.maximum_wallet_value,
+            )
             .await
         {
             Ok(inventory) => {
@@ -778,12 +801,13 @@ impl Tracker {
                     Some(&inventory),
                     &quotes,
                     self.minimum_wallet_value,
+                    self.maximum_wallet_value,
                     now(),
                     0,
                 );
                 let interval = match value.status.as_str() {
                     "eligible" => 1800,
-                    "below_minimum" => 6 * 3600,
+                    "below_minimum" | "above_maximum" => 6 * 3600,
                     _ => 3600,
                 };
                 store.set_state(
@@ -841,13 +865,25 @@ impl Tracker {
                 a.activity.truncate(20);
                 let all_positions = evidence::current_positions_count(&a);
                 let positions_count = evidence::valued_positions_count(&a, now());
-                let labels:BTreeSet<_>=a.activity.iter().flat_map(|activity|[activity.asset.as_ref(), activity.quote_asset.as_ref()].into_iter().flatten()).cloned().collect();
-                a.markets.retain(|asset,_|labels.contains(asset));
+                let labels: BTreeSet<_> = a
+                    .activity
+                    .iter()
+                    .flat_map(|activity| {
+                        [activity.asset.as_ref(), activity.quote_asset.as_ref()]
+                            .into_iter()
+                            .flatten()
+                    })
+                    .cloned()
+                    .collect();
+                a.markets.retain(|asset, _| labels.contains(asset));
                 let mut value = serde_json::to_value(a).unwrap();
                 let fields = value.as_object_mut().unwrap();
                 fields.remove("positions");
                 fields.insert("positions_count".into(), json!(positions_count));
-                fields.insert("unpriced_positions_count".into(), json!(all_positions.saturating_sub(positions_count)));
+                fields.insert(
+                    "unpriced_positions_count".into(),
+                    json!(all_positions.saturating_sub(positions_count)),
+                );
                 fields.remove("notes");
                 value
             })
@@ -884,11 +920,9 @@ impl Tracker {
         let Some(store) = &self.store else {
             return Ok(None);
         };
-        let Some((snapshot, revision)) = store.activity_snapshot(
-            request.chain,
-            &wallet,
-            request.transaction.as_deref(),
-        )? else {
+        let Some((snapshot, revision)) =
+            store.activity_snapshot(request.chain, &wallet, request.transaction.as_deref())?
+        else {
             return Ok(None);
         };
         Ok(Some(evidence::activity_page_with_revision(
@@ -941,11 +975,11 @@ impl Tracker {
             {
                 continue;
             }
-            if let Some(position) = analysis
-                .positions
-                .iter()
-                .find(|p| p.asset == token && evidence::position_quantity(p, &analysis.coverage) > rust_decimal::Decimal::ZERO)
-            {
+            if let Some(position) = analysis.positions.iter().find(|p| {
+                p.asset == token
+                    && evidence::position_quantity(p, &analysis.coverage)
+                        > rust_decimal::Decimal::ZERO
+            }) {
                 wallets.push(json!({"wallet":analysis.candidate.wallet,"status":analysis.status,"position":position,"analyzed_at":analysis.analyzed_at}));
             }
         }
@@ -1639,7 +1673,8 @@ impl Tracker {
                 .iter()
                 .filter(|a| a.candidate.chain.key() == chain.key())
             {
-                if self.minimum_wallet_value > rust_decimal::Decimal::ZERO
+                if (self.minimum_wallet_value > rust_decimal::Decimal::ZERO
+                    || self.maximum_wallet_value > rust_decimal::Decimal::ZERO)
                     && !admitted.contains(&eligibility::key(&analysis.candidate))
                 {
                     if let Some(inventory) = self.value_inventory(&analysis.candidate)? {
@@ -1665,7 +1700,9 @@ impl Tracker {
                             });
                             let mut selected: BTreeSet<_> = holdings
                                 .iter()
-                                .filter(|(a, _)| cached.get(*a).is_some_and(|m| m.price_usd.is_some()))
+                                .filter(|(a, _)| {
+                                    cached.get(*a).is_some_and(|m| m.price_usd.is_some())
+                                })
                                 .take(20)
                                 .map(|(a, _)| (*a).clone())
                                 .collect();

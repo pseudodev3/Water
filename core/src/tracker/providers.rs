@@ -969,6 +969,7 @@ impl Providers {
         assets: &BTreeSet<String>,
         quotes: &BTreeMap<String, crate::model::TokenQuote>,
         minimum: Decimal,
+        maximum: Decimal,
     ) -> Result<super::eligibility::Inventory, String> {
         use super::eligibility::{assess, Inventory};
         let at = now();
@@ -1020,8 +1021,12 @@ impl Providers {
             complete: false,
             error: None,
         };
-        // A proved lower bound above the floor needs no expensive token census.
-        if assess(Some(&inventory), quotes, minimum, at, 0).status == "eligible" {
+        // Native holdings above the ceiling already prove exclusion. With a
+        // ceiling enabled, inspect tokens before admitting an in-range native balance.
+        let native_status = assess(Some(&inventory), quotes, minimum, maximum, at, 0).status;
+        if native_status == "above_maximum"
+            || (maximum <= Decimal::ZERO && native_status == "eligible")
+        {
             return Ok(inventory);
         }
         match candidate.chain {
