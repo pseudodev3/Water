@@ -1,6 +1,6 @@
 # Water — Project Handoff
 
-_Last updated: 2026-10-05_
+_Last updated: 2026-10-06_
 
 This file is the canonical pickup point for a new ChatGPT/Codex session.
 
@@ -13,7 +13,8 @@ Production:
 - Backend: `https://water-production-822e.up.railway.app`
 
 Previously verified production baseline:
-- `66fe8009cbd64005a610c37241dc48b1f6c9c708` (PR #30).
+- `b800369608d4916ab2e52fc0e69491534d85aa3a` (PR #31); main CI, Vercel,
+  Railway, live API and responsive browser checks passed.
 - PR #26's research UI, PR #27's bounded accounting/runtime diagnostics and
   PR #28's zero-balance Positions filter are merged. All deployments passed.
   The last PR #28 live check returned 122 positive positions, no zero rows and
@@ -68,9 +69,8 @@ PR #30 live browser verification received 1,418 valued holdings on 6HJet,
 verified both USD sort directions, and passed without JavaScript errors or overflow.
 Health returned HTTP 200 with CORS `*`.
 
-Latest implementation: [PR #31](https://github.com/pseudodev3/Water/pull/31),
-branch `feat/wallet-value-floor-ui`. Its merge and deployment checks determine
-when this implementation becomes the production baseline.
+PR #31 is merged and verified in production:
+[PR #31](https://github.com/pseudodev3/Water/pull/31).
 - Default expensive collection floor: **$1,000 native + wallet token holdings on
   the selected chain**, confirmed with fresh received balances and USD marks.
   A sufficient partial lower bound admits; missing prices or incomplete EVM
@@ -96,9 +96,40 @@ when this implementation becomes the production baseline.
   keyboard tabs, safe empty rollout, and WCAG axe checks with zero violations.
   Screenshots use controlled eligibility values and are not live wallet totals.
 Read [capital screening and design evidence](docs/wallet-capital-design.md).
-Confirm PR #31 is merged and its main commit has successful Vercel/Railway
-deployment statuses before claiming availability; local replay screenshots are
-not proof of production data.
+The verified rollout retained all 12 wallets and their saved source records;
+three met the minimum through received partial lower bounds. Qualification
+was still incomplete. RPC limits and first value checks remained explicit.
+
+Latest follow-up (`feat/followed-wallet-names`):
+- Personal names for followed wallets, scoped by chain + execution address.
+  The existing `water:followed-wallets:v1` array is retained. Names use the separate
+  `water:wallet-names:v1` browser-local map, appear in list/profile/Following
+  activity and are searchable. Blank names restore address display; unfollowing
+  retains the saved name for refollowing. Addresses, explorers and evidence stay
+  canonical. Native dialog supports save, cancel and Escape; blocked storage
+  leaves the previous name and follows intact.
+- The default upper collection limit is **$50,000 native + wallet token holdings
+  on the selected chain**. Priced lower bounds above it are excluded even with
+  an incomplete inventory; exactly $50,000 remains admitted. Above-limit wallets
+  pause expensive current/history work and receive six-hour screening retries.
+  Their saved evidence remains inspectable under Value checks.
+- Incomplete totals within the apparent range do **not** prove an upper limit.
+  They remain collection candidates once the $1,000 lower bound is established,
+  with **Upper limit unverified** shown. The collector now inspects wallet tokens
+  when native holdings fall within the range; native-only holdings above the
+  ceiling avoid token census requests. BNB/RH inventories remain partial/bounded.
+- Optional `WATER_TRACKER_MAX_WALLET_USD=50000` defaults automatically; `0`
+  disables the ceiling. `WATER_TRACKER_MIN_WALLET_USD=0` disables only the floor;
+  set both to zero to disable capital screening. Existing budgets/volume apply.
+- Validation: 140 Rust tests, Next production build, browser checks at
+  320/390/1440px for persistence/search/names across surfaces, canonical addresses,
+  long and escaped names, reset/cancel/keyboard focus, malformed storage, write
+  failure, and visible ceiling exclusions. Rename dialog axe checks have zero
+  violations; no page errors/overflow. Replay eligibility values are controlled
+  test fixtures, not live financial claims. See
+  [wallet names and upper limit](docs/wallet-names-ceiling.md).
+Verify the merged commit's main CI and Vercel/Railway deployments plus live
+behavior before claiming this follow-up is available.
 
 PR #25's independent current activity allocation, token metadata/current marks,
 balance reads and detailed saved transactions are merged. The live collection

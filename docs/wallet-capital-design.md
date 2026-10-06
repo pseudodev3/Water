@@ -1,5 +1,8 @@
 # Wallet capital screening and Fomo design research
 
+This records PR #31's minimum-only policy. The later $50,000 ceiling changes
+native-only admission; see [wallet names and upper limit](wallet-names-ceiling.md).
+
 Checked 2026-10-05. This change requires at least $1,000 in received native and
 wallet token USD holdings before spending on current history, backfill,
 transaction reconstruction or historical pricing. The user selected total

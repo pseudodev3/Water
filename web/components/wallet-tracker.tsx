@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   ExternalLink,
+  Pencil,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -45,8 +46,10 @@ import {
   useResearchTabs,
   ChainAvatar,
 } from "@/components/research-ui";
+import { WalletNameEditor } from "@/components/wallet-name-editor";
 
 const FOLLOW_KEY = "water:followed-wallets:v1";
+const NAME_KEY = "water:wallet-names:v1";
 function date(timestamp: number | null) {
   return timestamp
     ? new Date(timestamp * 1000).toLocaleString(undefined, {
@@ -94,6 +97,10 @@ export function WalletTracker() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("value");
   const [followed, setFollowed] = useState<string[]>([]);
+  const [walletNames, setWalletNames] = useState<Record<string, string>>({});
+  const [renaming, setRenaming] = useState<WalletAnalysis["candidate"] | null>(
+    null,
+  );
   const [detail, setDetail] = useState<WalletAnalysis | null>(null);
   const [detailLoading, setDetailLoading] = useState("");
   const [addChain, setAddChain] = useState<Chain>("solana");
@@ -139,6 +146,25 @@ export function WalletTracker() {
     } catch {
       setError("This browser could not read your followed wallets.");
     }
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(NAME_KEY) ?? "{}");
+      if (saved && typeof saved === "object" && !Array.isArray(saved))
+        setWalletNames(
+          Object.fromEntries(
+            Object.entries(saved)
+              .filter(
+                ([id, name]) =>
+                  /^(solana|robinhood|bnb):[^:\s]+$/.test(id) &&
+                  typeof name === "string" &&
+                  name.trim().length > 0 &&
+                  name.length <= 64,
+              )
+              .map(([id, name]) => [id, (name as string).trim()]),
+          ),
+        );
+    } catch {
+      setError("This browser could not read your saved wallet names.");
+    }
     void refresh();
     const timer = window.setInterval(() => {
       if (!document.hidden) void refresh();
@@ -163,6 +189,26 @@ export function WalletTracker() {
       setError(
         "Your browser could not save this follow. Allow local storage and try again.",
       );
+    }
+  }
+
+  function nameFor(candidate: WalletAnalysis["candidate"]) {
+    const id = walletId(candidate);
+    return followed.includes(id) ? walletNames[id] : undefined;
+  }
+
+  function saveName(name: string): string | null {
+    if (!renaming) return "Choose a followed wallet first.";
+    const next = { ...walletNames };
+    const id = walletId(renaming);
+    if (name) next[id] = name;
+    else delete next[id];
+    try {
+      localStorage.setItem(NAME_KEY, JSON.stringify(next));
+      setWalletNames(next);
+      return null;
+    } catch {
+      return "Your browser could not save this name. Allow local storage and try again.";
     }
   }
 
@@ -305,7 +351,11 @@ export function WalletTracker() {
           w.candidate.sources.some((s) =>
             s.name.toLowerCase().includes(source),
           )) &&
-        [w.candidate.wallet, ...w.candidate.sources.map((s) => s.name)]
+        [
+          nameFor(w.candidate) ?? "",
+          w.candidate.wallet,
+          ...w.candidate.sources.map((s) => s.name),
+        ]
           .join(" ")
           .toLowerCase()
           .includes(search.trim().toLowerCase()),
@@ -520,7 +570,7 @@ export function WalletTracker() {
             <Search size={15} aria-hidden="true" />
             <input
               aria-label="Search collected wallets"
-              placeholder="Search address or source"
+              placeholder="Search name, address or source"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               type="search"
@@ -555,10 +605,12 @@ export function WalletTracker() {
         </div>
         <p className="wallet-floor-note">
           <ShieldCheck size={14} aria-hidden="true" />
-          Collection starts at{" "}
-          {holdingValue(collection?.minimum_wallet_value_usd ?? "1000")} in
-          native coins and tokens. Missing values receive limited checks; saved
-          history stays available.
+          Collection minimum:{" "}
+          {holdingValue(collection?.minimum_wallet_value_usd ?? "1000")}.
+          {collection?.maximum_wallet_value_usd &&
+            ` Ceiling: ${holdingValue(collection.maximum_wallet_value_usd)}.`}{" "}
+          Native coins + tokens. Above-limit wallets pause; incomplete totals
+          are lower bounds. Saved history stays available.
         </p>
         {error && (
           <div className="error-line" role="alert">
@@ -686,8 +738,13 @@ export function WalletTracker() {
                       <span className="wallet-identity">
                         <ChainAvatar chain={w.candidate.chain} />
                         <span>
-                          <strong>{shortAddress(w.candidate.wallet)}</strong>
+                          <strong>
+                            {nameFor(w.candidate) ??
+                              shortAddress(w.candidate.wallet)}
+                          </strong>
                           <small>
+                            {nameFor(w.candidate) &&
+                              `${shortAddress(w.candidate.wallet)} · `}
                             {chainLabel(w.candidate.chain)} ·{" "}
                             {w.candidate.sources.map((s) => s.name).join(" / ")}
                           </small>
@@ -701,9 +758,15 @@ export function WalletTracker() {
                         <small>
                           {w.wallet_value?.status === "below_minimum"
                             ? "Below minimum · paused"
-                            : w.wallet_value?.status === "eligible"
-                              ? "Meets collection minimum"
-                              : "Value check pending"}
+                            : w.wallet_value?.status === "above_maximum"
+                              ? "Above ceiling · paused"
+                              : w.wallet_value?.status === "eligible"
+                                ? w.wallet_value.total_complete
+                                  ? "Meets collection range"
+                                  : w.wallet_value.maximum_usd
+                                    ? "Upper limit unverified"
+                                    : "Meets collection minimum"
+                                : "Value check pending"}
                         </small>
                       </span>
                       <span
@@ -736,15 +799,28 @@ export function WalletTracker() {
                         )}
                       </span>
                     </button>
-                    <button
-                      className={`wallet-follow ${followed.includes(walletId(w.candidate)) ? "active" : ""}`}
-                      type="button"
-                      aria-pressed={followed.includes(walletId(w.candidate))}
-                      aria-label={`${followed.includes(walletId(w.candidate)) ? "Unfollow" : "Follow"} ${w.candidate.wallet}`}
-                      onClick={() => follow(w.candidate)}
-                    >
-                      <Star size={17} />
-                    </button>
+                    <div className="wallet-row-actions">
+                      {followed.includes(walletId(w.candidate)) && (
+                        <button
+                          className="wallet-follow wallet-rename"
+                          type="button"
+                          aria-label={`Rename ${w.candidate.wallet}`}
+                          title="Rename wallet"
+                          onClick={() => setRenaming(w.candidate)}
+                        >
+                          <Pencil size={16} />
+                        </button>
+                      )}
+                      <button
+                        className={`wallet-follow ${followed.includes(walletId(w.candidate)) ? "active" : ""}`}
+                        type="button"
+                        aria-pressed={followed.includes(walletId(w.candidate))}
+                        aria-label={`${followed.includes(walletId(w.candidate)) ? "Unfollow" : "Follow"} ${w.candidate.wallet}`}
+                        onClick={() => follow(w.candidate)}
+                      >
+                        <Star size={17} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -761,11 +837,17 @@ export function WalletTracker() {
               ref={detailView}
               tabIndex={-1}
               role="group"
-              aria-label={`Wallet profile ${shortAddress(detail.candidate.wallet)}`}
+              aria-label={`Wallet profile ${nameFor(detail.candidate) ?? shortAddress(detail.candidate.wallet)}`}
             >
               <WalletDetail
                 key={walletId(detail.candidate)}
                 wallet={detail}
+                name={nameFor(detail.candidate)}
+                onRename={
+                  followed.includes(walletId(detail.candidate))
+                    ? () => setRenaming(detail.candidate)
+                    : undefined
+                }
                 onClose={() => {
                   detailRequest.current?.abort();
                   setDetail(null);
@@ -843,6 +925,7 @@ export function WalletTracker() {
                     {!a.finalized && " · provisional"}
                   </strong>
                   <small>
+                    {nameFor(a.candidate) && `${nameFor(a.candidate)} · `}
                     {shortAddress(a.candidate.wallet)} ·{" "}
                     {chainLabel(a.candidate.chain)} ·{" "}
                     {a.asset
@@ -891,15 +974,28 @@ export function WalletTracker() {
           someone following later.
         </p>
       </details>
+      {renaming && (
+        <WalletNameEditor
+          key={walletId(renaming)}
+          candidate={renaming}
+          initialName={walletNames[walletId(renaming)] ?? ""}
+          onSave={saveName}
+          onClose={() => setRenaming(null)}
+        />
+      )}
     </>
   );
 }
 
 function WalletDetail({
   wallet: w,
+  name,
+  onRename,
   onClose,
 }: {
   wallet: WalletAnalysis;
+  name?: string;
+  onRename?: () => void;
   onClose: () => void;
 }) {
   const chain = w.candidate.chain;
@@ -943,7 +1039,7 @@ function WalletDetail({
       <div className="wallet-detail-title">
         <div>
           <div className="eyebrow">Wallet profile · {chainLabel(chain)}</div>
-          <h2>{shortAddress(w.candidate.wallet)}</h2>
+          <h2>{name ?? shortAddress(w.candidate.wallet)}</h2>
         </div>
         <button
           type="button"
@@ -965,6 +1061,17 @@ function WalletDetail({
           <ExternalLink size={14} />
         </a>
         <CopyAddress value={w.candidate.wallet} label="wallet address" />
+        {onRename && (
+          <button
+            type="button"
+            className="icon-action"
+            onClick={onRename}
+            aria-label="Rename wallet"
+            title="Rename wallet"
+          >
+            <Pencil size={16} />
+          </button>
+        )}
       </div>
       <p className="wallet-detail-status">
         {statusLabel(w.status)} · As of {date(w.analyzed_at)}

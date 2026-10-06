@@ -129,6 +129,7 @@ export function positiveValue(value: string | null | undefined) {
 export type WalletResponse = {
   status: {
     minimum_wallet_value_usd?: string;
+    maximum_wallet_value_usd?: string | null;
     screening_pool_limit?: number;
     enabled: boolean;
     nomination_enabled?: boolean;
@@ -167,8 +168,9 @@ export type WalletResponse = {
 };
 
 export type WalletValue = {
-  status: "eligible" | "below_minimum" | "awaiting_value";
+  status: "eligible" | "below_minimum" | "above_maximum" | "awaiting_value";
   minimum_usd: string;
+  maximum_usd?: string | null;
   known_value_usd: string | null;
   total_complete: boolean;
   inventory_complete: boolean;
